@@ -1,0 +1,33 @@
+{
+  "name": "opem-pulse-crawler",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  // "hostRequirements": {
+  //   "gpu": "optional"
+  // },
+  // "runArgs": [
+  //   "--gpus",
+  //   "all"
+  // ],
+
+  // This is where your repo will be mounted inside the container
+  "remoteUser": "vscode",
+  "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
+
+  "customizations": {
+    "vscode": {
+    "settings": {
+      "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python"
+    },
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "tamasfe.even-better-toml"
+      ]
+    }
+  },
+
+  // Install project in editable mode after the container is built  
+  "postCreateCommand": "rm -rf .venv && uv venv && uv pip install -e . && echo '. $PWD/.venv/bin/activate' >> /home/vscode/.bashrc"
+}

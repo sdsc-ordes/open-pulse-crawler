@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "open-pulse-crawler"
+version = "0.1.0"
+description = "Crawler"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache 2.0" }
+authors = [
+  { name = "caviri" }
+]
+dependencies = [
+
+]
+
+[project.urls]
+Homepage = "https://github.com/sdsc-ordes/open-pulse-crawler"
+
+[project.scripts]
+eosc = "open_pulse_crawler.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/open_pulse_crawler"]
+
+[tool.hatch.build]
+packages = ["src/open_pulse_crawler"]
