@@ -5,6 +5,8 @@ from typing import List, Set, Dict, Tuple, Optional
 from pathlib import Path
 import json
 from collections import deque
+from datetime import datetime
+from tqdm import tqdm
 
 from .models import (
     GraphData, UserModel, OrgModel, RepoModel,
@@ -141,13 +143,39 @@ class GitHubCrawler:
                 return None
             
             # Handle cached data (dict) vs live API object
-            if isinstance(user_obj, dict):
+            is_cached = isinstance(user_obj, dict)
+            
+            if is_cached:
+                # Check if this is actually an organization (from cached data)
+                if user_obj.get('type') == 'Organization':
+                    logger.debug(f"{username} is an organization, not a user")
+                    return None
+                    
                 user = UserModel(
                     login=user_obj['login'],
                     name=user_obj.get('name', ''),
                     id=user_obj.get('id', 0),
                     type=GitHubItemType.USER
                 )
+                
+                # Use cached repos data if available
+                cached_repos = user_obj.get('repos', [])
+                for repo_data in cached_repos:
+                    if repo_data.get('fork'):
+                        user.forked_repositories.append(repo_data['full_name'])
+                    else:
+                        user.authored_repositories.append(repo_data['full_name'])
+                    
+                    # Add repos to queue for next round
+                    if repo_data['full_name'] not in self.visited:
+                        self.queue.append(('repo', repo_data['full_name'], self.current_round + 1))
+                
+                # Use cached organizations data if available
+                cached_orgs = user_obj.get('orgs', [])
+                for org_login in cached_orgs:
+                    # Add organizations to queue
+                    if org_login not in self.visited:
+                        self.queue.append(('org', org_login, self.current_round + 1))
             else:
                 # Check if this is actually an organization
                 if user_obj.type == 'Organization':
@@ -161,7 +189,7 @@ class GitHubCrawler:
                     type=GitHubItemType.USER if user_obj.type == 'User' else GitHubItemType.BOT
                 )
                 
-                # Get user's repositories
+                # Get user's repositories from live API
                 try:
                     repos = self.client._make_request(user_obj.get_repos)
                     for repo in repos:
@@ -175,6 +203,16 @@ class GitHubCrawler:
                             self.queue.append(('repo', repo.full_name, self.current_round + 1))
                 except Exception as e:
                     logger.warning(f"Failed to get repos for user {username}: {e}")
+                
+                # Get user's organization memberships from live API
+                try:
+                    orgs = self.client._make_request(user_obj.get_orgs)
+                    for org in orgs:
+                        # Add organizations to queue
+                        if org.login not in self.visited:
+                            self.queue.append(('org', org.login, self.current_round + 1))
+                except Exception as e:
+                    logger.warning(f"Failed to get organizations for user {username}: {e}")
             
             return user
         except Exception as e:
@@ -188,13 +226,36 @@ class GitHubCrawler:
             if not org_obj:
                 return None
             
-            if isinstance(org_obj, dict):
+            is_cached = isinstance(org_obj, dict)
+            
+            if is_cached:
                 org = OrgModel(
                     login=org_obj['login'],
                     name=org_obj.get('name', ''),
                     id=org_obj.get('id', 0),
                     type=GitHubItemType.ORGANIZATION
                 )
+                
+                # Use cached members data if available
+                cached_members = org_obj.get('members', [])
+                for member_login in cached_members:
+                    org.members.append(member_login)
+                    
+                    # Add members to queue
+                    if member_login not in self.visited:
+                        self.queue.append(('user', member_login, self.current_round + 1))
+                
+                # Use cached repos data if available
+                cached_repos = org_obj.get('repos', [])
+                for repo_data in cached_repos:
+                    if repo_data.get('fork'):
+                        org.forked_repositories.append(repo_data['full_name'])
+                    else:
+                        org.authored_repositories.append(repo_data['full_name'])
+                    
+                    # Add repos to queue
+                    if repo_data['full_name'] not in self.visited:
+                        self.queue.append(('repo', repo_data['full_name'], self.current_round + 1))
             else:
                 org = OrgModel(
                     login=org_obj.login,
@@ -203,7 +264,7 @@ class GitHubCrawler:
                     type=GitHubItemType.ORGANIZATION
                 )
                 
-                # Get organization members
+                # Get organization members from live API
                 try:
                     members = self.client._make_request(org_obj.get_members)
                     for member in members:
@@ -215,7 +276,7 @@ class GitHubCrawler:
                 except Exception as e:
                     logger.warning(f"Failed to get members for org {org_name}: {e}")
                 
-                # Get organization repositories
+                # Get organization repositories from live API
                 try:
                     repos = self.client._make_request(org_obj.get_repos)
                     for repo in repos:
@@ -242,7 +303,9 @@ class GitHubCrawler:
             if not repo_obj:
                 return None
             
-            if isinstance(repo_obj, dict):
+            is_cached = isinstance(repo_obj, dict)
+            
+            if is_cached:
                 repo = RepoModel(
                     full_name=repo_obj['full_name'],
                     name=repo_obj.get('name', ''),
@@ -252,6 +315,26 @@ class GitHubCrawler:
                     is_fork=repo_obj.get('is_fork', False),
                     forked_from=repo_obj.get('parent')
                 )
+                
+                # Add owner to queue from cached data
+                owner_login = repo_obj.get('owner', '')
+                owner_type_str = repo_obj.get('owner_type', 'User')
+                if owner_login and owner_login not in self.visited:
+                    owner_type = 'org' if owner_type_str == 'Organization' else 'user'
+                    self.queue.append((owner_type, owner_login, self.current_round + 1))
+                
+                # Use cached contributors data if available
+                cached_contributors = repo_obj.get('contributors', [])
+                for contributor_login in cached_contributors:
+                    repo.contributors.append(contributor_login)
+                    
+                    # Add contributors to queue
+                    if contributor_login not in self.visited:
+                        self.queue.append(('user', contributor_login, self.current_round + 1))
+                
+                # If it's a fork, add parent to queue
+                if repo.is_fork and repo.forked_from and repo.forked_from not in self.visited:
+                    self.queue.append(('repo', repo.forked_from, self.current_round + 1))
             else:
                 repo = RepoModel(
                     full_name=repo_obj.full_name,
@@ -263,12 +346,12 @@ class GitHubCrawler:
                     forked_from=repo_obj.parent.full_name if repo_obj.parent else None
                 )
                 
-                # Add owner to queue
+                # Add owner to queue from live API
                 if repo_obj.owner.login not in self.visited:
                     owner_type = 'org' if repo_obj.owner.type == 'Organization' else 'user'
                     self.queue.append((owner_type, repo_obj.owner.login, self.current_round + 1))
                 
-                # Get contributors (limited to avoid too many API calls)
+                # Get contributors from live API (limited to avoid too many API calls)
                 try:
                     contributors = self.client._make_request(repo_obj.get_contributors)
                     for i, contributor in enumerate(contributors):
@@ -291,97 +374,183 @@ class GitHubCrawler:
             logger.error(f"Error processing repository {repo_full_name}: {e}")
             return None
     
-    def crawl(self):
-        """Execute the BFS crawl."""
-        logger.info(f"Starting crawl for {self.max_rounds} rounds")
+    def crawl(self, show_progress: bool = True):
+        """Execute the BFS crawl with progress tracking.
         
-        while self.queue and self.current_round < self.max_rounds:
-            # Start new round
-            round_start_time = __import__('time').time()
-            nodes_in_round = []
-            
-            # Process all nodes in current round
-            while self.queue:
-                node_type, identifier, node_round = self.queue[0]
+        Args:
+            show_progress: Whether to show progress bars (default: True)
+        """
+        start_time = datetime.now()
+        start_time_str = start_time.strftime("%Y-%m-%d %H:%M:%S")
+        logger.info(f"Starting crawl at {start_time_str} for {self.max_rounds} rounds")
+        if show_progress:
+            print(f"\n🚀 Crawl started at {start_time_str}")
+            print(f"📊 Target: {self.max_rounds} rounds\n")
+        
+        # Create overall progress bar for rounds
+        rounds_pbar = tqdm(
+            total=self.max_rounds,
+            desc="Overall Progress",
+            unit="round",
+            position=0,
+            disable=not show_progress,
+            initial=self.current_round
+        )
+        
+        try:
+            while self.queue and self.current_round < self.max_rounds:
+                # Start new round
+                round_start_time = __import__('time').time()
+                nodes_in_round = []
                 
-                if node_round > self.current_round:
-                    # Reached next round
-                    break
+                # Count nodes to process in this round
+                nodes_this_round = sum(1 for _, _, node_round in self.queue if node_round == self.current_round)
                 
-                self.queue.popleft()
+                # Get current time for round
+                round_time_str = datetime.now().strftime("%H:%M:%S")
                 
-                # Skip if already visited
-                if identifier in self.visited:
-                    continue
+                # Create progress bar for current round
+                round_pbar = tqdm(
+                    total=nodes_this_round,
+                    desc=f"Round {self.current_round} [{round_time_str}]",
+                    unit="node",
+                    position=1,
+                    leave=False,
+                    disable=not show_progress
+                )
                 
-                self.visited.add(identifier)
-                nodes_in_round.append((node_type, identifier))
-                
-                # Process node based on type
-                if node_type == 'user_or_org':
-                    # Try as user first
-                    user = self._process_user(identifier)
-                    if user:
-                        self.graph.add_user(user)
-                    else:
-                        # Try as organization
+                # Process all nodes in current round
+                while self.queue:
+                    node_type, identifier, node_round = self.queue[0]
+                    
+                    if node_round > self.current_round:
+                        # Reached next round
+                        break
+                    
+                    self.queue.popleft()
+                    
+                    # Skip if already visited
+                    if identifier in self.visited:
+                        round_pbar.update(1)
+                        continue
+                    
+                    self.visited.add(identifier)
+                    nodes_in_round.append((node_type, identifier))
+                    
+                    # Process node based on type
+                    if node_type == 'user_or_org':
+                        # Try as user first
+                        user = self._process_user(identifier)
+                        if user:
+                            self.graph.add_user(user)
+                        else:
+                            # Try as organization
+                            org = self._process_organization(identifier)
+                            if org:
+                                self.graph.add_org(org)
+                    
+                    elif node_type == 'user':
+                        user = self._process_user(identifier)
+                        if user:
+                            self.graph.add_user(user)
+                    
+                    elif node_type == 'org':
                         org = self._process_organization(identifier)
                         if org:
                             self.graph.add_org(org)
+                    
+                    elif node_type == 'repo':
+                        repo = self._process_repository(identifier)
+                        if repo:
+                            self.graph.add_repo(repo)
+                    
+                    # Update progress
+                    round_pbar.update(1)
                 
-                elif node_type == 'user':
-                    user = self._process_user(identifier)
-                    if user:
-                        self.graph.add_user(user)
+                round_pbar.close()
+            
+                # Round statistics - count actual entities found, not queued types
+                round_time = __import__('time').time() - round_start_time
                 
-                elif node_type == 'org':
-                    org = self._process_organization(identifier)
-                    if org:
-                        self.graph.add_org(org)
+                # Count entities actually added in this round
+                current_users = len(self.graph.users)
+                current_orgs = len(self.graph.orgs)
+                current_repos = len(self.graph.repos)
                 
-                elif node_type == 'repo':
-                    repo = self._process_repository(identifier)
-                    if repo:
-                        self.graph.add_repo(repo)
-            
-            # Round statistics - count actual entities found, not queued types
-            round_time = __import__('time').time() - round_start_time
-            
-            # Count entities actually added in this round
-            current_users = len(self.graph.users)
-            current_orgs = len(self.graph.orgs)
-            current_repos = len(self.graph.repos)
-            
-            # Calculate what was found in this round
-            users_this_round = current_users - sum(rs.get('users_found', 0) for rs in self.round_stats)
-            orgs_this_round = current_orgs - sum(rs.get('orgs_found', 0) for rs in self.round_stats)
-            repos_this_round = current_repos - sum(rs.get('repos_found', 0) for rs in self.round_stats)
-            
-            round_stat = {
-                'round': self.current_round,
-                'nodes_processed': len(nodes_in_round),
-                'users_found': users_this_round,
-                'orgs_found': orgs_this_round,
-                'repos_found': repos_this_round,
-                'time_seconds': round_time,
-                'queue_size': len(self.queue),
-            }
-            self.round_stats.append(round_stat)
-            
-            logger.info(f"Round {self.current_round} completed: "
-                       f"{round_stat['nodes_processed']} nodes processed in {round_time:.1f}s, "
-                       f"{round_stat['queue_size']} nodes in queue")
-            
-            self.current_round += 1
-            
-            # Save state after each round
-            if self.state_file:
-                self.save_state()
+                # Calculate what was found in this round
+                users_this_round = current_users - sum(rs.get('users_found', 0) for rs in self.round_stats)
+                orgs_this_round = current_orgs - sum(rs.get('orgs_found', 0) for rs in self.round_stats)
+                repos_this_round = current_repos - sum(rs.get('repos_found', 0) for rs in self.round_stats)
+                
+                # Count items in queue by type
+                queued_users = sum(1 for t, _, _ in self.queue if t in ['user', 'user_or_org'])
+                queued_orgs = sum(1 for t, _, _ in self.queue if t == 'org')
+                queued_repos = sum(1 for t, _, _ in self.queue if t == 'repo')
+                
+                round_stat = {
+                    'round': self.current_round,
+                    'nodes_processed': len(nodes_in_round),
+                    'users_found': users_this_round,
+                    'orgs_found': orgs_this_round,
+                    'repos_found': repos_this_round,
+                    'time_seconds': round_time,
+                    'queue_size': len(self.queue),
+                    'queued_users': queued_users,
+                    'queued_orgs': queued_orgs,
+                    'queued_repos': queued_repos,
+                }
+                self.round_stats.append(round_stat)
+                
+                # Update overall progress bar with statistics
+                rounds_pbar.set_postfix({
+                    'nodes': len(nodes_in_round),
+                    'users': users_this_round,
+                    'orgs': orgs_this_round,
+                    'repos': repos_this_round,
+                    'queue': f"{len(self.queue)} ({queued_users}u/{queued_orgs}o/{queued_repos}r)"
+                })
+                rounds_pbar.update(1)
+                
+                logger.info(f"Round {self.current_round} completed: "
+                           f"{round_stat['nodes_processed']} nodes processed in {round_time:.1f}s, "
+                           f"{round_stat['queue_size']} nodes in queue "
+                           f"({queued_users} users, {queued_orgs} orgs, {queued_repos} repos)")
+                
+                self.current_round += 1
+                
+                # Save state after each round
+                if self.state_file:
+                    self.save_state()
+        finally:
+            rounds_pbar.close()
+        
+        end_time = datetime.now()
+        end_time_str = end_time.strftime("%Y-%m-%d %H:%M:%S")
+        duration = end_time - start_time
+        
+        # Format duration in human-readable format
+        total_seconds = int(duration.total_seconds())
+        hours = total_seconds // 3600
+        minutes = (total_seconds % 3600) // 60
+        seconds = total_seconds % 60
+        
+        if hours > 0:
+            duration_str = f"{hours}h {minutes}m {seconds}s"
+        elif minutes > 0:
+            duration_str = f"{minutes}m {seconds}s"
+        else:
+            duration_str = f"{seconds}s"
         
         logger.info(f"Crawl completed after {self.current_round} rounds")
+        logger.info(f"Ended at {end_time_str} (Duration: {duration_str})")
         logger.info(f"Total nodes: {len(self.visited)}")
         logger.info(f"Users: {len(self.graph.users)}, Orgs: {len(self.graph.orgs)}, "
                    f"Repos: {len(self.graph.repos)}")
+        
+        if show_progress:
+            print(f"\n✅ Crawl completed at {end_time_str}")
+            print(f"⏱️  Total duration: {duration_str}")
+            print(f"📦 Collected: {len(self.graph.users)} users, {len(self.graph.orgs)} orgs, {len(self.graph.repos)} repos\n")
     
     def get_statistics(self) -> Dict:
         """Get crawler statistics."""

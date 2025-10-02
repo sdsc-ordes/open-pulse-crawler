@@ -18,7 +18,7 @@ from .models import GraphData
 from .github_client import GitHubClient
 from .crawler import GitHubCrawler
 from .io_utils import parse_seed_file, export_to_json, export_to_csv, export_nodes_csv
-from .visualization import visualize_graph, VISUALIZATION_AVAILABLE
+from .visualization import visualize_graph, visualize_clusters, VISUALIZATION_AVAILABLE
 
 app = typer.Typer(help="GitHub BFS Crawler - Discover GitHub users, organizations, and repositories")
 console = Console()
@@ -120,6 +120,11 @@ def crawl(
         False,
         "--visualize", "-v",
         help="Generate graph visualization (PNG)"
+    ),
+    visualize_clusters: bool = typer.Option(
+        False,
+        "--visualize-clusters",
+        help="Generate separate visualizations for each disconnected cluster"
     ),
     verbose: bool = typer.Option(
         False,
@@ -240,14 +245,28 @@ def crawl(
     
     table.add_row("Rounds Completed", str(stats['rounds_completed']))
     table.add_row("Total Nodes Visited", str(stats['total_nodes']))
-    table.add_row("Users Discovered", str(stats['users']))
-    table.add_row("Organizations Discovered", str(stats['organizations']))
-    table.add_row("Repositories Discovered", str(stats['repositories']))
-    table.add_row("API Calls Made", str(stats['api_stats']['api_calls']))
-    table.add_row("Cache Hits", str(stats['api_stats']['cache_hits']))
-    table.add_row("Rate Limit Waits", str(stats['api_stats']['rate_limit_waits']))
-    table.add_row("Token Switches", str(stats['api_stats']['token_switches']))
-    table.add_row("Throttle Waits", str(stats['api_stats'].get('throttle_waits', 0)))
+    
+    # Show visited entities
+    table.add_row("[bold]Visited Entities[/bold]", "")
+    table.add_row("  Users Visited", str(stats['users']))
+    table.add_row("  Organizations Visited", str(stats['organizations']))
+    table.add_row("  Repositories Visited", str(stats['repositories']))
+    
+    # Show queued entities (discovered but not yet visited)
+    if stats['round_stats']:
+        last_round = stats['round_stats'][-1]
+        if 'queued_users' in last_round:
+            table.add_row("[bold]Queued for Next Round[/bold]", "")
+            table.add_row("  Users Queued", str(last_round.get('queued_users', 0)))
+            table.add_row("  Organizations Queued", str(last_round.get('queued_orgs', 0)))
+            table.add_row("  Repositories Queued", str(last_round.get('queued_repos', 0)))
+    
+    table.add_row("[bold]API Statistics[/bold]", "")
+    table.add_row("  API Calls Made", str(stats['api_stats']['api_calls']))
+    table.add_row("  Cache Hits", str(stats['api_stats']['cache_hits']))
+    table.add_row("  Rate Limit Waits", str(stats['api_stats']['rate_limit_waits']))
+    table.add_row("  Token Switches", str(stats['api_stats']['token_switches']))
+    table.add_row("  Throttle Waits", str(stats['api_stats'].get('throttle_waits', 0)))
     
     # Show efficiency metrics
     if 'efficiency' in stats['api_stats']:
@@ -260,22 +279,31 @@ def crawl(
     # Round statistics
     if stats['round_stats']:
         console.print("\n[bold]Per-Round Statistics:[/bold]\n")
+        console.print("[dim]Visited = entities processed this round | Queued = entities discovered but not yet visited[/dim]\n")
         
         round_table = Table()
         round_table.add_column("Round", style="cyan")
-        round_table.add_column("Nodes", style="magenta")
+        round_table.add_column("Visited", style="magenta")
         round_table.add_column("Users", style="blue")
         round_table.add_column("Orgs", style="red")
         round_table.add_column("Repos", style="green")
+        round_table.add_column("Queued", style="white")
         round_table.add_column("Time (s)", style="yellow")
         
         for rs in stats['round_stats']:
+            # Format queue info if available
+            queue_info = str(rs.get('queue_size', 0))
+            if 'queued_users' in rs:
+                queue_details = f"{rs['queued_users']}u/{rs['queued_orgs']}o/{rs['queued_repos']}r"
+                queue_info = f"{rs['queue_size']}\n({queue_details})"
+            
             round_table.add_row(
                 str(rs['round']),
                 str(rs['nodes_processed']),
                 str(rs['users_found']),
                 str(rs['orgs_found']),
                 str(rs['repos_found']),
+                queue_info,
                 f"{rs['time_seconds']:.1f}"
             )
         
@@ -303,18 +331,28 @@ def crawl(
         console.print(f"[green]✓[/green] CSV (nodes): {nodes_csv_path}")
     
     # Visualization
-    if visualize:
+    if visualize or visualize_clusters:
         if not VISUALIZATION_AVAILABLE:
             console.print("[yellow]⚠[/yellow] Visualization skipped: networkx/matplotlib not installed")
             console.print("Install with: pip install networkx matplotlib")
         else:
-            viz_path = output_dir / f"graph_{timestamp}.png"
-            console.print(f"[blue]Generating visualization...[/blue]")
-            try:
-                visualize_graph(crawler.graph, viz_path, crawler.seed_nodes)
-                console.print(f"[green]✓[/green] Visualization: {viz_path}")
-            except Exception as e:
-                console.print(f"[red]✗[/red] Visualization failed: {e}")
+            if visualize:
+                viz_path = output_dir / f"graph_{timestamp}.png"
+                console.print(f"[blue]Generating main visualization...[/blue]")
+                try:
+                    visualize_graph(crawler.graph, viz_path, crawler.seed_nodes)
+                    console.print(f"[green]✓[/green] Visualization: {viz_path}")
+                except Exception as e:
+                    console.print(f"[red]✗[/red] Visualization failed: {e}")
+            
+            if visualize_clusters:
+                clusters_dir = output_dir / f"clusters_{timestamp}"
+                console.print(f"[blue]Generating cluster visualizations...[/blue]")
+                try:
+                    visualize_clusters(crawler.graph, clusters_dir, crawler.seed_nodes)
+                    console.print(f"[green]✓[/green] Cluster visualizations: {clusters_dir}/")
+                except Exception as e:
+                    console.print(f"[red]✗[/red] Cluster visualization failed: {e}")
     
     console.print(f"\n[bold green]All done! 🎉[/bold green]")
 

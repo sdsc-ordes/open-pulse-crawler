@@ -341,12 +341,30 @@ class GitHubClient:
         try:
             user = self._make_request(self.current_client.get_user, username)
             if user and self.cache:
-                # Cache basic user info
+                # Fetch and cache repos along with basic user info
+                repos_data = []
+                try:
+                    repos = self._make_request(user.get_repos)
+                    repos_data = [{'full_name': r.full_name, 'fork': r.fork} for r in repos]
+                except Exception as e:
+                    logger.warning(f"Failed to get repos for caching user {username}: {e}")
+                
+                # Fetch and cache user's organization memberships
+                orgs_data = []
+                try:
+                    orgs = self._make_request(user.get_orgs)
+                    orgs_data = [org.login for org in orgs]
+                except Exception as e:
+                    logger.warning(f"Failed to get organizations for caching user {username}: {e}")
+                
+                # Cache basic user info + repos + orgs
                 user_data = {
                     'login': user.login,
                     'name': user.name or '',
                     'id': user.id,
                     'type': user.type,
+                    'repos': repos_data,
+                    'orgs': orgs_data,
                 }
                 self.cache.set(cache_key, '', user_data)
             return user
@@ -367,11 +385,28 @@ class GitHubClient:
         try:
             org = self._make_request(self.current_client.get_organization, org_name)
             if org and self.cache:
+                # Fetch and cache members and repos along with basic org info
+                members_data = []
+                repos_data = []
+                try:
+                    members = self._make_request(org.get_members)
+                    members_data = [m.login for m in members]
+                except Exception as e:
+                    logger.warning(f"Failed to get members for caching org {org_name}: {e}")
+                
+                try:
+                    repos = self._make_request(org.get_repos)
+                    repos_data = [{'full_name': r.full_name, 'fork': r.fork} for r in repos]
+                except Exception as e:
+                    logger.warning(f"Failed to get repos for caching org {org_name}: {e}")
+                
                 org_data = {
                     'login': org.login,
                     'name': org.name or '',
                     'id': org.id,
                     'type': 'Organization',
+                    'members': members_data,
+                    'repos': repos_data,
                 }
                 self.cache.set(cache_key, '', org_data)
             return org
@@ -392,13 +427,24 @@ class GitHubClient:
         try:
             repo = self._make_request(self.current_client.get_repo, repo_full_name)
             if repo and self.cache:
+                # Fetch and cache contributors along with basic repo info
+                contributors_data = []
+                try:
+                    contributors = self._make_request(repo.get_contributors)
+                    # Limit to top 10 contributors for caching
+                    contributors_data = [c.login for i, c in enumerate(contributors) if i < 10]
+                except Exception as e:
+                    logger.warning(f"Failed to get contributors for caching repo {repo_full_name}: {e}")
+                
                 repo_data = {
                     'full_name': repo.full_name,
                     'name': repo.name,
                     'id': repo.id,
                     'owner': repo.owner.login,
+                    'owner_type': repo.owner.type,
                     'is_fork': repo.fork,
                     'parent': repo.parent.full_name if repo.parent else None,
+                    'contributors': contributors_data,
                 }
                 self.cache.set(cache_key, '', repo_data)
             return repo

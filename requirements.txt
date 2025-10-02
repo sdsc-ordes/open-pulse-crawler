@@ -8,6 +8,7 @@ python-dotenv>=1.0.0
 # Optional: visualization
 networkx>=3.0
 matplotlib>=3.7.0
+adjustText>=1.0.0  # For smart label placement with arrows
 
 # Development
 pytest>=7.0.0

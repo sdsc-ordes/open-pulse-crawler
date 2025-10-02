@@ -11,6 +11,7 @@ A powerful GitHub crawler based on breadth-first search (BFS) strategy to discov
 - 📈 **Visualization**: Generate network graphs with color-coded node types
 - ⏸️ **State Management**: Save and resume crawler state
 - 📝 **Rich Logging**: Timestamped logs with progress tracking and statistics
+- 📉 **Progress Tracking**: Real-time progress bars with percentage, ETA, and statistics using tqdm
 - 🎯 **Relationship Mapping**: Tracks "owner of", "contributor of", "member of", "fork of", and "parent of" relationships
 - 🚦 **Intelligent Rate Limiting**: Adaptive rate limit management with semaphores, delays, and multi-token rotation
 - ⚡ **Concurrent Control**: Configurable request throttling to prevent API abuse
@@ -93,17 +94,9 @@ open-pulse-crawler crawl \
   --cache-dir ./cache \
   --state-file state.json \
   --visualize \
+  --visualize-clusters \
   --verbose
 ```
-
-open-pulse-crawler crawl \
-  --seed-file examples/quick_test/seeds.txt \
-  --rounds 2 \
-  --output-dir examples/quick_test/output \
-  --cache-dir examples/quick_test/cache \
-  --state-file examples/quick_test/output/state.json \
-  --visualize \
-  --verbose
 
 ### Resume from Saved State
 
@@ -212,6 +205,32 @@ src/open_pulse_crawler/
 ├── visualization.py     # Graph visualization
 └── cli.py              # Command-line interface
 ```
+
+## Progress Tracking
+
+The crawler now includes real-time progress tracking with **tqdm** and **human-readable timestamps**:
+
+- **Overall round progress**: Shows completion percentage and ETA across all rounds
+- **Per-round progress**: Displays node processing progress within each round
+- **Live statistics**: Real-time updates of nodes, users, orgs, repos, and queue size
+- **Timestamps**: Start time, end time, and duration in human-readable format
+- **Round timestamps**: See when each BFS round begins
+
+Example progress output:
+
+```
+🚀 Crawl started at 2025-10-02 14:30:15
+📊 Target: 3 rounds
+
+Overall Progress:  67%|████████████▋      | 2/3 [00:45<00:22] nodes=156 users=12 orgs=3 repos=141 queue=234
+Round 2 [14:30:47]:   100%|████████████████████| 156/156 [00:18<00:00,  8.67node/s]
+
+✅ Crawl completed at 2025-10-02 14:31:38
+⏱️  Total duration: 1m 23s
+📦 Collected: 56 users, 8 orgs, 170 repos
+```
+
+See [PROGRESS_TRACKING.md](./docs/PROGRESS_TRACKING.md) and [TIMESTAMPS.md](./docs/TIMESTAMPS.md) for more details.
 
 ## Statistics and Monitoring
 
