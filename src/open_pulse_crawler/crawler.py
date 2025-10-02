@@ -7,6 +7,8 @@ import json
 from collections import deque
 from datetime import datetime
 from tqdm import tqdm
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 from .models import (
     GraphData, UserModel, OrgModel, RepoModel,
@@ -24,7 +26,8 @@ class GitHubCrawler:
         self,
         client: GitHubClient,
         max_rounds: int = 3,
-        state_file: Optional[Path] = None
+        state_file: Optional[Path] = None,
+        batch_size: Optional[int] = None
     ):
         """
         Initialize the crawler.
@@ -33,10 +36,12 @@ class GitHubCrawler:
             client: GitHub API client
             max_rounds: Maximum number of BFS rounds
             state_file: File to save/load crawler state
+            batch_size: Number of nodes to process concurrently (default: matches client's max_concurrent_requests)
         """
         self.client = client
         self.max_rounds = max_rounds
         self.state_file = state_file
+        self.batch_size = batch_size if batch_size is not None else client.semaphore._value
         
         # Graph data
         self.graph = GraphData()
@@ -47,8 +52,14 @@ class GitHubCrawler:
         self.seed_nodes: Set[str] = set()
         self.queue: deque = deque()
         
+        # Thread-safe access to graph and visited set
+        self.graph_lock = threading.Lock()
+        self.visited_lock = threading.Lock()
+        
         # Statistics per round
         self.round_stats: List[Dict] = []
+        
+        logger.info(f"Crawler initialized with batch_size={self.batch_size}")
     
     def save_state(self):
         """Save crawler state to file."""
@@ -160,22 +171,27 @@ class GitHubCrawler:
                 
                 # Use cached repos data if available
                 cached_repos = user_obj.get('repos', [])
+                repos_to_queue = []
                 for repo_data in cached_repos:
                     if repo_data.get('fork'):
                         user.forked_repositories.append(repo_data['full_name'])
                     else:
                         user.authored_repositories.append(repo_data['full_name'])
                     
-                    # Add repos to queue for next round
-                    if repo_data['full_name'] not in self.visited:
-                        self.queue.append(('repo', repo_data['full_name'], self.current_round + 1))
+                    repos_to_queue.append(repo_data['full_name'])
                 
                 # Use cached organizations data if available
                 cached_orgs = user_obj.get('orgs', [])
-                for org_login in cached_orgs:
-                    # Add organizations to queue
-                    if org_login not in self.visited:
-                        self.queue.append(('org', org_login, self.current_round + 1))
+                orgs_to_queue = list(cached_orgs)
+                
+                # Add all items to queue in a single lock acquisition
+                with self.visited_lock:
+                    for repo_name in repos_to_queue:
+                        if repo_name not in self.visited:
+                            self.queue.append(('repo', repo_name, self.current_round + 1))
+                    for org_login in orgs_to_queue:
+                        if org_login not in self.visited:
+                            self.queue.append(('org', org_login, self.current_round + 1))
             else:
                 # Check if this is actually an organization
                 if user_obj.type == 'Organization':
@@ -190,6 +206,7 @@ class GitHubCrawler:
                 )
                 
                 # Get user's repositories from live API
+                repos_to_queue = []
                 try:
                     repos = self.client._make_request(user_obj.get_repos)
                     for repo in repos:
@@ -197,22 +214,26 @@ class GitHubCrawler:
                             user.forked_repositories.append(repo.full_name)
                         else:
                             user.authored_repositories.append(repo.full_name)
-                        
-                        # Add repos to queue for next round
-                        if repo.full_name not in self.visited:
-                            self.queue.append(('repo', repo.full_name, self.current_round + 1))
+                        repos_to_queue.append(repo.full_name)
                 except Exception as e:
                     logger.warning(f"Failed to get repos for user {username}: {e}")
                 
                 # Get user's organization memberships from live API
+                orgs_to_queue = []
                 try:
                     orgs = self.client._make_request(user_obj.get_orgs)
-                    for org in orgs:
-                        # Add organizations to queue
-                        if org.login not in self.visited:
-                            self.queue.append(('org', org.login, self.current_round + 1))
+                    orgs_to_queue = [org.login for org in orgs]
                 except Exception as e:
                     logger.warning(f"Failed to get organizations for user {username}: {e}")
+                
+                # Add all items to queue in a single lock acquisition
+                with self.visited_lock:
+                    for repo_name in repos_to_queue:
+                        if repo_name not in self.visited:
+                            self.queue.append(('repo', repo_name, self.current_round + 1))
+                    for org_login in orgs_to_queue:
+                        if org_login not in self.visited:
+                            self.queue.append(('org', org_login, self.current_round + 1))
             
             return user
         except Exception as e:
@@ -238,24 +259,27 @@ class GitHubCrawler:
                 
                 # Use cached members data if available
                 cached_members = org_obj.get('members', [])
-                for member_login in cached_members:
-                    org.members.append(member_login)
-                    
-                    # Add members to queue
-                    if member_login not in self.visited:
-                        self.queue.append(('user', member_login, self.current_round + 1))
+                org.members.extend(cached_members)
+                members_to_queue = list(cached_members)
                 
                 # Use cached repos data if available
                 cached_repos = org_obj.get('repos', [])
+                repos_to_queue = []
                 for repo_data in cached_repos:
                     if repo_data.get('fork'):
                         org.forked_repositories.append(repo_data['full_name'])
                     else:
                         org.authored_repositories.append(repo_data['full_name'])
-                    
-                    # Add repos to queue
-                    if repo_data['full_name'] not in self.visited:
-                        self.queue.append(('repo', repo_data['full_name'], self.current_round + 1))
+                    repos_to_queue.append(repo_data['full_name'])
+                
+                # Add all items to queue in a single lock acquisition
+                with self.visited_lock:
+                    for member_login in members_to_queue:
+                        if member_login not in self.visited:
+                            self.queue.append(('user', member_login, self.current_round + 1))
+                    for repo_name in repos_to_queue:
+                        if repo_name not in self.visited:
+                            self.queue.append(('repo', repo_name, self.current_round + 1))
             else:
                 org = OrgModel(
                     login=org_obj.login,
@@ -265,18 +289,17 @@ class GitHubCrawler:
                 )
                 
                 # Get organization members from live API
+                members_to_queue = []
                 try:
                     members = self.client._make_request(org_obj.get_members)
                     for member in members:
                         org.members.append(member.login)
-                        
-                        # Add members to queue
-                        if member.login not in self.visited:
-                            self.queue.append(('user', member.login, self.current_round + 1))
+                        members_to_queue.append(member.login)
                 except Exception as e:
                     logger.warning(f"Failed to get members for org {org_name}: {e}")
                 
                 # Get organization repositories from live API
+                repos_to_queue = []
                 try:
                     repos = self.client._make_request(org_obj.get_repos)
                     for repo in repos:
@@ -284,12 +307,18 @@ class GitHubCrawler:
                             org.forked_repositories.append(repo.full_name)
                         else:
                             org.authored_repositories.append(repo.full_name)
-                        
-                        # Add repos to queue
-                        if repo.full_name not in self.visited:
-                            self.queue.append(('repo', repo.full_name, self.current_round + 1))
+                        repos_to_queue.append(repo.full_name)
                 except Exception as e:
                     logger.warning(f"Failed to get repos for org {org_name}: {e}")
+                
+                # Add all items to queue in a single lock acquisition
+                with self.visited_lock:
+                    for member_login in members_to_queue:
+                        if member_login not in self.visited:
+                            self.queue.append(('user', member_login, self.current_round + 1))
+                    for repo_name in repos_to_queue:
+                        if repo_name not in self.visited:
+                            self.queue.append(('repo', repo_name, self.current_round + 1))
             
             return org
         except Exception as e:
@@ -316,25 +345,31 @@ class GitHubCrawler:
                     forked_from=repo_obj.get('parent')
                 )
                 
-                # Add owner to queue from cached data
+                # Collect items to queue
+                items_to_queue = []
+                
+                # Add owner
                 owner_login = repo_obj.get('owner', '')
                 owner_type_str = repo_obj.get('owner_type', 'User')
-                if owner_login and owner_login not in self.visited:
+                if owner_login:
                     owner_type = 'org' if owner_type_str == 'Organization' else 'user'
-                    self.queue.append((owner_type, owner_login, self.current_round + 1))
+                    items_to_queue.append((owner_type, owner_login))
                 
                 # Use cached contributors data if available
                 cached_contributors = repo_obj.get('contributors', [])
+                repo.contributors.extend(cached_contributors)
                 for contributor_login in cached_contributors:
-                    repo.contributors.append(contributor_login)
-                    
-                    # Add contributors to queue
-                    if contributor_login not in self.visited:
-                        self.queue.append(('user', contributor_login, self.current_round + 1))
+                    items_to_queue.append(('user', contributor_login))
                 
-                # If it's a fork, add parent to queue
-                if repo.is_fork and repo.forked_from and repo.forked_from not in self.visited:
-                    self.queue.append(('repo', repo.forked_from, self.current_round + 1))
+                # If it's a fork, add parent
+                if repo.is_fork and repo.forked_from:
+                    items_to_queue.append(('repo', repo.forked_from))
+                
+                # Add all items to queue in a single lock acquisition
+                with self.visited_lock:
+                    for item_type, identifier in items_to_queue:
+                        if identifier not in self.visited:
+                            self.queue.append((item_type, identifier, self.current_round + 1))
             else:
                 repo = RepoModel(
                     full_name=repo_obj.full_name,
@@ -346,10 +381,12 @@ class GitHubCrawler:
                     forked_from=repo_obj.parent.full_name if repo_obj.parent else None
                 )
                 
-                # Add owner to queue from live API
-                if repo_obj.owner.login not in self.visited:
-                    owner_type = 'org' if repo_obj.owner.type == 'Organization' else 'user'
-                    self.queue.append((owner_type, repo_obj.owner.login, self.current_round + 1))
+                # Collect items to queue
+                items_to_queue = []
+                
+                # Add owner
+                owner_type = 'org' if repo_obj.owner.type == 'Organization' else 'user'
+                items_to_queue.append((owner_type, repo_obj.owner.login))
                 
                 # Get contributors from live API (limited to avoid too many API calls)
                 try:
@@ -358,20 +395,66 @@ class GitHubCrawler:
                         if i >= 10:  # Limit to top 10 contributors
                             break
                         repo.contributors.append(contributor.login)
-                        
-                        # Add contributors to queue
-                        if contributor.login not in self.visited:
-                            self.queue.append(('user', contributor.login, self.current_round + 1))
+                        items_to_queue.append(('user', contributor.login))
                 except Exception as e:
                     logger.warning(f"Failed to get contributors for repo {repo_full_name}: {e}")
                 
-                # If it's a fork, add parent to queue
-                if repo.is_fork and repo.forked_from and repo.forked_from not in self.visited:
-                    self.queue.append(('repo', repo.forked_from, self.current_round + 1))
+                # If it's a fork, add parent
+                if repo.is_fork and repo.forked_from:
+                    items_to_queue.append(('repo', repo.forked_from))
+                
+                # Add all items to queue in a single lock acquisition
+                with self.visited_lock:
+                    for item_type, identifier in items_to_queue:
+                        if identifier not in self.visited:
+                            self.queue.append((item_type, identifier, self.current_round + 1))
             
             return repo
         except Exception as e:
             logger.error(f"Error processing repository {repo_full_name}: {e}")
+            return None
+    
+    def _process_node(self, node_type: str, identifier: str) -> Optional[tuple]:
+        """
+        Process a single node and return (type, entity) tuple.
+        
+        Args:
+            node_type: Type of node ('user', 'org', 'repo', 'user_or_org')
+            identifier: Node identifier (username, org name, or repo full name)
+        
+        Returns:
+            Tuple of (entity_type, entity_object) or None if processing failed
+        """
+        try:
+            if node_type == 'user_or_org':
+                # Try as user first
+                user = self._process_user(identifier)
+                if user:
+                    return ('user', user)
+                else:
+                    # Try as organization
+                    org = self._process_organization(identifier)
+                    if org:
+                        return ('org', org)
+            
+            elif node_type == 'user':
+                user = self._process_user(identifier)
+                if user:
+                    return ('user', user)
+            
+            elif node_type == 'org':
+                org = self._process_organization(identifier)
+                if org:
+                    return ('org', org)
+            
+            elif node_type == 'repo':
+                repo = self._process_repository(identifier)
+                if repo:
+                    return ('repo', repo)
+            
+            return None
+        except Exception as e:
+            logger.error(f"Error processing node {node_type}:{identifier}: {e}")
             return None
     
     def crawl(self, show_progress: bool = True):
@@ -419,7 +502,8 @@ class GitHubCrawler:
                     disable=not show_progress
                 )
                 
-                # Process all nodes in current round
+                # Collect nodes to process in this round
+                nodes_to_process = []
                 while self.queue:
                     node_type, identifier, node_round = self.queue[0]
                     
@@ -431,41 +515,42 @@ class GitHubCrawler:
                     
                     # Skip if already visited
                     if identifier in self.visited:
-                        round_pbar.update(1)
                         continue
                     
                     self.visited.add(identifier)
-                    nodes_in_round.append((node_type, identifier))
+                    nodes_to_process.append((node_type, identifier))
+                
+                # Process nodes concurrently in batches
+                with ThreadPoolExecutor(max_workers=self.batch_size) as executor:
+                    # Submit all tasks
+                    future_to_node = {
+                        executor.submit(self._process_node, node_type, identifier): (node_type, identifier)
+                        for node_type, identifier in nodes_to_process
+                    }
                     
-                    # Process node based on type
-                    if node_type == 'user_or_org':
-                        # Try as user first
-                        user = self._process_user(identifier)
-                        if user:
-                            self.graph.add_user(user)
-                        else:
-                            # Try as organization
-                            org = self._process_organization(identifier)
-                            if org:
-                                self.graph.add_org(org)
-                    
-                    elif node_type == 'user':
-                        user = self._process_user(identifier)
-                        if user:
-                            self.graph.add_user(user)
-                    
-                    elif node_type == 'org':
-                        org = self._process_organization(identifier)
-                        if org:
-                            self.graph.add_org(org)
-                    
-                    elif node_type == 'repo':
-                        repo = self._process_repository(identifier)
-                        if repo:
-                            self.graph.add_repo(repo)
-                    
-                    # Update progress
-                    round_pbar.update(1)
+                    # Process results as they complete
+                    for future in as_completed(future_to_node):
+                        node_type, identifier = future_to_node[future]
+                        nodes_in_round.append((node_type, identifier))
+                        
+                        try:
+                            result = future.result()
+                            if result:
+                                entity_type, entity = result
+                                
+                                # Add to graph (thread-safe)
+                                with self.graph_lock:
+                                    if entity_type == 'user':
+                                        self.graph.add_user(entity)
+                                    elif entity_type == 'org':
+                                        self.graph.add_org(entity)
+                                    elif entity_type == 'repo':
+                                        self.graph.add_repo(entity)
+                        except Exception as e:
+                            logger.error(f"Error processing {node_type}:{identifier}: {e}")
+                        
+                        # Update progress
+                        round_pbar.update(1)
                 
                 round_pbar.close()
             

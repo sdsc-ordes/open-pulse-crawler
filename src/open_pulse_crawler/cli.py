@@ -18,7 +18,7 @@ from .models import GraphData
 from .github_client import GitHubClient
 from .crawler import GitHubCrawler
 from .io_utils import parse_seed_file, export_to_json, export_to_csv, export_nodes_csv
-from .visualization import visualize_graph, visualize_clusters, VISUALIZATION_AVAILABLE
+from .visualization import visualize_graph, visualize_clusters as viz_clusters, VISUALIZATION_AVAILABLE
 
 app = typer.Typer(help="GitHub BFS Crawler - Discover GitHub users, organizations, and repositories")
 console = Console()
@@ -150,6 +150,13 @@ def crawl(
         help="Number of requests to keep as buffer before waiting for rate limit (default: 50)",
         min=10,
         max=1000
+    ),
+    batch_size: Optional[int] = typer.Option(
+        None,
+        "--batch-size", "-b",
+        help="Number of nodes to process concurrently (default: matches --max-concurrent)",
+        min=1,
+        max=50
     )
 ):
     """
@@ -197,7 +204,12 @@ def crawl(
         max_concurrent_requests=max_concurrent,
         rate_limit_buffer=rate_limit_buffer
     )
-    crawler = GitHubCrawler(client, max_rounds=rounds, state_file=state_file)
+    crawler = GitHubCrawler(
+        client, 
+        max_rounds=rounds, 
+        state_file=state_file,
+        batch_size=batch_size
+    )
     
     # Resume or start fresh
     if resume and state_file and state_file.exists():
@@ -349,7 +361,7 @@ def crawl(
                 clusters_dir = output_dir / f"clusters_{timestamp}"
                 console.print(f"[blue]Generating cluster visualizations...[/blue]")
                 try:
-                    visualize_clusters(crawler.graph, clusters_dir, crawler.seed_nodes)
+                    viz_clusters(crawler.graph, clusters_dir, crawler.seed_nodes)
                     console.print(f"[green]✓[/green] Cluster visualizations: {clusters_dir}/")
                 except Exception as e:
                     console.print(f"[red]✗[/red] Cluster visualization failed: {e}")

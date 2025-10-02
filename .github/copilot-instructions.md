@@ -42,42 +42,61 @@ tokens = os.getenv('GITHUB_TOKEN', '').split(',')
 - Falls back to `.env` file in project root
 - Client rotates tokens when rate limits approach buffer threshold (default: 50 requests remaining)
 
-### 2. API Rate Limiting Strategy
+### 2. Concurrent Node Processing
+The crawler processes **multiple nodes in parallel** using `ThreadPoolExecutor`:
+- **batch_size**: Number of nodes processed concurrently (default: matches `max_concurrent_requests`)
+- Provides **4-5x speedup** with cached data
+- Each node's processing is independent and thread-safe
+- Locks are used sparingly to minimize contention
+
+```python
+crawler = GitHubCrawler(
+    client,
+    max_rounds=3,
+    batch_size=10  # Process 10 nodes at once
+)
+```
+
+### 3. API Rate Limiting Strategy
 The `GitHubClient` uses **three-layer rate limiting**:
-1. **Semaphore**: Limits concurrent requests (`max_concurrent_requests`, default: 5)
+1. **Semaphore**: Limits concurrent API requests within the client (`max_concurrent_requests`, default: 5)
 2. **Request Delay**: Minimum time between requests (`request_delay`, default: 0.0s)
 3. **Proactive Checking**: Checks rate limit before each request, rotates tokens or waits if < buffer
+
+**Note**: The semaphore limits *API calls*, while batch_size limits *node processing*. With batch_size=10 and max_concurrent_requests=5, you can process 10 nodes in parallel, but only 5 API calls happen concurrently.
 
 ```python
 client = GitHubClient(
     tokens,
     cache_dir=Path('./cache'),
     request_delay=0.5,           # 0.5s between requests
-    max_concurrent_requests=3,   # Max 3 concurrent
+    max_concurrent_requests=3,   # Max 3 concurrent API calls
     rate_limit_buffer=100        # Wait when <100 requests left
 )
 ```
 
-### 3. Caching Mechanism
+### 4. Caching Mechanism
 Cache uses MD5 hash of `endpoint:params` as filename:
 - Cache hits return **dict** (not PyGithub objects)
 - Cached data includes nested entities (e.g., user data includes their repos)
 - Check cache type with `isinstance(obj, dict)`
+- With cache, processing is extremely fast: **~0.005s per node**
 
-### 4. BFS Queue Structure
+### 5. BFS Queue Structure
 Each queue item is `(type, identifier, round_number)`:
 - Types: `'user'`, `'org'`, `'repo'`, `'user_or_org'` (needs detection)
-- Queue processes all nodes of current round before advancing
-- `visited` set prevents re-processing
+- Queue processes all nodes of current round before advancing in concurrent batches
+- `visited` set prevents re-processing (protected by `visited_lock` for thread safety)
+- Queue appends are also protected by locks to prevent race conditions
 
-### 5. Seed Parsing
+### 6. Seed Parsing
 Seeds accept multiple formats:
 - Username: `caviri`
 - Org/repo: `sdsc-ordes/gimie`
 - Full URL: `https://github.com/torvalds/linux`
 - URLs are normalized to remove `https://github.com/` prefix
 
-### 6. State Management
+### 7. State Management
 State files enable resume functionality:
 ```python
 state = {
@@ -91,12 +110,19 @@ state = {
 ```
 State is auto-saved after each round if `state_file` provided.
 
-### 7. Progress Tracking
+### 8. Progress Tracking
 Uses `tqdm` for real-time progress:
 - **Overall progress bar**: Tracks rounds with live stats (nodes, users, orgs, repos, queue)
-- **Per-round progress bar**: Tracks node processing within round
+- **Per-round progress bar**: Tracks node processing within round (updates as parallel tasks complete)
 - **Timestamps**: Human-readable start/end times and duration formatting
 - Disable with `crawler.crawl(show_progress=False)` (programmatic only)
+
+### 9. Thread Safety
+The crawler uses locks to ensure thread-safe operations:
+- **visited_lock**: Protects the visited set and queue appends
+- **graph_lock**: Protects graph data structure when adding entities
+- Lock contention is minimized by batching operations (collect items, then lock once to add all)
+- Process methods (`_process_user`, `_process_org`, `_process_repo`) are designed to be thread-safe
 
 ## Common Workflows
 
@@ -122,6 +148,9 @@ ruff check src/
 # Run crawler
 export GITHUB_TOKEN="ghp_token1,ghp_token2"
 open-pulse-crawler crawl caviri --rounds 2 --cache-dir cache --visualize
+
+# Run with custom concurrency settings
+open-pulse-crawler crawl caviri --rounds 2 --batch-size 10 --max-concurrent 5
 
 # Programmatic usage
 python examples/quick_start.py
