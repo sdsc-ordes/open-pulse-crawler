@@ -69,56 +69,56 @@ def export_to_csv(graph: GraphData, output_path: Path, seed_nodes: Set[str]):
     
     # Process users
     for user in graph.users.values():
-        # User -> authored repositories (owner of)
+        # User -> authored repositories (owner_of)
         for repo_name in user.authored_repositories:
             edges.append({
                 'source': user.login,
                 'target': repo_name,
-                'property': 'owner of',
+                'property': 'owner_of',
                 'source_type': 'user',
                 'target_type': 'repo',
             })
         
-        # User -> forked repositories (fork of - reverse direction)
+        # User -> forked repositories (fork_of - reverse direction)
         for repo_name in user.forked_repositories:
-            # The user created a fork, so user -> repo "contributor of"
+            # The user created a fork, so user -> repo "contributor_of"
             # and we'll add repo -> parent repo later
             edges.append({
                 'source': user.login,
                 'target': repo_name,
-                'property': 'contributor of',
+                'property': 'contributor_of',
                 'source_type': 'user',
                 'target_type': 'repo',
             })
     
     # Process organizations
     for org in graph.orgs.values():
-        # Org members -> org (member of)
+        # Org members -> org (member_of)
         for member_login in org.members:
             edges.append({
                 'source': member_login,
                 'target': org.login,
-                'property': 'member of',
+                'property': 'member_of',
                 'source_type': 'user',
                 'target_type': 'org',
             })
         
-        # Org -> authored repositories (owner of)
+        # Org -> authored repositories (owner_of)
         for repo_name in org.authored_repositories:
             edges.append({
                 'source': org.login,
                 'target': repo_name,
-                'property': 'owner of',
+                'property': 'owner_of',
                 'source_type': 'org',
                 'target_type': 'repo',
             })
         
-        # Org -> forked repositories (contributor of)
+        # Org -> forked repositories (contributor_of)
         for repo_name in org.forked_repositories:
             edges.append({
                 'source': org.login,
                 'target': repo_name,
-                'property': 'contributor of',
+                'property': 'contributor_of',
                 'source_type': 'org',
                 'target_type': 'repo',
             })
@@ -129,9 +129,9 @@ def export_to_csv(graph: GraphData, output_path: Path, seed_nodes: Set[str]):
         for contributor_login in repo.contributors:
             # Check if contributor is the owner
             if contributor_login == repo.owner:
-                relationship = 'owner of'
+                relationship = 'owner_of'
             else:
-                relationship = 'contributor of'
+                relationship = 'contributor_of'
             
             # Determine contributor type
             contributor_type = 'user'
@@ -151,7 +151,7 @@ def export_to_csv(graph: GraphData, output_path: Path, seed_nodes: Set[str]):
             edges.append({
                 'source': repo.forked_from,
                 'target': repo.full_name,
-                'property': 'parent of',
+                'property': 'parent_of',
                 'source_type': 'repo',
                 'target_type': 'repo',
             })

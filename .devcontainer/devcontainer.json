@@ -3,6 +3,12 @@
   "build": {
     "dockerfile": "Dockerfile"
   },
+  "runArgs": [
+    "--env-file",
+    "${localWorkspaceFolder}/.env",
+    "--network",
+    "dev"
+  ],
 
   // This is where your repo will be mounted inside the container
   "remoteUser": "vscode",

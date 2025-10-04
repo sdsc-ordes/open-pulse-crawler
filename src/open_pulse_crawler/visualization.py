@@ -88,34 +88,34 @@ def visualize_graph(
         for user in graph.users.values():
             for repo_name in user.authored_repositories:
                 if repo_name in graph.repos:
-                    G.add_edge(user.login, repo_name, relationship='owner of')
+                    G.add_edge(user.login, repo_name, relationship='owner_of')
             for repo_name in user.forked_repositories:
                 if repo_name in graph.repos:
-                    G.add_edge(user.login, repo_name, relationship='contributor of')
+                    G.add_edge(user.login, repo_name, relationship='contributor_of')
         
         # Orgs -> repos and members
         for org in graph.orgs.values():
             for member in org.members:
                 if member in graph.users:
-                    G.add_edge(member, org.login, relationship='member of')
+                    G.add_edge(member, org.login, relationship='member_of')
             for repo_name in org.authored_repositories:
                 if repo_name in graph.repos:
-                    G.add_edge(org.login, repo_name, relationship='owner of')
+                    G.add_edge(org.login, repo_name, relationship='owner_of')
             for repo_name in org.forked_repositories:
                 if repo_name in graph.repos:
-                    G.add_edge(org.login, repo_name, relationship='contributor of')
+                    G.add_edge(org.login, repo_name, relationship='contributor_of')
         
         # Repos -> contributors and forks
         for repo in graph.repos.values():
             for contributor in repo.contributors:
                 if contributor in graph.users or contributor in graph.orgs:
                     if contributor == repo.owner:
-                        G.add_edge(contributor, repo.full_name, relationship='owner of')
+                        G.add_edge(contributor, repo.full_name, relationship='owner_of')
                     else:
-                        G.add_edge(contributor, repo.full_name, relationship='contributor of')
+                        G.add_edge(contributor, repo.full_name, relationship='contributor_of')
             
             if repo.is_fork and repo.forked_from and repo.forked_from in graph.repos:
-                G.add_edge(repo.forked_from, repo.full_name, relationship='parent of')
+                G.add_edge(repo.forked_from, repo.full_name, relationship='parent_of')
         
         if len(G.nodes()) == 0:
             logger.warning("No nodes to visualize")
@@ -263,10 +263,10 @@ def visualize_graph(
         
         # Edge color mapping by relationship type
         edge_color_map = {
-            'owner of': '#ff6b6b',        # Red - ownership
-            'contributor of': '#4ecdc4',  # Teal - contribution
-            'member of': '#95e1d3',       # Light teal - membership
-            'parent of': '#ffd93d',       # Yellow - fork relationship
+            'owner_of': '#ff6b6b',        # Red - ownership
+            'contributor_of': '#4ecdc4',  # Teal - contribution
+            'member_of': '#95e1d3',       # Light teal - membership
+            'parent_of': '#ffd93d',       # Yellow - fork relationship
         }
         
         # Prepare node colors and shapes
@@ -395,10 +395,10 @@ def visualize_graph(
             mpatches.Patch(facecolor=color_map['repo'], label='Repository', edgecolor='#ffffff', linewidth=1),
             mpatches.Patch(facecolor='#666666', edgecolor='#ffffff', linewidth=2, label='Seed Node (square)'),
             mpatches.Patch(facecolor='none', edgecolor='none', label=''),  # Spacer
-            mpatches.Patch(facecolor=edge_color_map['owner of'], label='Owner of', edgecolor='#ffffff', linewidth=1),
-            mpatches.Patch(facecolor=edge_color_map['contributor of'], label='Contributor of', edgecolor='#ffffff', linewidth=1),
-            mpatches.Patch(facecolor=edge_color_map['member of'], label='Member of', edgecolor='#ffffff', linewidth=1),
-            mpatches.Patch(facecolor=edge_color_map['parent of'], label='Parent of (fork)', edgecolor='#ffffff', linewidth=1),
+            mpatches.Patch(facecolor=edge_color_map['owner_of'], label='Owner of', edgecolor='#ffffff', linewidth=1),
+            mpatches.Patch(facecolor=edge_color_map['contributor_of'], label='Contributor of', edgecolor='#ffffff', linewidth=1),
+            mpatches.Patch(facecolor=edge_color_map['member_of'], label='Member of', edgecolor='#ffffff', linewidth=1),
+            mpatches.Patch(facecolor=edge_color_map['parent_of'], label='Parent of (fork)', edgecolor='#ffffff', linewidth=1),
         ]
         legend = ax.legend(
             handles=legend_elements, 
@@ -489,32 +489,38 @@ def visualize_clusters(
         for user in graph.users.values():
             for repo_name in user.authored_repositories:
                 if repo_name in graph.repos:
-                    G.add_edge(user.login, repo_name, relationship='owner of')
+                    G.add_edge(user.login, repo_name, relationship='owner_of')
+            # User contributed repos
             for repo_name in user.forked_repositories:
                 if repo_name in graph.repos:
-                    G.add_edge(user.login, repo_name, relationship='contributor of')
+                    G.add_edge(user.login, repo_name, relationship='contributor_of')
         
+        # Add org relationships
         for org in graph.orgs.values():
+            # Org members
             for member in org.members:
                 if member in graph.users:
-                    G.add_edge(member, org.login, relationship='member of')
+                    G.add_edge(member, org.login, relationship='member_of')
+            # Org authored repos
             for repo_name in org.authored_repositories:
                 if repo_name in graph.repos:
-                    G.add_edge(org.login, repo_name, relationship='owner of')
+                    G.add_edge(org.login, repo_name, relationship='owner_of')
+            # Org forked repos
             for repo_name in org.forked_repositories:
                 if repo_name in graph.repos:
-                    G.add_edge(org.login, repo_name, relationship='contributor of')
+                    G.add_edge(org.login, repo_name, relationship='contributor_of')
         
+        # Repos -> contributors and forks
         for repo in graph.repos.values():
             for contributor in repo.contributors:
                 if contributor in graph.users or contributor in graph.orgs:
                     if contributor == repo.owner:
-                        G.add_edge(contributor, repo.full_name, relationship='owner of')
+                        G.add_edge(contributor, repo.full_name, relationship='owner_of')
                     else:
-                        G.add_edge(contributor, repo.full_name, relationship='contributor of')
+                        G.add_edge(contributor, repo.full_name, relationship='contributor_of')
             
             if repo.is_fork and repo.forked_from and repo.forked_from in graph.repos:
-                G.add_edge(repo.forked_from, repo.full_name, relationship='parent of')
+                G.add_edge(repo.forked_from, repo.full_name, relationship='parent_of')
         
         if len(G.nodes()) == 0:
             logger.warning("No nodes to visualize")
@@ -536,10 +542,10 @@ def visualize_clusters(
         
         # Edge color mapping by relationship type
         edge_color_map = {
-            'owner of': '#ff6b6b',
-            'contributor of': '#4ecdc4',
-            'member of': '#95e1d3',
-            'parent of': '#ffd93d',
+            'owner_of': '#ff6b6b',
+            'contributor_of': '#4ecdc4',
+            'member_of': '#95e1d3',
+            'parent_of': '#ffd93d',
         }
         
         # Visualize each component separately
