@@ -160,6 +160,7 @@ def process(
     api_url: str = typer.Option("http://imagingplazadev.epfl.ch:7511", "--api-url", help="Base API URL"),
     delay: float = typer.Option(1.0, "--delay", help="Delay between API calls in seconds"),
     max_concurrent: int = typer.Option(10, "--max-concurrent", "-c", help="Maximum number of concurrent requests"),
+    limit: Optional[int] = typer.Option(None, "--limit", "-l", help="Limit number of items to process (for testing)"),
 ):
     """
     Download metadata and extract affiliations from CSV.
@@ -197,6 +198,11 @@ def process(
                 
                 if target and target_type in ['user', 'repo', 'org']:
                     items_to_process[target] = target_type
+        
+        # Apply limit if specified
+        if limit and len(items_to_process) > limit:
+            typer.echo(f"⚠️  Limiting to first {limit} items (found {len(items_to_process)} total)")
+            items_to_process = dict(list(items_to_process.items())[:limit])
         
         typer.echo(f"📊 Found {len(items_to_process)} unique items to process")
         
@@ -261,4 +267,5 @@ if __name__ == "__main__":
 #   --affiliations data/sdsc/affiliations.csv \
 #   --api-url http://git-metadata-extractor:1235 \
 #   --delay 0.1 \
-#   --max-concurrent 5
+#   --max-concurrent 5 \
+#   --limit 100
