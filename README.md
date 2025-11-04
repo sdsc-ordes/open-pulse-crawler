@@ -104,6 +104,26 @@ open-pulse-crawler crawl \
 open-pulse-crawler crawl --resume --state-file state.json
 ```
 
+### Visualize Existing Graphs
+
+You can visualize previously crawled graphs without re-crawling:
+
+```bash
+# Visualize a graph JSON file
+open-pulse-crawler visualize data/output/graph_20251003_100015.json
+
+# Specify custom output file
+open-pulse-crawler visualize graph.json --output my_visualization.png
+
+# Generate cluster visualizations
+open-pulse-crawler visualize graph.json --clusters
+
+# Verbose mode for debugging
+open-pulse-crawler visualize graph.json -v
+```
+
+**Note**: The `visualize` command doesn't require GitHub tokens since it only reads existing graph JSON files!
+
 ### Command-Line Options
 
 #### Basic Options
@@ -174,10 +194,16 @@ torvalds,Linus Torvalds,user,false
 ### Visualization
 
 When `--visualize` is enabled, generates a PNG image with:
-- Color-coded nodes (users=blue, orgs=red, repos=green)
-- Seed nodes shown as squares
-- Regular nodes shown as circles
-- Directed edges showing relationships
+- **Color-coded nodes**: Users=cyan, Orgs=yellow, Repos=green
+- **Node shapes**: Seed nodes=squares, Regular nodes=circles
+- **Edge types**: 
+  - Owner relationships (red arrows)
+  - Contributor relationships (teal arrows)
+  - Member relationships (light teal arrows)
+  - Fork relationships (yellow arrows)
+  - **Bidirectional relationships** (purple double-headed arrows `<->`)
+- **Smart label placement**: Non-overlapping labels with arrows (when adjustText is installed)
+- **Cluster detection**: Separate visualizations for disconnected components with `--visualize-clusters`
 
 ## How It Works
 

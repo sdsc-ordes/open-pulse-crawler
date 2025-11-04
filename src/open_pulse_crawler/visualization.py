@@ -109,9 +109,9 @@ def visualize_graph(
         for repo in graph.repos.values():
             for contributor in repo.contributors:
                 if contributor in graph.users or contributor in graph.orgs:
-                    if contributor == repo.owner:
-                        G.add_edge(contributor, repo.full_name, relationship='owner_of')
-                    else:
+                    # Only add contributor edge if they're NOT the owner
+                    # (owner relationship already implies contribution)
+                    if contributor != repo.owner:
                         G.add_edge(contributor, repo.full_name, relationship='contributor_of')
             
             if repo.is_fork and repo.forked_from and repo.forked_from in graph.repos:
@@ -253,6 +253,60 @@ def visualize_graph(
                     iterations=100,  # Limited to avoid full circular convergence
                     seed=None
                 )
+            
+            # CRITICAL FIX: Separate overlapping nodes
+            # When nodes end up in exactly the same position, edges appear as loops
+            import random
+            from collections import defaultdict
+            random.seed(42)  # Reproducible jitter
+            min_distance = 0.02  # Minimum distance between nodes
+            
+            # Use spatial hashing for O(n) instead of O(n²)
+            grid_size = min_distance
+            spatial_grid = defaultdict(list)
+            
+            for node, (x, y) in pos.items():
+                grid_x = int(x / grid_size)
+                grid_y = int(y / grid_size)
+                spatial_grid[(grid_x, grid_y)].append(node)
+            
+            # Check only nodes in same or adjacent grid cells
+            overlaps_fixed = 0
+            for (grid_x, grid_y), nodes_in_cell in spatial_grid.items():
+                # Check this cell and 8 neighbors
+                for dx in [-1, 0, 1]:
+                    for dy in [-1, 0, 1]:
+                        neighbor_cell = (grid_x + dx, grid_y + dy)
+                        if neighbor_cell in spatial_grid:
+                            other_nodes = spatial_grid[neighbor_cell]
+                            for node_a in nodes_in_cell:
+                                for node_b in other_nodes:
+                                    if node_a >= node_b:  # Avoid duplicate checks
+                                        continue
+                                    
+                                    x_a, y_a = pos[node_a]
+                                    x_b, y_b = pos[node_b]
+                                    distance = math.sqrt((x_a - x_b)**2 + (y_a - y_b)**2)
+                                    
+                                    if distance < min_distance:
+                                        if distance == 0:
+                                            # Exactly overlapping - random separation
+                                            angle = random.random() * 2 * math.pi
+                                            offset = min_distance / 2
+                                            pos[node_a] = (x_a + offset * math.cos(angle), y_a + offset * math.sin(angle))
+                                            pos[node_b] = (x_b - offset * math.cos(angle), y_b - offset * math.sin(angle))
+                                            overlaps_fixed += 1
+                                        else:
+                                            # Close - push apart
+                                            scale = min_distance / distance
+                                            dx_push = (x_a - x_b) * scale / 2
+                                            dy_push = (y_a - y_b) * scale / 2
+                                            pos[node_a] = (x_a + dx_push, y_a + dy_push)
+                                            pos[node_b] = (x_b - dx_push, y_b - dy_push)
+                                            overlaps_fixed += 1
+            
+            if overlaps_fixed > 0:
+                logger.info(f"Separated {overlaps_fixed} overlapping node pairs")
         
         # Modern technical diagram color palette (dark theme)
         color_map = {
@@ -321,14 +375,36 @@ def visualize_graph(
             )
         
         # Draw edges with color coding by relationship type
+        # Separate bidirectional edges from unidirectional ones
         edge_lists_by_type = {}
+        bidirectional_edges = {}
+        processed_pairs = set()
+        
         for u, v, data in G.edges(data=True):
             rel_type = data.get('relationship', 'unknown')
-            if rel_type not in edge_lists_by_type:
-                edge_lists_by_type[rel_type] = []
-            edge_lists_by_type[rel_type].append((u, v))
+            
+            # Check if this is a bidirectional edge
+            if G.has_edge(v, u) and (v, u) not in processed_pairs:
+                # This is bidirectional
+                pair_key = tuple(sorted([u, v]))
+                if pair_key not in bidirectional_edges:
+                    bidirectional_edges[pair_key] = {
+                        'edge': (u, v),
+                        'rel_types': [rel_type]
+                    }
+                else:
+                    bidirectional_edges[pair_key]['rel_types'].append(rel_type)
+                # Mark BOTH directions as processed
+                processed_pairs.add((u, v))
+                processed_pairs.add((v, u))
+            elif (u, v) not in processed_pairs:
+                # This is unidirectional
+                if rel_type not in edge_lists_by_type:
+                    edge_lists_by_type[rel_type] = []
+                edge_lists_by_type[rel_type].append((u, v))
+                processed_pairs.add((u, v))
         
-        # Draw each edge type with its own color (straight lines)
+        # Draw unidirectional edges with single arrow
         for rel_type, edges in edge_lists_by_type.items():
             edge_color = edge_color_map.get(rel_type, '#ffffff')
             nx.draw_networkx_edges(
@@ -340,6 +416,24 @@ def visualize_graph(
                 arrowsize=15,
                 arrowstyle='->',
                 width=2.0,
+                connectionstyle='arc3,rad=0',  # Force straight edges
+                ax=ax
+            )
+        
+        # Draw bidirectional edges with double-headed arrows
+        if bidirectional_edges:
+            bidir_edge_list = [info['edge'] for info in bidirectional_edges.values()]
+            # Use a neutral color or blend of the relationship types
+            nx.draw_networkx_edges(
+                G, pos,
+                edgelist=bidir_edge_list,
+                edge_color='#9370db',  # Medium purple for bidirectional
+                alpha=0.6,
+                arrows=True,
+                arrowsize=15,
+                arrowstyle='<->',  # Double-headed arrow
+                width=2.5,
+                connectionstyle='arc3,rad=0',  # Force straight edges
                 ax=ax
             )
         
@@ -399,6 +493,7 @@ def visualize_graph(
             mpatches.Patch(facecolor=edge_color_map['contributor_of'], label='Contributor of', edgecolor='#ffffff', linewidth=1),
             mpatches.Patch(facecolor=edge_color_map['member_of'], label='Member of', edgecolor='#ffffff', linewidth=1),
             mpatches.Patch(facecolor=edge_color_map['parent_of'], label='Parent of (fork)', edgecolor='#ffffff', linewidth=1),
+            mpatches.Patch(facecolor='#9370db', label='Bidirectional (↔)', edgecolor='#ffffff', linewidth=1),
         ]
         legend = ax.legend(
             handles=legend_elements, 
@@ -514,9 +609,9 @@ def visualize_clusters(
         for repo in graph.repos.values():
             for contributor in repo.contributors:
                 if contributor in graph.users or contributor in graph.orgs:
-                    if contributor == repo.owner:
-                        G.add_edge(contributor, repo.full_name, relationship='owner_of')
-                    else:
+                    # Only add contributor edge if they're NOT the owner
+                    # (owner relationship already implies contribution)
+                    if contributor != repo.owner:
                         G.add_edge(contributor, repo.full_name, relationship='contributor_of')
             
             if repo.is_fork and repo.forked_from and repo.forked_from in graph.repos:
@@ -587,6 +682,55 @@ def visualize_clusters(
                     seed=None
                 )
             
+            # CRITICAL FIX: Separate overlapping nodes
+            import random
+            from collections import defaultdict
+            random.seed(42 + idx)  # Reproducible jitter per cluster
+            min_distance = 0.02
+            
+            # Spatial hashing for efficiency
+            grid_size = min_distance
+            spatial_grid = defaultdict(list)
+            
+            for node, (x, y) in pos.items():
+                grid_x = int(x / grid_size)
+                grid_y = int(y / grid_size)
+                spatial_grid[(grid_x, grid_y)].append(node)
+            
+            overlaps_fixed = 0
+            for (grid_x, grid_y), nodes_in_cell in spatial_grid.items():
+                for dx in [-1, 0, 1]:
+                    for dy in [-1, 0, 1]:
+                        neighbor_cell = (grid_x + dx, grid_y + dy)
+                        if neighbor_cell in spatial_grid:
+                            other_nodes = spatial_grid[neighbor_cell]
+                            for node_a in nodes_in_cell:
+                                for node_b in other_nodes:
+                                    if node_a >= node_b:
+                                        continue
+                                    
+                                    x_a, y_a = pos[node_a]
+                                    x_b, y_b = pos[node_b]
+                                    distance = math.sqrt((x_a - x_b)**2 + (y_a - y_b)**2)
+                                    
+                                    if distance < min_distance:
+                                        if distance == 0:
+                                            angle = random.random() * 2 * math.pi
+                                            offset = min_distance / 2
+                                            pos[node_a] = (x_a + offset * math.cos(angle), y_a + offset * math.sin(angle))
+                                            pos[node_b] = (x_b - offset * math.cos(angle), y_b - offset * math.sin(angle))
+                                            overlaps_fixed += 1
+                                        else:
+                                            scale = min_distance / distance
+                                            dx_push = (x_a - x_b) * scale / 2
+                                            dy_push = (y_a - y_b) * scale / 2
+                                            pos[node_a] = (x_a + dx_push, y_a + dy_push)
+                                            pos[node_b] = (x_b - dx_push, y_b - dy_push)
+                                            overlaps_fixed += 1
+            
+            if overlaps_fixed > 0:
+                logger.debug(f"Cluster {idx}: Separated {overlaps_fixed} overlapping node pairs")
+            
             # Separate seed and regular nodes
             component_seed_nodes = [n for n in component if subgraph.nodes[n].get('is_seed', False)]
             component_regular_nodes = [n for n in component if not subgraph.nodes[n].get('is_seed', False)]
@@ -624,14 +768,36 @@ def visualize_clusters(
                 )
             
             # Draw edges with color coding by relationship type
+            # Separate bidirectional edges from unidirectional ones
             edge_lists_by_type = {}
+            bidirectional_edges = {}
+            processed_pairs = set()
+            
             for u, v, data in subgraph.edges(data=True):
                 rel_type = data.get('relationship', 'unknown')
-                if rel_type not in edge_lists_by_type:
-                    edge_lists_by_type[rel_type] = []
-                edge_lists_by_type[rel_type].append((u, v))
+                
+                # Check if this is a bidirectional edge
+                if subgraph.has_edge(v, u) and (v, u) not in processed_pairs:
+                    # This is bidirectional
+                    pair_key = tuple(sorted([u, v]))
+                    if pair_key not in bidirectional_edges:
+                        bidirectional_edges[pair_key] = {
+                            'edge': (u, v),
+                            'rel_types': [rel_type]
+                        }
+                    else:
+                        bidirectional_edges[pair_key]['rel_types'].append(rel_type)
+                    # Mark BOTH directions as processed
+                    processed_pairs.add((u, v))
+                    processed_pairs.add((v, u))
+                elif (u, v) not in processed_pairs:
+                    # This is unidirectional
+                    if rel_type not in edge_lists_by_type:
+                        edge_lists_by_type[rel_type] = []
+                    edge_lists_by_type[rel_type].append((u, v))
+                    processed_pairs.add((u, v))
             
-            # Draw each edge type with its own color (straight lines)
+            # Draw unidirectional edges with single arrow
             for rel_type, edges in edge_lists_by_type.items():
                 edge_color = edge_color_map.get(rel_type, '#ffffff')
                 nx.draw_networkx_edges(
@@ -643,6 +809,24 @@ def visualize_clusters(
                     arrowsize=15,
                     arrowstyle='->',
                     width=2.0,
+                    connectionstyle='arc3,rad=0',  # Force straight edges
+                    ax=ax
+                )
+            
+            # Draw bidirectional edges with double-headed arrows
+            if bidirectional_edges:
+                bidir_edge_list = [info['edge'] for info in bidirectional_edges.values()]
+                # Use a neutral color or blend of the relationship types
+                nx.draw_networkx_edges(
+                    subgraph, pos,
+                    edgelist=bidir_edge_list,
+                    edge_color='#9370db',  # Medium purple for bidirectional
+                    alpha=0.6,
+                    arrows=True,
+                    arrowsize=15,
+                    arrowstyle='<->',  # Double-headed arrow
+                    width=2.5,
+                    connectionstyle='arc3,rad=0',  # Force straight edges
                     ax=ax
                 )
             

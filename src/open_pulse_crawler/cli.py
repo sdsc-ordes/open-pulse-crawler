@@ -370,6 +370,97 @@ def crawl(
 
 
 @app.command()
+def visualize(
+    graph_file: Path = typer.Argument(
+        ...,
+        help="Path to graph JSON file to visualize",
+        exists=True
+    ),
+    output_file: Optional[Path] = typer.Option(
+        None,
+        "--output", "-o",
+        help="Output PNG file path (default: same name as input with .png extension)"
+    ),
+    clusters: bool = typer.Option(
+        False,
+        "--clusters",
+        help="Generate separate visualizations for each cluster"
+    ),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose", "-v",
+        help="Enable verbose logging"
+    )
+):
+    """
+    Visualize an existing graph JSON file.
+    
+    This command loads a previously crawled graph and generates visualization(s)
+    without needing to re-crawl or provide GitHub tokens.
+    
+    Example:
+        open-pulse-crawler visualize data/enac/output/graph_20251003_100015.json
+        open-pulse-crawler visualize graph.json --output my_viz.png --clusters
+    """
+    setup_logging(verbose)
+    
+    if not VISUALIZATION_AVAILABLE:
+        console.print("[red]Error: Visualization dependencies not installed[/red]")
+        console.print("Install with: pip install open-pulse-crawler[viz]")
+        sys.exit(1)
+    
+    console.print(f"[blue]Loading graph from {graph_file}...[/blue]")
+    
+    try:
+        import json
+        with open(graph_file, 'r') as f:
+            graph_dict = json.load(f)
+        
+        graph = GraphData(**graph_dict)
+        console.print(f"[green]✓[/green] Loaded graph:")
+        console.print(f"  Users: {len(graph.users)}")
+        console.print(f"  Organizations: {len(graph.orgs)}")
+        console.print(f"  Repositories: {len(graph.repos)}")
+        
+        # Determine output path
+        if output_file is None:
+            output_file = graph_file.with_suffix('.png')
+        
+        # Extract seed nodes from metadata if available
+        seed_nodes = set()
+        # Try to infer seeds - typically the first few orgs or users
+        if graph.orgs:
+            seed_nodes.update(list(graph.orgs.keys())[:5])
+        elif graph.users:
+            seed_nodes.update(list(graph.users.keys())[:5])
+        
+        console.print(f"\n[blue]Generating main visualization...[/blue]")
+        visualize_graph(graph, output_file, seed_nodes=seed_nodes)
+        console.print(f"[green]✓[/green] Visualization saved to: {output_file}")
+        
+        if clusters:
+            clusters_dir = output_file.parent / f"clusters_{output_file.stem}"
+            console.print(f"\n[blue]Generating cluster visualizations...[/blue]")
+            try:
+                viz_clusters(graph, clusters_dir, seed_nodes)
+                console.print(f"[green]✓[/green] Cluster visualizations saved to: {clusters_dir}/")
+            except Exception as e:
+                console.print(f"[red]✗[/red] Cluster visualization failed: {e}")
+                if verbose:
+                    import traceback
+                    traceback.print_exc()
+        
+        console.print(f"\n[bold green]Visualization complete! 🎨[/bold green]")
+        
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        if verbose:
+            import traceback
+            traceback.print_exc()
+        sys.exit(1)
+
+
+@app.command()
 def version():
     """Show version information."""
     from . import __version__

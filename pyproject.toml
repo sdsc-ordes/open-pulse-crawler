@@ -26,6 +26,7 @@ dependencies = [
 viz = [
   "networkx>=3.0",
   "matplotlib>=3.7.0",
+  "adjustText"
 ]
 dev = [
   "pytest>=7.0.0",
