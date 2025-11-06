@@ -22,6 +22,7 @@ from .visualization import visualize_graph, visualize_clusters as viz_clusters, 
 
 app = typer.Typer(help="GitHub BFS Crawler - Discover GitHub users, organizations, and repositories")
 console = Console()
+logger = logging.getLogger(__name__)
 
 
 def setup_logging(verbose: bool = False):
@@ -126,6 +127,11 @@ def crawl(
         "--visualize-clusters",
         help="Generate separate visualizations for each disconnected cluster"
     ),
+    incremental_export: bool = typer.Option(
+        False,
+        "--incremental-export",
+        help="Export graph data after each round (in addition to final export)"
+    ),
     verbose: bool = typer.Option(
         False,
         "--verbose",
@@ -210,6 +216,27 @@ def crawl(
         state_file=state_file,
         batch_size=batch_size
     )
+    
+    # Setup incremental export callback if requested
+    if incremental_export:
+        def export_callback(round_num):
+            """Export data after each round."""
+            try:
+                round_dir = crawler.export_round(
+                    output_dir,
+                    round_num,
+                    visualize=visualize,
+                    visualize_clusters=visualize_clusters,
+                    no_json=no_json,
+                    no_csv=no_csv
+                )
+                console.print(f"[green]✓[/green] Round {round_num} exported to {round_dir.name}/")
+            except Exception as e:
+                console.print(f"[red]✗[/red] Round {round_num} export failed: {e}")
+                logger.error(f"Incremental export failed for round {round_num}: {e}")
+        
+        crawler.incremental_export_callback = export_callback
+        console.print(f"[green]✓[/green] Incremental export enabled")
     
     # Resume or start fresh
     if resume and state_file and state_file.exists():
