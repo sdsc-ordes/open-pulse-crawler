@@ -17,14 +17,20 @@ app = typer.Typer()
 class MetadataProcessor:
     """Download and process metadata from CSV with parallel requests."""
     
-    def __init__(self, base_url: str, output_dir: str, delay: float = 1.0, max_concurrent: int = 10):
+    def __init__(self, base_url: str, output_dir: str, delay: float = 1.0, max_concurrent: int = 10, failed_output_dir: Optional[str] = None):
         self.base_url = base_url.rstrip('/')
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.delay = delay
         self.max_concurrent = max_concurrent
         self.cache: Set[str] = set()
+        # Snapshot of cache items present before this run
+        self.cache_initial: Set[str] = set()
+        # Items successfully downloaded in this run (not served from cache)
+        self.downloaded_this_run: Set[str] = set()
         self.failed_items: Set[str] = set()
+        self.failed_output_dir = Path(failed_output_dir) if failed_output_dir else self.output_dir.parent / "failed-items-properties"
+        self.failed_output_dir.mkdir(parents=True, exist_ok=True)
         self._load_cache()
     
     def _load_cache(self):
@@ -32,6 +38,8 @@ class MetadataProcessor:
         for file in self.output_dir.glob("*.json"):
             item_name = file.stem.replace("_", "/", 1)
             self.cache.add(item_name)
+        # Preserve initial cache snapshot (to distinguish pre-existing cache from new downloads)
+        self.cache_initial = set(self.cache)
         if self.cache:
             typer.echo(f"📦 Found {len(self.cache)} cached items")
     
@@ -40,9 +48,9 @@ class MetadataProcessor:
         github_url = f"https://github.com/{item}"
         
         if item_type == "user":
-            return f"{self.base_url}/v1/user/llm/json/{github_url}?enrich_orgs=true"
+            return f"{self.base_url}/v1/user/llm/json/{github_url}?enrich_orgs=true&enrich_users=true"
         elif item_type == "repo":
-            return f"{self.base_url}/v1/repository/llm/json/{github_url}?enrich_orgs=true"
+            return f"{self.base_url}/v1/repository/llm/json/{github_url}?enrich_orgs=true&enrich_users=true"
         elif item_type == "org":
             return f"{self.base_url}/v1/org/llm/json/{github_url}?enrich_orgs=true"
         else:
@@ -56,42 +64,56 @@ class MetadataProcessor:
         """Download metadata for a single item asynchronously."""
         if item in self.cache:
             return True
-        
         if item in self.failed_items:
             return False
-        
         async with semaphore:
             try:
                 endpoint = self._get_api_endpoint(item, item_type)
                 typer.echo(f"⬇️  Downloading: {item} ({item_type})")
-                
                 timeout = aiohttp.ClientTimeout(total=300)
                 async with session.get(endpoint, timeout=timeout) as response:
                     response.raise_for_status()
                     data = await response.json()
-                
                 # Save to file
                 filename = self._sanitize_filename(item) + ".json"
                 filepath = self.output_dir / filename
-                
                 with open(filepath, 'w', encoding='utf-8') as f:
                     json.dump(data, f, indent=2, ensure_ascii=False)
-                
                 self.cache.add(item)
+                self.downloaded_this_run.add(item)
                 typer.echo(f"✅ Saved: {filepath}")
-                
-                # Add delay between requests to avoid overwhelming the server
                 if self.delay > 0:
                     await asyncio.sleep(self.delay)
                 return True
-                
             except aiohttp.ClientError as e:
                 typer.echo(f"❌ Failed to download {item}: {str(e)}")
                 self.failed_items.add(item)
+                # Save error info to failed output dir
+                filename = self._sanitize_filename(item) + ".json"
+                failed_filepath = self.failed_output_dir / filename
+                error_data = {
+                    "item": item,
+                    "item_type": item_type,
+                    "error": str(e)
+                }
+                with open(failed_filepath, 'w', encoding='utf-8') as f:
+                    json.dump(error_data, f, indent=2, ensure_ascii=False)
+                typer.echo(f"❌ Saved failed item: {failed_filepath}")
                 return False
             except Exception as e:
                 typer.echo(f"❌ Error processing {item}: {str(e)}")
                 self.failed_items.add(item)
+                # Save error info to failed output dir
+                filename = self._sanitize_filename(item) + ".json"
+                failed_filepath = self.failed_output_dir / filename
+                error_data = {
+                    "item": item,
+                    "item_type": item_type,
+                    "error": str(e)
+                }
+                with open(failed_filepath, 'w', encoding='utf-8') as f:
+                    json.dump(error_data, f, indent=2, ensure_ascii=False)
+                typer.echo(f"❌ Saved failed item: {failed_filepath}")
                 return False
     
     async def download_all_metadata(self, items_to_process: Dict[str, str]) -> Tuple[int, int]:
@@ -151,16 +173,67 @@ class MetadataProcessor:
             typer.echo(f"⚠️  Error reading {filepath}: {str(e)}")
             return None, False
 
+    def extract_stats(self, item: str) -> Dict[str, float]:
+        """Extract token and timing stats from the item's JSON metadata.
+
+        Returns a dict with numeric totals (defaults to 0 if missing):
+        - agent_input_tokens, agent_output_tokens, total_tokens
+        - estimated_input_tokens, estimated_output_tokens, estimated_total_tokens
+        - duration (seconds)
+        - status_code (int, 0 if missing)
+        """
+        filename = self._sanitize_filename(item) + ".json"
+        filepath = self.output_dir / filename
+
+        defaults = {
+            'agent_input_tokens': 0,
+            'agent_output_tokens': 0,
+            'total_tokens': 0,
+            'estimated_input_tokens': 0,
+            'estimated_output_tokens': 0,
+            'estimated_total_tokens': 0,
+            'duration': 0.0,
+            'status_code': 0,
+        }
+
+        if not filepath.exists():
+            return defaults.copy()
+
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            stats = data.get('stats', {}) or {}
+            out = defaults.copy()
+            out.update({
+                'agent_input_tokens': stats.get('agent_input_tokens', 0) or 0,
+                'agent_output_tokens': stats.get('agent_output_tokens', 0) or 0,
+                'total_tokens': stats.get('total_tokens', 0) or 0,
+                'estimated_input_tokens': stats.get('estimated_input_tokens', 0) or 0,
+                'estimated_output_tokens': stats.get('estimated_output_tokens', 0) or 0,
+                'estimated_total_tokens': stats.get('estimated_total_tokens', 0) or 0,
+                'duration': stats.get('duration', 0.0) or 0.0,
+                'status_code': stats.get('status_code', 0) or 0,
+            })
+            return out
+        except Exception as e:
+            typer.echo(f"⚠️  Error reading stats from {filepath}: {str(e)}")
+            return defaults.copy()
+
 
 @app.command()
 def process(
     csv_path: str = typer.Argument(..., help="Path to the edges CSV file"),
     output_dir: str = typer.Option("metadata", "--output-dir", "-o", help="Output directory for JSON files"),
+    failed_output_dir: str = typer.Option(None, "--failed-output-dir", help="Directory for failed metadata downloads"),
     affiliations_csv: str = typer.Option("affiliations.csv", "--affiliations", "-a", help="Output CSV for affiliations"),
     api_url: str = typer.Option("http://imagingplazadev.epfl.ch:7511", "--api-url", help="Base API URL"),
     delay: float = typer.Option(1.0, "--delay", help="Delay between API calls in seconds"),
     max_concurrent: int = typer.Option(10, "--max-concurrent", "-c", help="Maximum number of concurrent requests"),
     limit: Optional[int] = typer.Option(None, "--limit", "-l", help="Limit number of items to process (for testing)"),
+    token_limit: Optional[int] = typer.Option(None, "--token-limit", "-t", help="Stop processing when estimated total tokens exceed this limit"),
+    only_users: bool = typer.Option(False, "--only-users", help="Process only user entities"),
+    only_orgs: bool = typer.Option(False, "--only-orgs", help="Process only organization entities"),
+    only_repos: bool = typer.Option(False, "--only-repos", help="Process only repository entities"),
 ):
     """
     Download metadata and extract affiliations from CSV.
@@ -176,10 +249,25 @@ def process(
         sys.exit(1)
     
     # Initialize processor
-    processor = MetadataProcessor(api_url, output_dir, delay, max_concurrent)
+    processor = MetadataProcessor(api_url, output_dir, delay, max_concurrent, failed_output_dir)
+    
+    # Determine allowed entity types based on filters
+    allowed_types = set()
+    if only_users:
+        allowed_types.add('user')
+    if only_orgs:
+        allowed_types.add('org')
+    if only_repos:
+        allowed_types.add('repo')
+    
+    # If no filters specified, allow all types
+    if not allowed_types:
+        allowed_types = {'user', 'org', 'repo'}
     
     # Step 1: Collect unique items and download metadata
     typer.echo("\n📥 Step 1: Downloading metadata...")
+    if allowed_types != {'user', 'org', 'repo'}:
+        typer.echo(f"🔍 Filtering for entity types: {', '.join(sorted(allowed_types))}")
     typer.echo(f"⚡ Using {max_concurrent} concurrent requests")
     items_to_process: Dict[str, str] = {}
     
@@ -193,10 +281,11 @@ def process(
                 source_type = row.get('source_type', '').strip()
                 target_type = row.get('target_type', '').strip()
                 
-                if source and source_type in ['user', 'repo', 'org']:
+                # Only process if type is allowed
+                if source and source_type in allowed_types:
                     items_to_process[source] = source_type
                 
-                if target and target_type in ['user', 'repo', 'org']:
+                if target and target_type in allowed_types:
                     items_to_process[target] = target_type
         
         # Apply limit if specified
@@ -204,7 +293,40 @@ def process(
             typer.echo(f"⚠️  Limiting to first {limit} items (found {len(items_to_process)} total)")
             items_to_process = dict(list(items_to_process.items())[:limit])
         
+        # Apply token limit if specified (estimate based on cached items first)
+        if token_limit:
+            typer.echo(f"⚠️  Token limit enabled: {token_limit} estimated_total_tokens")
+            cumulative_tokens = 0
+            limited_items = {}
+            
+            for item, item_type in items_to_process.items():
+                # Check if item is cached - if so, we can read its token stats
+                if item in processor.cache_initial:
+                    stats = processor.extract_stats(item)
+                    estimated = int(stats.get('estimated_total_tokens', 0) or 0)
+                else:
+                    # Not cached - estimate conservatively (use average or fixed estimate)
+                    # Using a conservative estimate of ~35000 tokens per item (based on the sample you showed)
+                    estimated = 35000
+                
+                if cumulative_tokens + estimated <= token_limit:
+                    limited_items[item] = item_type
+                    cumulative_tokens += estimated
+                else:
+                    typer.echo(f"⚠️  Stopping at {len(limited_items)} items (estimated tokens: {cumulative_tokens}, limit: {token_limit})")
+                    break
+            
+            items_to_process = limited_items
+        
+        # Display entity type breakdown
+        type_counts = {}
+        for item_type in items_to_process.values():
+            type_counts[item_type] = type_counts.get(item_type, 0) + 1
+        
         typer.echo(f"📊 Found {len(items_to_process)} unique items to process")
+        if type_counts:
+            breakdown = ', '.join([f"{count} {entity_type}(s)" for entity_type, count in sorted(type_counts.items())])
+            typer.echo(f"   Entity breakdown: {breakdown}")
         
         # Download metadata in parallel
         start_time = time.time()
@@ -221,28 +343,69 @@ def process(
         typer.echo(f"\n🔍 Step 2: Extracting affiliations...")
         
         results = []
+        token_totals = {
+            'agent_input_tokens': 0,
+            'agent_output_tokens': 0,
+            'total_tokens': 0,
+            'estimated_input_tokens': 0,
+            'estimated_output_tokens': 0,
+            'estimated_total_tokens': 0,
+            'duration': 0.0,
+            'items_with_status_200': 0,
+            'items_counted': 0,
+        }
         with_affiliation = 0
         with_epfl = 0
         
+        # Track counts by entity type
+        entity_type_stats = {
+            'user': {'total': 0, 'with_affiliation': 0, 'with_epfl': 0},
+            'org': {'total': 0, 'with_affiliation': 0, 'with_epfl': 0},
+            'repo': {'total': 0, 'with_affiliation': 0, 'with_epfl': 0},
+        }
+        
         for item in items_to_process.keys():
+            item_type = items_to_process[item]
+            entity_type_stats[item_type]['total'] += 1
+            
             affiliation, is_epfl = processor.extract_affiliation(item)
+            stats = processor.extract_stats(item)
             
             if affiliation:
                 with_affiliation += 1
+                entity_type_stats[item_type]['with_affiliation'] += 1
                 epfl_marker = "🇨🇭 " if is_epfl else ""
                 typer.echo(f"✅ {epfl_marker}{item} -> {affiliation}")
                 if is_epfl:
                     with_epfl += 1
+                    entity_type_stats[item_type]['with_epfl'] += 1
             
             results.append({
                 'item': item,
                 'relatedToOrganization': affiliation or '',
                 'relatedToEPFL': is_epfl
             })
+
+            # Accumulate token stats ONLY for items actually downloaded in this run (exclude cache hits)
+            if item in processor.downloaded_this_run:
+                token_totals['agent_input_tokens'] += int(stats.get('agent_input_tokens', 0) or 0)
+                token_totals['agent_output_tokens'] += int(stats.get('agent_output_tokens', 0) or 0)
+                token_totals['total_tokens'] += int(stats.get('total_tokens', 0) or 0)
+                token_totals['estimated_input_tokens'] += int(stats.get('estimated_input_tokens', 0) or 0)
+                token_totals['estimated_output_tokens'] += int(stats.get('estimated_output_tokens', 0) or 0)
+                token_totals['estimated_total_tokens'] += int(stats.get('estimated_total_tokens', 0) or 0)
+                token_totals['duration'] += float(stats.get('duration', 0.0) or 0.0)
+                token_totals['items_counted'] += 1
+                if int(stats.get('status_code', 0) or 0) == 200:
+                    token_totals['items_with_status_200'] += 1
         
         # Write affiliations CSV
         with open(affiliations_csv, 'w', encoding='utf-8', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=['item', 'relatedToOrganization', 'relatedToEPFL'])
+            writer = csv.DictWriter(
+                f,
+                fieldnames=['item', 'relatedToOrganization', 'relatedToEPFL'],
+                delimiter=';'
+            )
             writer.writeheader()
             writer.writerows(results)
         
@@ -250,8 +413,64 @@ def process(
         typer.echo(f"   📝 Total items: {len(items_to_process)}")
         typer.echo(f"   ✅ Items with affiliation: {with_affiliation}")
         typer.echo(f"   🇨🇭 Items related to EPFL: {with_epfl}")
+        
+        # Display breakdown by entity type
+        for entity_type in sorted(entity_type_stats.keys()):
+            stats = entity_type_stats[entity_type]
+            if stats['total'] > 0:
+                typer.echo(f"   {entity_type.upper()}: {stats['total']} total, {stats['with_affiliation']} with affiliation, {stats['with_epfl']} EPFL-related")
+        
         typer.echo(f"   📁 Metadata directory: {output_dir}")
         typer.echo(f"   📄 Affiliations CSV: {affiliations_csv}")
+
+        # Token statistics summary (console)
+        token_limit_reached = token_limit and token_totals['estimated_total_tokens'] >= token_limit
+        
+        typer.echo(f"\n📈 Token Usage Summary (non-cache only):")
+        typer.echo(f"   • agent_input_tokens: {token_totals['agent_input_tokens']}")
+        typer.echo(f"   • agent_output_tokens: {token_totals['agent_output_tokens']}")
+        typer.echo(f"   • total_tokens: {token_totals['total_tokens']}")
+        typer.echo(f"   • estimated_input_tokens: {token_totals['estimated_input_tokens']}")
+        typer.echo(f"   • estimated_output_tokens: {token_totals['estimated_output_tokens']}")
+        typer.echo(f"   • estimated_total_tokens: {token_totals['estimated_total_tokens']}")
+        typer.echo(f"   • total_duration_seconds: {token_totals['duration']:.3f}")
+        typer.echo(f"   • items_with_status_200: {token_totals['items_with_status_200']} / {token_totals['items_counted']}")
+        if token_limit:
+            typer.echo(f"   • token_limit: {token_limit} ({'⚠️ REACHED' if token_limit_reached else '✅ within limit'})")
+
+        # Write token summary CSV next to affiliations CSV
+        stats_csv = affiliations_csv.replace('.csv', '_stats.csv') if affiliations_csv.endswith('.csv') else affiliations_csv + '_stats.csv'
+        with open(stats_csv, 'w', encoding='utf-8', newline='') as f:
+            writer = csv.DictWriter(
+                f,
+                fieldnames=[
+                    'items_total',
+                    'items_processed',
+                    'items_with_status_200',
+                    'agent_input_tokens',
+                    'agent_output_tokens',
+                    'total_tokens',
+                    'estimated_input_tokens',
+                    'estimated_output_tokens',
+                    'estimated_total_tokens',
+                    'total_duration_seconds'
+                ],
+                delimiter=';'
+            )
+            writer.writeheader()
+            writer.writerow({
+                'items_total': len(items_to_process),
+                'items_processed': token_totals['items_counted'],
+                'items_with_status_200': token_totals['items_with_status_200'],
+                'agent_input_tokens': token_totals['agent_input_tokens'],
+                'agent_output_tokens': token_totals['agent_output_tokens'],
+                'total_tokens': token_totals['total_tokens'],
+                'estimated_input_tokens': token_totals['estimated_input_tokens'],
+                'estimated_output_tokens': token_totals['estimated_output_tokens'],
+                'estimated_total_tokens': token_totals['estimated_total_tokens'],
+                'total_duration_seconds': f"{token_totals['duration']:.3f}"
+            })
+        typer.echo(f"   📄 Token Stats CSV: {stats_csv}")
         
     except Exception as e:
         typer.echo(f"❌ Error: {str(e)}")
@@ -269,3 +488,13 @@ if __name__ == "__main__":
 #   --delay 0.1 \
 #   --max-concurrent 5 \
 #   --limit 100
+
+# Entity type filtering examples:
+# Process only users:
+#   --only-users
+# Process only organizations:
+#   --only-orgs
+# Process only repositories:
+#   --only-repos
+# Process users and orgs (skip repos):
+#   --only-users --only-orgs
