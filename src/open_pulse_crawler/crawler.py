@@ -1,7 +1,7 @@
 """Core crawler logic implementing BFS strategy."""
 
 import logging
-from typing import List, Set, Dict, Tuple, Optional
+from typing import List, Set, Dict, Tuple, Optional, Callable
 from pathlib import Path
 import json
 from collections import deque
@@ -58,6 +58,9 @@ class GitHubCrawler:
         
         # Statistics per round
         self.round_stats: List[Dict] = []
+        
+        # Optional callback for incremental exports
+        self.incremental_export_callback: Optional[Callable[[int], None]] = None
         
         logger.info(f"Crawler initialized with batch_size={self.batch_size}")
     
@@ -606,6 +609,10 @@ class GitHubCrawler:
                 # Save state after each round
                 if self.state_file:
                     self.save_state()
+                
+                # Call incremental export callback if registered
+                if self.incremental_export_callback:
+                    self.incremental_export_callback(self.current_round - 1)
         finally:
             rounds_pbar.close()
         
@@ -648,3 +655,75 @@ class GitHubCrawler:
             'round_stats': self.round_stats,
             'api_stats': self.client.get_stats(),
         }
+    
+    def export_round(
+        self,
+        output_dir: Path,
+        round_num: int,
+        visualize: bool = False,
+        visualize_clusters: bool = False,
+        no_json: bool = False,
+        no_csv: bool = False
+    ) -> Path:
+        """
+        Export current graph state for a specific round.
+        
+        Args:
+            output_dir: Base directory for output files
+            round_num: Current round number
+            visualize: Generate main visualization
+            visualize_clusters: Generate cluster visualizations
+            no_json: Skip JSON export
+            no_csv: Skip CSV export
+            
+        Returns:
+            Path to the round-specific output directory
+        """
+        from .io_utils import export_to_json, export_to_csv, export_nodes_csv
+        from .visualization import visualize_graph, visualize_clusters as viz_clusters, VISUALIZATION_AVAILABLE
+        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        round_dir = output_dir / f"round_{round_num:02d}_{timestamp}"
+        round_dir.mkdir(parents=True, exist_ok=True)
+        
+        logger.info(f"Exporting round {round_num} to {round_dir}")
+        
+        # Export JSON
+        if not no_json:
+            json_path = round_dir / f"graph_round_{round_num:02d}.json"
+            export_to_json(self.graph, json_path)
+            logger.debug(f"JSON exported to {json_path}")
+        
+        # Export CSVs
+        if not no_csv:
+            edges_csv = round_dir / f"edges_round_{round_num:02d}.csv"
+            export_to_csv(self.graph, edges_csv, self.seed_nodes)
+            logger.debug(f"Edges CSV exported to {edges_csv}")
+            
+            nodes_csv = round_dir / f"nodes_round_{round_num:02d}.csv"
+            export_nodes_csv(self.graph, nodes_csv, self.seed_nodes)
+            logger.debug(f"Nodes CSV exported to {nodes_csv}")
+        
+        # Optional visualizations
+        if visualize or visualize_clusters:
+            if not VISUALIZATION_AVAILABLE:
+                logger.warning("Visualization skipped: networkx/matplotlib not installed")
+            else:
+                if visualize:
+                    viz_path = round_dir / f"graph_round_{round_num:02d}.png"
+                    try:
+                        visualize_graph(self.graph, viz_path, self.seed_nodes)
+                        logger.debug(f"Visualization exported to {viz_path}")
+                    except Exception as e:
+                        logger.error(f"Visualization failed: {e}")
+                
+                if visualize_clusters:
+                    clusters_dir = round_dir / "clusters"
+                    try:
+                        viz_clusters(self.graph, clusters_dir, self.seed_nodes)
+                        logger.debug(f"Cluster visualizations exported to {clusters_dir}/")
+                    except Exception as e:
+                        logger.error(f"Cluster visualization failed: {e}")
+        
+        logger.info(f"Round {round_num} export completed")
+        return round_dir
