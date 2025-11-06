@@ -231,6 +231,9 @@ def process(
     max_concurrent: int = typer.Option(10, "--max-concurrent", "-c", help="Maximum number of concurrent requests"),
     limit: Optional[int] = typer.Option(None, "--limit", "-l", help="Limit number of items to process (for testing)"),
     token_limit: Optional[int] = typer.Option(None, "--token-limit", "-t", help="Stop processing when estimated total tokens exceed this limit"),
+    only_users: bool = typer.Option(False, "--only-users", help="Process only user entities"),
+    only_orgs: bool = typer.Option(False, "--only-orgs", help="Process only organization entities"),
+    only_repos: bool = typer.Option(False, "--only-repos", help="Process only repository entities"),
 ):
     """
     Download metadata and extract affiliations from CSV.
@@ -248,8 +251,23 @@ def process(
     # Initialize processor
     processor = MetadataProcessor(api_url, output_dir, delay, max_concurrent, failed_output_dir)
     
+    # Determine allowed entity types based on filters
+    allowed_types = set()
+    if only_users:
+        allowed_types.add('user')
+    if only_orgs:
+        allowed_types.add('org')
+    if only_repos:
+        allowed_types.add('repo')
+    
+    # If no filters specified, allow all types
+    if not allowed_types:
+        allowed_types = {'user', 'org', 'repo'}
+    
     # Step 1: Collect unique items and download metadata
     typer.echo("\n📥 Step 1: Downloading metadata...")
+    if allowed_types != {'user', 'org', 'repo'}:
+        typer.echo(f"🔍 Filtering for entity types: {', '.join(sorted(allowed_types))}")
     typer.echo(f"⚡ Using {max_concurrent} concurrent requests")
     items_to_process: Dict[str, str] = {}
     
@@ -263,10 +281,11 @@ def process(
                 source_type = row.get('source_type', '').strip()
                 target_type = row.get('target_type', '').strip()
                 
-                if source and source_type in ['user', 'repo', 'org']:
+                # Only process if type is allowed
+                if source and source_type in allowed_types:
                     items_to_process[source] = source_type
                 
-                if target and target_type in ['user', 'repo', 'org']:
+                if target and target_type in allowed_types:
                     items_to_process[target] = target_type
         
         # Apply limit if specified
@@ -299,7 +318,15 @@ def process(
             
             items_to_process = limited_items
         
+        # Display entity type breakdown
+        type_counts = {}
+        for item_type in items_to_process.values():
+            type_counts[item_type] = type_counts.get(item_type, 0) + 1
+        
         typer.echo(f"📊 Found {len(items_to_process)} unique items to process")
+        if type_counts:
+            breakdown = ', '.join([f"{count} {entity_type}(s)" for entity_type, count in sorted(type_counts.items())])
+            typer.echo(f"   Entity breakdown: {breakdown}")
         
         # Download metadata in parallel
         start_time = time.time()
@@ -330,16 +357,28 @@ def process(
         with_affiliation = 0
         with_epfl = 0
         
+        # Track counts by entity type
+        entity_type_stats = {
+            'user': {'total': 0, 'with_affiliation': 0, 'with_epfl': 0},
+            'org': {'total': 0, 'with_affiliation': 0, 'with_epfl': 0},
+            'repo': {'total': 0, 'with_affiliation': 0, 'with_epfl': 0},
+        }
+        
         for item in items_to_process.keys():
+            item_type = items_to_process[item]
+            entity_type_stats[item_type]['total'] += 1
+            
             affiliation, is_epfl = processor.extract_affiliation(item)
             stats = processor.extract_stats(item)
             
             if affiliation:
                 with_affiliation += 1
+                entity_type_stats[item_type]['with_affiliation'] += 1
                 epfl_marker = "🇨🇭 " if is_epfl else ""
                 typer.echo(f"✅ {epfl_marker}{item} -> {affiliation}")
                 if is_epfl:
                     with_epfl += 1
+                    entity_type_stats[item_type]['with_epfl'] += 1
             
             results.append({
                 'item': item,
@@ -374,6 +413,13 @@ def process(
         typer.echo(f"   📝 Total items: {len(items_to_process)}")
         typer.echo(f"   ✅ Items with affiliation: {with_affiliation}")
         typer.echo(f"   🇨🇭 Items related to EPFL: {with_epfl}")
+        
+        # Display breakdown by entity type
+        for entity_type in sorted(entity_type_stats.keys()):
+            stats = entity_type_stats[entity_type]
+            if stats['total'] > 0:
+                typer.echo(f"   {entity_type.upper()}: {stats['total']} total, {stats['with_affiliation']} with affiliation, {stats['with_epfl']} EPFL-related")
+        
         typer.echo(f"   📁 Metadata directory: {output_dir}")
         typer.echo(f"   📄 Affiliations CSV: {affiliations_csv}")
 
@@ -442,3 +488,13 @@ if __name__ == "__main__":
 #   --delay 0.1 \
 #   --max-concurrent 5 \
 #   --limit 100
+
+# Entity type filtering examples:
+# Process only users:
+#   --only-users
+# Process only organizations:
+#   --only-orgs
+# Process only repositories:
+#   --only-repos
+# Process users and orgs (skip repos):
+#   --only-users --only-orgs
