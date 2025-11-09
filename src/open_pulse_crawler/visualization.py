@@ -3,7 +3,7 @@
 import logging
 import math
 from pathlib import Path
-from typing import Set, Optional
+from typing import Set, Optional, Dict
 import numpy as np
 
 from .models import GraphData
@@ -37,6 +37,8 @@ def visualize_graph(
     graph: GraphData,
     output_path: Path,
     seed_nodes: Set[str],
+    visited_nodes: Optional[Set[str]] = None,
+    discovered_nodes: Optional[Dict[str, tuple]] = None,
     figsize: tuple = (24, 24),
     dpi: int = 300
 ):
@@ -45,9 +47,13 @@ def visualize_graph(
     Handles disconnected components by positioning them separately.
     
     Args:
-        graph: GraphData to visualize
+        graph: GraphData to visualize (only explored nodes)
         output_path: Path to save the visualization
         seed_nodes: Set of initial seed nodes (rendered as squares)
+        visited_nodes: Set of nodes that have been explored/visited by the crawler.
+                       If provided, unexplored nodes will be rendered in grey.
+        discovered_nodes: Dict mapping node_id -> (node_type, parent_id, parent_type)
+                         for discovered but not yet explored nodes.
         figsize: Figure size in inches
         dpi: Resolution in dots per inch
     """
@@ -59,13 +65,24 @@ def visualize_graph(
         # Create directed graph
         G = nx.DiGraph()
         
-        # Add nodes with attributes
+        # If no visited_nodes provided, treat all nodes as explored
+        if visited_nodes is None:
+            visited_nodes = set()
+            visited_nodes.update(user.login for user in graph.users.values())
+            visited_nodes.update(org.login for org in graph.orgs.values())
+            visited_nodes.update(repo.full_name for repo in graph.repos.values())
+        
+        if discovered_nodes is None:
+            discovered_nodes = {}
+        
+        # Add explored nodes with attributes (from main graph)
         for user in graph.users.values():
             G.add_node(
                 user.login,
                 node_type='user',
                 is_seed=user.login in seed_nodes,
-                label=user.name or user.login
+                is_explored=True,  # All nodes in graph are explored
+                label=user.login  # Use GitHub handle instead of name
             )
         
         for org in graph.orgs.values():
@@ -73,7 +90,8 @@ def visualize_graph(
                 org.login,
                 node_type='org',
                 is_seed=org.login in seed_nodes,
-                label=org.name or org.login
+                is_explored=True,  # All nodes in graph are explored
+                label=org.login  # Use GitHub handle instead of name
             )
         
         for repo in graph.repos.values():
@@ -81,8 +99,27 @@ def visualize_graph(
                 repo.full_name,
                 node_type='repo',
                 is_seed=repo.full_name in seed_nodes,
-                label=repo.name or repo.full_name
+                is_explored=True,  # All nodes in graph are explored
+                label=repo.name or repo.full_name  # Keep repo name for brevity
             )
+        
+        # Add discovered (unexplored) nodes
+        for node_id, (node_type, parent_id, parent_type) in discovered_nodes.items():
+            if node_id not in G:  # Don't add if already in graph
+                if node_type == 'repo':
+                    label = node_id.split('/')[-1] if '/' in node_id else node_id
+                elif node_type in ['user', 'org']:
+                    label = node_id
+                else:
+                    label = node_id
+                    
+                G.add_node(
+                    node_id,
+                    node_type=node_type,
+                    is_seed=False,
+                    is_explored=False,  # These are unexplored
+                    label=label
+                )
         
         # Add edges
         # Users -> repos
@@ -117,6 +154,27 @@ def visualize_graph(
             
             if repo.is_fork and repo.forked_from and repo.forked_from in graph.repos:
                 G.add_edge(repo.forked_from, repo.full_name, relationship='parent_of')
+        
+        # Add edges from explored to discovered nodes
+        for node_id, (node_type, parent_id, parent_type) in discovered_nodes.items():
+            if node_id in G and parent_id and parent_id in G:
+                # Determine relationship type based on node types
+                if parent_type == 'user' and node_type == 'repo':
+                    relationship = 'owner_of'
+                elif parent_type == 'org' and node_type == 'repo':
+                    relationship = 'owner_of'
+                elif parent_type == 'user' and node_type == 'org':
+                    relationship = 'member_of'
+                elif parent_type == 'org' and node_type == 'user':
+                    relationship = 'member_of'
+                elif parent_type == 'repo' and node_type == 'user':
+                    relationship = 'contributor_of'
+                elif parent_type == 'repo' and node_type == 'repo':
+                    relationship = 'parent_of'
+                else:
+                    relationship = 'unknown'
+                
+                G.add_edge(parent_id, node_id, relationship=relationship)
         
         if len(G.nodes()) == 0:
             logger.warning("No nodes to visualize")
@@ -264,10 +322,13 @@ def visualize_graph(
         
         for node in pos:
             # Add random offset to both x and y coordinates
-            pos[node] = (
-                pos[node][0] + np.random.uniform(-jitter_strength, jitter_strength),
-                pos[node][1] + np.random.uniform(-jitter_strength, jitter_strength)
-            )
+            # Convert to numpy array for calculation, then back to tuple/array
+            current_pos = np.array(pos[node])
+            jitter = np.array([
+                np.random.uniform(-jitter_strength, jitter_strength),
+                np.random.uniform(-jitter_strength, jitter_strength)
+            ])
+            pos[node] = current_pos + jitter
         
         # Modern technical diagram color palette (dark theme)
         color_map = {
@@ -284,34 +345,54 @@ def visualize_graph(
             'parent_of': '#ffd93d',       # Yellow - fork relationship
         }
         
-        # Prepare node colors and shapes
-        node_colors = []
-        node_shapes = []
+        # Separate nodes by exploration status and type
+        explored_users = []
+        explored_orgs = []
+        explored_repos = []
+        unexplored_nodes = []
         seed_nodes_list = []
-        regular_nodes_list = []
         
         for node in G.nodes():
-            node_type = G.nodes[node].get('node_type', 'user')
-            is_seed = G.nodes[node].get('is_seed', False)
-            
-            color = color_map.get(node_type, '#95a5a6')
+            node_data = G.nodes[node]
+            node_type = node_data.get('node_type', 'user')
+            is_explored = node_data.get('is_explored', True)
+            is_seed = node_data.get('is_seed', False)
             
             if is_seed:
                 seed_nodes_list.append(node)
-            else:
-                regular_nodes_list.append(node)
-            
-            node_colors.append(color)
+            elif not is_explored:
+                unexplored_nodes.append(node)
+            elif node_type == 'user':
+                explored_users.append(node)
+            elif node_type == 'org':
+                explored_orgs.append(node)
+            elif node_type == 'repo':
+                explored_repos.append(node)
         
-        # Draw regular nodes (circles) with edge borders
-        if regular_nodes_list:
-            regular_colors = [color_map.get(G.nodes[n].get('node_type', 'user'), '#ffffff') 
-                            for n in regular_nodes_list]
+        logger.debug(f"Node breakdown - Explored: {len(explored_users)} users, {len(explored_orgs)} orgs, "
+                    f"{len(explored_repos)} repos | Unexplored: {len(unexplored_nodes)} | Seeds: {len(seed_nodes_list)}")
+        
+        # Draw unexplored nodes first (in background, grey)
+        if unexplored_nodes:
             nx.draw_networkx_nodes(
                 G, pos,
-                nodelist=regular_nodes_list,
-                node_color=regular_colors,
-                node_size=180,  # Reduced from 250 to prevent overlap
+                nodelist=unexplored_nodes,
+                node_color='#666666',  # Grey
+                node_size=150,
+                node_shape='o',
+                alpha=0.4,  # Semi-transparent
+                edgecolors='#444444',
+                linewidths=1,
+                ax=ax
+            )
+        
+        # Draw explored users (circles)
+        if explored_users:
+            nx.draw_networkx_nodes(
+                G, pos,
+                nodelist=explored_users,
+                node_color=color_map['user'],
+                node_size=180,
                 node_shape='o',
                 alpha=0.85,
                 edgecolors='#ffffff',
@@ -319,15 +400,43 @@ def visualize_graph(
                 ax=ax
             )
         
-        # Draw seed nodes (squares) with thicker borders
+        # Draw explored orgs (circles)
+        if explored_orgs:
+            nx.draw_networkx_nodes(
+                G, pos,
+                nodelist=explored_orgs,
+                node_color=color_map['org'],
+                node_size=180,
+                node_shape='o',
+                alpha=0.85,
+                edgecolors='#ffffff',
+                linewidths=1.5,
+                ax=ax
+            )
+        
+        # Draw explored repos (circles)
+        if explored_repos:
+            nx.draw_networkx_nodes(
+                G, pos,
+                nodelist=explored_repos,
+                node_color=color_map['repo'],
+                node_size=180,
+                node_shape='o',
+                alpha=0.85,
+                edgecolors='#ffffff',
+                linewidths=1.5,
+                ax=ax
+            )
+        
+        # Draw seed nodes on top (squares) with thicker borders
         if seed_nodes_list:
-            seed_colors = [color_map.get(G.nodes[n].get('node_type', 'user'), '#ffffff') 
+            seed_colors = [color_map.get(G.nodes[n].get('node_type', 'user'), '#00d9ff') 
                           for n in seed_nodes_list]
             nx.draw_networkx_nodes(
                 G, pos,
                 nodelist=seed_nodes_list,
                 node_color=seed_colors,
-                node_size=320,  # Reduced from 450 to prevent overlap
+                node_size=320,
                 node_shape='s',
                 alpha=0.95,
                 edgecolors='#ffffff',
@@ -359,13 +468,23 @@ def visualize_graph(
             )
         
         # Draw labels with smart positioning (offset from nodes)
-        if len(G.nodes()) <= 50 or seed_nodes_list:
-            # For small graphs, show all labels
-            if len(G.nodes()) <= 50:
-                labels_to_show = {n: G.nodes[n].get('label', n)[:20] for n in G.nodes()}
-            else:
-                # For large graphs, only show seed node labels
-                labels_to_show = {n: G.nodes[n].get('label', n)[:20] for n in seed_nodes_list}
+        # Always show: seed nodes + all organizations + (all nodes if small graph)
+        labels_to_show = {}
+        
+        if len(G.nodes()) <= 50:
+            # Small graphs: show all labels
+            labels_to_show = {n: G.nodes[n].get('label', n)[:20] for n in G.nodes()}
+        else:
+            # Large graphs: show seed nodes + all organizations
+            for node in G.nodes():
+                node_data = G.nodes[node]
+                is_seed = node_data.get('is_seed', False)
+                is_org = node_data.get('node_type') == 'org'
+                
+                if is_seed or is_org:
+                    labels_to_show[node] = node_data.get('label', node)[:20]
+        
+        if labels_to_show:
             
             if HAS_ADJUST_TEXT and len(labels_to_show) > 0:
                 # Use adjustText for smart label placement with arrows
@@ -405,16 +524,30 @@ def visualize_graph(
         
         # Create legend with modern styling (nodes and edges)
         legend_elements = [
-            mpatches.Patch(facecolor=color_map['user'], label='User', edgecolor='#ffffff', linewidth=1),
-            mpatches.Patch(facecolor=color_map['org'], label='Organization', edgecolor='#ffffff', linewidth=1),
-            mpatches.Patch(facecolor=color_map['repo'], label='Repository', edgecolor='#ffffff', linewidth=1),
-            mpatches.Patch(facecolor='#666666', edgecolor='#ffffff', linewidth=2, label='Seed Node (square)'),
-            mpatches.Patch(facecolor='none', edgecolor='none', label=''),  # Spacer
+            mpatches.Patch(facecolor=color_map['user'], label='User (explored)', edgecolor='#ffffff', linewidth=1),
+            mpatches.Patch(facecolor=color_map['org'], label='Organization (explored)', edgecolor='#ffffff', linewidth=1),
+            mpatches.Patch(facecolor=color_map['repo'], label='Repository (explored)', edgecolor='#ffffff', linewidth=1),
+        ]
+        
+        # Add unexplored indicator if there are unexplored nodes
+        if unexplored_nodes:
+            legend_elements.append(
+                mpatches.Patch(facecolor='#666666', label='Unexplored', edgecolor='#444444', linewidth=1, alpha=0.4)
+            )
+        
+        # Add seed indicator
+        legend_elements.append(
+            mpatches.Patch(facecolor='#666666', edgecolor='#ffffff', linewidth=2, label='Seed Node (square)')
+        )
+        
+        # Add spacer and edge relationships
+        legend_elements.append(mpatches.Patch(facecolor='none', edgecolor='none', label=''))  # Spacer
+        legend_elements.extend([
             mpatches.Patch(facecolor=edge_color_map['owner_of'], label='Owner of', edgecolor='#ffffff', linewidth=1),
             mpatches.Patch(facecolor=edge_color_map['contributor_of'], label='Contributor of', edgecolor='#ffffff', linewidth=1),
             mpatches.Patch(facecolor=edge_color_map['member_of'], label='Member of', edgecolor='#ffffff', linewidth=1),
             mpatches.Patch(facecolor=edge_color_map['parent_of'], label='Parent of (fork)', edgecolor='#ffffff', linewidth=1),
-        ]
+        ])
         legend = ax.legend(
             handles=legend_elements, 
             loc='upper left', 
@@ -454,6 +587,8 @@ def visualize_clusters(
     graph: GraphData,
     output_dir: Path,
     seed_nodes: Set[str],
+    visited_nodes: Optional[Set[str]] = None,
+    discovered_nodes: Optional[Dict[str, tuple]] = None,
     figsize: tuple = (16, 16),
     dpi: int = 300
 ):
@@ -461,9 +596,13 @@ def visualize_clusters(
     Create separate visualizations for each disconnected cluster in the graph.
     
     Args:
-        graph: GraphData to visualize
+        graph: GraphData to visualize (only explored nodes)
         output_dir: Directory to save cluster visualizations
         seed_nodes: Set of initial seed nodes
+        visited_nodes: Set of nodes that have been explored/visited by the crawler.
+                       If provided, unexplored nodes will be rendered in grey.
+        discovered_nodes: Dict mapping node_id -> (node_type, parent_id, parent_type)
+                         for discovered but not yet explored nodes.
         figsize: Figure size for each cluster visualization
         dpi: Resolution in dots per inch
     """
@@ -475,13 +614,21 @@ def visualize_clusters(
         # Create directed graph
         G = nx.DiGraph()
         
+        # If no visited_nodes provided, treat all nodes as explored
+        if visited_nodes is None:
+            visited_nodes = set()
+            visited_nodes.update(user.login for user in graph.users.values())
+            visited_nodes.update(org.login for org in graph.orgs.values())
+            visited_nodes.update(repo.full_name for repo in graph.repos.values())
+        
         # Add nodes with attributes (same as main visualization)
         for user in graph.users.values():
             G.add_node(
                 user.login,
                 node_type='user',
                 is_seed=user.login in seed_nodes,
-                label=user.name or user.login
+                is_explored=user.login in visited_nodes,
+                label=user.login  # Use GitHub handle instead of name
             )
         
         for org in graph.orgs.values():
@@ -489,7 +636,8 @@ def visualize_clusters(
                 org.login,
                 node_type='org',
                 is_seed=org.login in seed_nodes,
-                label=org.name or org.login
+                is_explored=org.login in visited_nodes,
+                label=org.login  # Use GitHub handle instead of name
             )
         
         for repo in graph.repos.values():
@@ -497,7 +645,8 @@ def visualize_clusters(
                 repo.full_name,
                 node_type='repo',
                 is_seed=repo.full_name in seed_nodes,
-                label=repo.name or repo.full_name
+                is_explored=repo.full_name in visited_nodes,
+                label=repo.name or repo.full_name  # Keep repo name for brevity
             )
         
         # Add edges (same as main visualization)
@@ -536,6 +685,41 @@ def visualize_clusters(
             
             if repo.is_fork and repo.forked_from and repo.forked_from in graph.repos:
                 G.add_edge(repo.forked_from, repo.full_name, relationship='parent_of')
+        
+        # Add discovered nodes (not yet explored) to graph with grey styling
+        if discovered_nodes is None:
+            discovered_nodes = {}
+        
+        for node_id, (node_type, parent_id, parent_type) in discovered_nodes.items():
+            # Add the discovered node if not already in graph
+            if node_id not in G:
+                G.add_node(
+                    node_id,
+                    node_type=node_type,
+                    is_seed=False,
+                    is_explored=False,
+                    label=node_id
+                )
+            
+            # Add edge from parent to discovered node if parent exists
+            if parent_id and parent_id in G:
+                # Determine relationship type based on node types
+                if parent_type == 'user' and node_type == 'repo':
+                    relationship = 'owner_of'
+                elif parent_type == 'org' and node_type == 'repo':
+                    relationship = 'owner_of'
+                elif parent_type == 'user' and node_type == 'org':
+                    relationship = 'member_of'
+                elif parent_type == 'org' and node_type == 'user':
+                    relationship = 'member_of'
+                elif parent_type == 'repo' and node_type == 'user':
+                    relationship = 'contributor_of'
+                elif parent_type == 'repo' and node_type == 'repo':
+                    relationship = 'parent_of'
+                else:
+                    relationship = 'unknown'
+                
+                G.add_edge(parent_id, node_id, relationship=relationship)
         
         if len(G.nodes()) == 0:
             logger.warning("No nodes to visualize")
@@ -602,19 +786,38 @@ def visualize_clusters(
                     seed=None
                 )
             
-            # Separate seed and regular nodes
+            # Separate nodes by exploration status
             component_seed_nodes = [n for n in component if subgraph.nodes[n].get('is_seed', False)]
-            component_regular_nodes = [n for n in component if not subgraph.nodes[n].get('is_seed', False)]
+            component_explored_nodes = [n for n in component 
+                                      if not subgraph.nodes[n].get('is_seed', False) 
+                                      and subgraph.nodes[n].get('is_explored', True)]
+            component_unexplored_nodes = [n for n in component 
+                                         if not subgraph.nodes[n].get('is_seed', False)
+                                         and not subgraph.nodes[n].get('is_explored', True)]
             
-            # Draw regular nodes
-            if component_regular_nodes:
-                regular_colors = [color_map.get(subgraph.nodes[n].get('node_type', 'user'), '#ffffff') 
-                                for n in component_regular_nodes]
+            # Draw unexplored nodes in grey (discovered but not yet explored)
+            if component_unexplored_nodes:
                 nx.draw_networkx_nodes(
                     subgraph, pos,
-                    nodelist=component_regular_nodes,
-                    node_color=regular_colors,
-                    node_size=180,  # Reduced from 250 to prevent overlap
+                    nodelist=component_unexplored_nodes,
+                    node_color='#666666',  # Grey for unexplored
+                    node_size=180,
+                    node_shape='o',
+                    alpha=0.4,  # More transparent
+                    edgecolors='#ffffff',
+                    linewidths=1.0,
+                    ax=ax
+                )
+            
+            # Draw explored regular nodes
+            if component_explored_nodes:
+                explored_colors = [color_map.get(subgraph.nodes[n].get('node_type', 'user'), '#ffffff') 
+                                for n in component_explored_nodes]
+                nx.draw_networkx_nodes(
+                    subgraph, pos,
+                    nodelist=component_explored_nodes,
+                    node_color=explored_colors,
+                    node_size=180,
                     node_shape='o',
                     alpha=0.85,
                     edgecolors='#ffffff',
@@ -622,7 +825,7 @@ def visualize_clusters(
                     ax=ax
                 )
             
-            # Draw seed nodes
+            # Draw seed nodes (always explored)
             if component_seed_nodes:
                 seed_colors = [color_map.get(subgraph.nodes[n].get('node_type', 'user'), '#ffffff') 
                               for n in component_seed_nodes]
@@ -630,7 +833,7 @@ def visualize_clusters(
                     subgraph, pos,
                     nodelist=component_seed_nodes,
                     node_color=seed_colors,
-                    node_size=320,  # Reduced from 450 to prevent overlap
+                    node_size=320,
                     node_shape='s',
                     alpha=0.95,
                     edgecolors='#ffffff',
@@ -718,6 +921,10 @@ def visualize_clusters(
             if component_seed_nodes:
                 legend_elements.append(
                     mpatches.Patch(facecolor='#666666', edgecolor='#ffffff', linewidth=2, label='Seed Node')
+                )
+            if component_unexplored_nodes:
+                legend_elements.append(
+                    mpatches.Patch(facecolor='#666666', alpha=0.4, edgecolor='#ffffff', linewidth=1, label='Unexplored Node')
                 )
             
             # Add edge type legend

@@ -127,6 +127,10 @@ def export_to_csv(graph: GraphData, output_path: Path, seed_nodes: Set[str]):
     for repo in graph.repos.values():
         # Contributors -> repo
         for contributor_login in repo.contributors:
+            # Only include edge if contributor is also in the graph (explored)
+            if contributor_login not in graph.users and contributor_login not in graph.orgs:
+                continue
+            
             # Check if contributor is the owner
             if contributor_login == repo.owner:
                 relationship = 'owner_of'
@@ -147,7 +151,8 @@ def export_to_csv(graph: GraphData, output_path: Path, seed_nodes: Set[str]):
             })
         
         # Fork relationships (parent repo -> forked repo)
-        if repo.is_fork and repo.forked_from:
+        # Only include if parent repo is also in the graph (explored)
+        if repo.is_fork and repo.forked_from and repo.forked_from in graph.repos:
             edges.append({
                 'source': repo.forked_from,
                 'target': repo.full_name,

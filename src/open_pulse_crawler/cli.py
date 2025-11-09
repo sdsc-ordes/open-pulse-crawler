@@ -318,11 +318,11 @@ def crawl(
     # Round statistics
     if stats['round_stats']:
         console.print("\n[bold]Per-Round Statistics:[/bold]\n")
-        console.print("[dim]Visited = entities processed this round | Queued = entities discovered but not yet visited[/dim]\n")
+        console.print("[dim]Processed = entities fully explored this round | Queued = entities discovered but not yet explored[/dim]\n")
         
         round_table = Table()
         round_table.add_column("Round", style="cyan")
-        round_table.add_column("Visited", style="magenta")
+        round_table.add_column("Processed", style="magenta")
         round_table.add_column("Users", style="blue")
         round_table.add_column("Orgs", style="red")
         round_table.add_column("Repos", style="green")
@@ -379,7 +379,7 @@ def crawl(
                 viz_path = output_dir / f"graph_{timestamp}.png"
                 console.print(f"[blue]Generating main visualization...[/blue]")
                 try:
-                    visualize_graph(crawler.graph, viz_path, crawler.seed_nodes)
+                    visualize_graph(crawler.graph, viz_path, crawler.seed_nodes, crawler.visited, crawler.discovered_nodes)
                     console.print(f"[green]✓[/green] Visualization: {viz_path}")
                 except Exception as e:
                     console.print(f"[red]✗[/red] Visualization failed: {e}")
@@ -388,7 +388,7 @@ def crawl(
                 clusters_dir = output_dir / f"clusters_{timestamp}"
                 console.print(f"[blue]Generating cluster visualizations...[/blue]")
                 try:
-                    viz_clusters(crawler.graph, clusters_dir, crawler.seed_nodes)
+                    viz_clusters(crawler.graph, clusters_dir, crawler.seed_nodes, crawler.visited, crawler.discovered_nodes)
                     console.print(f"[green]✓[/green] Cluster visualizations: {clusters_dir}/")
                 except Exception as e:
                     console.print(f"[red]✗[/red] Cluster visualization failed: {e}")

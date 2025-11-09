@@ -52,6 +52,10 @@ class GitHubCrawler:
         self.seed_nodes: Set[str] = set()
         self.queue: deque = deque()
         
+        # Track discovered (but not yet explored) nodes for visualization
+        # Maps: node_id -> (node_type, parent_id, parent_type)
+        self.discovered_nodes: Dict[str, tuple] = {}
+        
         # Thread-safe access to graph and visited set
         self.graph_lock = threading.Lock()
         self.visited_lock = threading.Lock()
@@ -63,6 +67,30 @@ class GitHubCrawler:
         self.incremental_export_callback: Optional[Callable[[int], None]] = None
         
         logger.info(f"Crawler initialized with batch_size={self.batch_size}")
+    
+    def _track_discovered_node(self, node_type: str, identifier: str, parent_id: str = None, parent_type: str = None):
+        """
+        Track a discovered but not-yet-explored node for visualization purposes.
+        This does NOT add it to the main graph (only explored nodes go there).
+        Thread-safe with visited_lock.
+        
+        Args:
+            node_type: Type of node ('user', 'org', 'repo')
+            identifier: Unique identifier for the node
+            parent_id: ID of the parent node that discovered this node
+            parent_type: Type of parent node ('user', 'org', 'repo')
+        """
+        # Only track if not already visited and not already in graph
+        if identifier not in self.visited:
+            # Check if already in graph (explored)
+            is_in_graph = (
+                (node_type == 'user' and identifier in self.graph.users) or
+                (node_type == 'org' and identifier in self.graph.orgs) or
+                (node_type == 'repo' and identifier in self.graph.repos)
+            )
+            
+            if not is_in_graph and identifier not in self.discovered_nodes:
+                self.discovered_nodes[identifier] = (node_type, parent_id, parent_type)
     
     def save_state(self):
         """Save crawler state to file."""
@@ -192,9 +220,11 @@ class GitHubCrawler:
                     for repo_name in repos_to_queue:
                         if repo_name not in self.visited:
                             self.queue.append(('repo', repo_name, self.current_round + 1))
+                            self._track_discovered_node('repo', repo_name, username, 'user')
                     for org_login in orgs_to_queue:
                         if org_login not in self.visited:
                             self.queue.append(('org', org_login, self.current_round + 1))
+                            self._track_discovered_node('org', org_login, username, 'user')
             else:
                 # Check if this is actually an organization
                 if user_obj.type == 'Organization':
@@ -234,9 +264,11 @@ class GitHubCrawler:
                     for repo_name in repos_to_queue:
                         if repo_name not in self.visited:
                             self.queue.append(('repo', repo_name, self.current_round + 1))
+                            self._track_discovered_node('repo', repo_name, username, 'user')
                     for org_login in orgs_to_queue:
                         if org_login not in self.visited:
                             self.queue.append(('org', org_login, self.current_round + 1))
+                            self._track_discovered_node('org', org_login, username, 'user')
             
             return user
         except Exception as e:
@@ -280,9 +312,11 @@ class GitHubCrawler:
                     for member_login in members_to_queue:
                         if member_login not in self.visited:
                             self.queue.append(('user', member_login, self.current_round + 1))
+                            self._track_discovered_node('user', member_login, org_name, 'org')
                     for repo_name in repos_to_queue:
                         if repo_name not in self.visited:
                             self.queue.append(('repo', repo_name, self.current_round + 1))
+                            self._track_discovered_node('repo', repo_name, org_name, 'org')
             else:
                 org = OrgModel(
                     login=org_obj.login,
@@ -319,9 +353,11 @@ class GitHubCrawler:
                     for member_login in members_to_queue:
                         if member_login not in self.visited:
                             self.queue.append(('user', member_login, self.current_round + 1))
+                            self._track_discovered_node('user', member_login, org_name, 'org')
                     for repo_name in repos_to_queue:
                         if repo_name not in self.visited:
                             self.queue.append(('repo', repo_name, self.current_round + 1))
+                            self._track_discovered_node('repo', repo_name, org_name, 'org')
             
             return org
         except Exception as e:
@@ -373,6 +409,7 @@ class GitHubCrawler:
                     for item_type, identifier in items_to_queue:
                         if identifier not in self.visited:
                             self.queue.append((item_type, identifier, self.current_round + 1))
+                            self._track_discovered_node(item_type, identifier, repo_full_name, 'repo')
             else:
                 repo = RepoModel(
                     full_name=repo_obj.full_name,
@@ -411,6 +448,7 @@ class GitHubCrawler:
                     for item_type, identifier in items_to_queue:
                         if identifier not in self.visited:
                             self.queue.append((item_type, identifier, self.current_round + 1))
+                            self._track_discovered_node(item_type, identifier, repo_full_name, 'repo')
             
             return repo
         except Exception as e:
@@ -560,15 +598,11 @@ class GitHubCrawler:
                 # Round statistics - count actual entities found, not queued types
                 round_time = __import__('time').time() - round_start_time
                 
-                # Count entities actually added in this round
-                current_users = len(self.graph.users)
-                current_orgs = len(self.graph.orgs)
-                current_repos = len(self.graph.repos)
-                
-                # Calculate what was found in this round
-                users_this_round = current_users - sum(rs.get('users_found', 0) for rs in self.round_stats)
-                orgs_this_round = current_orgs - sum(rs.get('orgs_found', 0) for rs in self.round_stats)
-                repos_this_round = current_repos - sum(rs.get('repos_found', 0) for rs in self.round_stats)
+                # Count entities PROCESSED (visited) in this round by type
+                # Look at what was actually added to the graph (check if visited)
+                users_this_round = sum(1 for t, id in nodes_in_round if id in self.graph.users and id in self.visited)
+                orgs_this_round = sum(1 for t, id in nodes_in_round if id in self.graph.orgs and id in self.visited)
+                repos_this_round = sum(1 for t, id in nodes_in_round if id in self.graph.repos and id in self.visited)
                 
                 # Count items in queue by type
                 queued_users = sum(1 for t, _, _ in self.queue if t in ['user', 'user_or_org'])
@@ -712,7 +746,7 @@ class GitHubCrawler:
                 if visualize:
                     viz_path = round_dir / f"graph_round_{round_num:02d}.png"
                     try:
-                        visualize_graph(self.graph, viz_path, self.seed_nodes)
+                        visualize_graph(self.graph, viz_path, self.seed_nodes, self.visited, self.discovered_nodes)
                         logger.debug(f"Visualization exported to {viz_path}")
                     except Exception as e:
                         logger.error(f"Visualization failed: {e}")
@@ -720,7 +754,7 @@ class GitHubCrawler:
                 if visualize_clusters:
                     clusters_dir = round_dir / "clusters"
                     try:
-                        viz_clusters(self.graph, clusters_dir, self.seed_nodes)
+                        viz_clusters(self.graph, clusters_dir, self.seed_nodes, self.visited, self.discovered_nodes)
                         logger.debug(f"Cluster visualizations exported to {clusters_dir}/")
                     except Exception as e:
                         logger.error(f"Cluster visualization failed: {e}")
