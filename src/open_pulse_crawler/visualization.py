@@ -4,6 +4,7 @@ import logging
 import math
 from pathlib import Path
 from typing import Set, Optional
+import numpy as np
 
 from .models import GraphData
 
@@ -253,6 +254,20 @@ def visualize_graph(
                     iterations=100,  # Limited to avoid full circular convergence
                     seed=None
                 )
+        
+        # Add jitter to prevent exact overlaps
+        # This addresses the issue where nodes with identical connectivity patterns
+        # can end up at the exact same position, causing visual overlap
+        jitter_strength = 0.05  # 5% of coordinate space
+        np.random.seed(42)  # Reproducible jitter
+        logger.debug(f"Adding jitter (strength={jitter_strength}) to prevent node overlaps")
+        
+        for node in pos:
+            # Add random offset to both x and y coordinates
+            pos[node] = (
+                pos[node][0] + np.random.uniform(-jitter_strength, jitter_strength),
+                pos[node][1] + np.random.uniform(-jitter_strength, jitter_strength)
+            )
         
         # Modern technical diagram color palette (dark theme)
         color_map = {
