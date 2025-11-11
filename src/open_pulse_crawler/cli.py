@@ -127,6 +127,11 @@ def crawl(
         "--visualize-clusters",
         help="Generate separate visualizations for each disconnected cluster"
     ),
+    show_unexplored: bool = typer.Option(
+        False,
+        "--show-unexplored",
+        help="Include unexplored (discovered but not yet visited) nodes in visualizations"
+    ),
     incremental_export: bool = typer.Option(
         False,
         "--incremental-export",
@@ -227,6 +232,7 @@ def crawl(
                     round_num,
                     visualize=visualize,
                     visualize_clusters=visualize_clusters,
+                    show_unexplored=show_unexplored,
                     no_json=no_json,
                     no_csv=no_csv
                 )
@@ -379,7 +385,8 @@ def crawl(
                 viz_path = output_dir / f"graph_{timestamp}.png"
                 console.print(f"[blue]Generating main visualization...[/blue]")
                 try:
-                    visualize_graph(crawler.graph, viz_path, crawler.seed_nodes, crawler.visited, crawler.discovered_nodes)
+                    discovered = crawler.discovered_nodes if show_unexplored else None
+                    visualize_graph(crawler.graph, viz_path, crawler.seed_nodes, crawler.visited, discovered)
                     console.print(f"[green]✓[/green] Visualization: {viz_path}")
                 except Exception as e:
                     console.print(f"[red]✗[/red] Visualization failed: {e}")
@@ -388,7 +395,8 @@ def crawl(
                 clusters_dir = output_dir / f"clusters_{timestamp}"
                 console.print(f"[blue]Generating cluster visualizations...[/blue]")
                 try:
-                    viz_clusters(crawler.graph, clusters_dir, crawler.seed_nodes, crawler.visited, crawler.discovered_nodes)
+                    discovered = crawler.discovered_nodes if show_unexplored else None
+                    viz_clusters(crawler.graph, clusters_dir, crawler.seed_nodes, crawler.visited, discovered)
                     console.print(f"[green]✓[/green] Cluster visualizations: {clusters_dir}/")
                 except Exception as e:
                     console.print(f"[red]✗[/red] Cluster visualization failed: {e}")

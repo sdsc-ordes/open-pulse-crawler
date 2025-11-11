@@ -696,6 +696,7 @@ class GitHubCrawler:
         round_num: int,
         visualize: bool = False,
         visualize_clusters: bool = False,
+        show_unexplored: bool = False,
         no_json: bool = False,
         no_csv: bool = False
     ) -> Path:
@@ -707,6 +708,7 @@ class GitHubCrawler:
             round_num: Current round number
             visualize: Generate main visualization
             visualize_clusters: Generate cluster visualizations
+            show_unexplored: Include unexplored (discovered) nodes in visualizations
             no_json: Skip JSON export
             no_csv: Skip CSV export
             
@@ -743,10 +745,13 @@ class GitHubCrawler:
             if not VISUALIZATION_AVAILABLE:
                 logger.warning("Visualization skipped: networkx/matplotlib not installed")
             else:
+                # Only include discovered nodes if requested
+                discovered = self.discovered_nodes if show_unexplored else None
+                
                 if visualize:
                     viz_path = round_dir / f"graph_round_{round_num:02d}.png"
                     try:
-                        visualize_graph(self.graph, viz_path, self.seed_nodes, self.visited, self.discovered_nodes)
+                        visualize_graph(self.graph, viz_path, self.seed_nodes, self.visited, discovered)
                         logger.debug(f"Visualization exported to {viz_path}")
                     except Exception as e:
                         logger.error(f"Visualization failed: {e}")
@@ -754,7 +759,7 @@ class GitHubCrawler:
                 if visualize_clusters:
                     clusters_dir = round_dir / "clusters"
                     try:
-                        viz_clusters(self.graph, clusters_dir, self.seed_nodes, self.visited, self.discovered_nodes)
+                        viz_clusters(self.graph, clusters_dir, self.seed_nodes, self.visited, discovered)
                         logger.debug(f"Cluster visualizations exported to {clusters_dir}/")
                     except Exception as e:
                         logger.error(f"Cluster visualization failed: {e}")
