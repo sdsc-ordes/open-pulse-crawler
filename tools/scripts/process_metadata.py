@@ -62,12 +62,21 @@ class MetadataProcessor:
         # Base query parameters
         force_param = "&force_refresh=true" if self.force_refresh else ""
         
+        # if item_type == "user":
+        #     return f"{self.base_url}/v1/user/llm/json/{github_url}?enrich_orgs=true&enrich_users=true{force_param}"
+        # elif item_type == "repo":
+        #     return f"{self.base_url}/v1/repository/llm/json/{github_url}?enrich_orgs=true&enrich_users=true{force_param}"
+        # elif item_type == "org":
+        #     return f"{self.base_url}/v1/org/llm/json/{github_url}?enrich_orgs=true{force_param}"
+        # else:
+        #     raise ValueError(f"Unknown item type: {item_type}")
+
         if item_type == "user":
-            return f"{self.base_url}/v1/user/llm/json/{github_url}?enrich_orgs=true&enrich_users=true{force_param}"
+            return f"{self.base_url}/v1/user/llm/json/{github_url}"
         elif item_type == "repo":
-            return f"{self.base_url}/v1/repository/llm/json/{github_url}?enrich_orgs=true&enrich_users=true{force_param}"
+            return f"{self.base_url}/v1/repository/llm/json/{github_url}"
         elif item_type == "org":
-            return f"{self.base_url}/v1/org/llm/json/{github_url}?enrich_orgs=true{force_param}"
+            return f"{self.base_url}/v1/org/llm/json/{github_url}"
         else:
             raise ValueError(f"Unknown item type: {item_type}")
     
@@ -282,6 +291,7 @@ def process(
     force_refresh: bool = typer.Option(False, "--force-refresh", help="Add force_refresh=true to API endpoints to bypass cache"),
     timeout: float = typer.Option(600.0, "--timeout", help="Request timeout in seconds (default: 600s / 10 minutes)"),
     retry_failed: bool = typer.Option(False, "--retry-failed", help="Process only previously failed items"),
+    skip_cached: bool = typer.Option(False, "--skip-cached", help="Skip items that are already cached (already successfully downloaded)"),
 ):
     """
     Download metadata and extract affiliations from CSV.
@@ -302,6 +312,8 @@ def process(
     typer.echo(f"⏱️  Request timeout set to {timeout} seconds ({timeout/60:.1f} minutes)")
     if force_refresh:
         typer.echo("🔄 Force refresh enabled - API will bypass cache")
+    if skip_cached:
+        typer.echo("⏭️  Skip cached enabled - already downloaded items will be excluded")
     
     # Determine allowed entity types based on filters
     allowed_types = set()
@@ -354,6 +366,18 @@ def process(
                     
                     if target and target_type in allowed_types:
                         items_to_process[target] = target_type
+        
+        # Apply skip_cached filter if enabled
+        if skip_cached:
+            items_before = len(items_to_process)
+            items_to_process = {
+                item: item_type 
+                for item, item_type in items_to_process.items() 
+                if item not in processor.cache_initial
+            }
+            skipped_count = items_before - len(items_to_process)
+            if skipped_count > 0:
+                typer.echo(f"⏭️  Skipped {skipped_count} cached items (--skip-cached enabled)")
         
         # Sort items by priority: org > user > repo
         # This ensures we process orgs first, then users, then repos
@@ -575,3 +599,9 @@ if __name__ == "__main__":
 #   --only-repos
 # Process users and orgs (skip repos):
 #   --only-users --only-orgs
+
+# Skip already downloaded items (useful for incremental processing):
+#   --skip-cached
+
+# Retry only previously failed items:
+#   --retry-failed
