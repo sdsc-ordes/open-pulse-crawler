@@ -193,6 +193,12 @@ def crawl(
         help="Number of nodes to process concurrently (default: matches --max-concurrent)",
         min=1,
         max=50
+    ),
+    epfl_list: Optional[Path] = typer.Option(
+        None,
+        "--epfl-list",
+        help="Path to file containing EPFL entities (one per line)",
+        exists=True
     )
 ):
     """
@@ -232,6 +238,20 @@ def crawl(
     if cache_dir:
         cache_dir.mkdir(parents=True, exist_ok=True)
     
+    # Load EPFL entities
+    epfl_entities = set()
+    if epfl_list:
+        try:
+            with open(epfl_list, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith('#'):
+                        epfl_entities.add(line)
+            console.print(f"[green]✓[/green] Loaded {len(epfl_entities)} EPFL entities from {epfl_list}")
+        except Exception as e:
+            console.print(f"[red]Error reading EPFL list: {e}[/red]")
+            raise typer.Exit(1)
+
     # Initialize client and crawler
     client = GitHubClient(
         tokens, 
@@ -248,7 +268,8 @@ def crawl(
         crawl_dependencies=crawl_dependencies,
         crawl_dependents=crawl_dependents,
         min_stars=min_stars,
-        max_dependents=max_dependents
+        max_dependents=max_dependents,
+        epfl_entities=epfl_entities
     )
     
     # Setup incremental export callback if requested
@@ -401,7 +422,13 @@ def crawl(
         console.print(f"[green]✓[/green] CSV (edges): {edges_csv_path}")
         
         nodes_csv_path = output_dir / f"nodes_{timestamp}.csv"
-        export_nodes_csv(crawler.graph, nodes_csv_path, crawler.seed_nodes)
+        export_nodes_csv(
+            crawler.graph, 
+            nodes_csv_path, 
+            crawler.seed_nodes,
+            discovered_nodes=crawler.discovered_nodes,
+            epfl_entities=epfl_entities
+        )
         console.print(f"[green]✓[/green] CSV (nodes): {nodes_csv_path}")
     
     # Visualization

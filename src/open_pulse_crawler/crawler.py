@@ -32,7 +32,8 @@ class GitHubCrawler:
         crawl_dependencies: bool = False,
         crawl_dependents: bool = False,
         min_stars: int = 0,
-        max_dependents: Optional[int] = None
+        max_dependents: Optional[int] = None,
+        epfl_entities: Optional[Set[str]] = None
     ):
         """
         Initialize the crawler.
@@ -45,6 +46,7 @@ class GitHubCrawler:
             crawl_dependencies: Whether to crawl dependencies (downstream)
             crawl_dependents: Whether to crawl dependents (upstream)
             min_stars: Minimum stars for dependents/dependencies filtering
+            epfl_entities: Set of entity names (users/orgs) that belong to EPFL
         """
         self.client = client
         self.max_rounds = max_rounds
@@ -54,6 +56,7 @@ class GitHubCrawler:
         self.crawl_dependents = crawl_dependents
         self.min_stars = min_stars
         self.max_dependents = max_dependents
+        self.epfl_entities = {e.lower() for e in (epfl_entities or set())}
         
         # Graph data
         self.graph = GraphData()
@@ -212,7 +215,10 @@ class GitHubCrawler:
                     login=user_obj['login'],
                     name=user_obj.get('name', ''),
                     id=user_obj.get('id', 0),
-                    type=user_type
+                    type=user_type,
+                    is_explored=True,
+                    exploration_timestamp=datetime.now().isoformat(),
+                    is_epfl=user_obj['login'].lower() in self.epfl_entities
                 )
                 
                 # Use cached repos data if available
@@ -250,7 +256,10 @@ class GitHubCrawler:
                     login=user_obj.login,
                     name=user_obj.name or '',
                     id=user_obj.id,
-                    type=GitHubItemType.USER if user_obj.type == 'User' else GitHubItemType.BOT
+                    type=GitHubItemType.USER if user_obj.type == 'User' else GitHubItemType.BOT,
+                    is_explored=True,
+                    exploration_timestamp=datetime.now().isoformat(),
+                    is_epfl=user_obj.login.lower() in self.epfl_entities
                 )
                 
                 # Get user's repositories from live API
@@ -304,7 +313,10 @@ class GitHubCrawler:
                     login=org_obj['login'],
                     name=org_obj.get('name', ''),
                     id=org_obj.get('id', 0),
-                    type=GitHubItemType.ORGANIZATION
+                    type=GitHubItemType.ORGANIZATION,
+                    is_explored=True,
+                    exploration_timestamp=datetime.now().isoformat(),
+                    is_epfl=org_obj['login'].lower() in self.epfl_entities
                 )
                 
                 # Use cached members data if available
@@ -337,7 +349,10 @@ class GitHubCrawler:
                     login=org_obj.login,
                     name=org_obj.name or '',
                     id=org_obj.id,
-                    type=GitHubItemType.ORGANIZATION
+                    type=GitHubItemType.ORGANIZATION,
+                    is_explored=True,
+                    exploration_timestamp=datetime.now().isoformat(),
+                    is_epfl=org_obj.login.lower() in self.epfl_entities
                 )
                 
                 # Get organization members from live API
@@ -396,7 +411,10 @@ class GitHubCrawler:
                     type=GitHubItemType.REPOSITORY,
                     owner=repo_obj.get('owner', ''),
                     is_fork=repo_obj.get('is_fork', False),
-                    forked_from=repo_obj.get('parent')
+                    forked_from=repo_obj.get('parent'),
+                    is_explored=True,
+                    exploration_timestamp=datetime.now().isoformat(),
+                    is_epfl=repo_obj.get('owner', '').lower() in self.epfl_entities
                 )
                 
                 # Collect items to queue
@@ -455,7 +473,10 @@ class GitHubCrawler:
                     type=GitHubItemType.REPOSITORY,
                     owner=repo_obj.owner.login,
                     is_fork=repo_obj.fork,
-                    forked_from=repo_obj.parent.full_name if repo_obj.parent else None
+                    forked_from=repo_obj.parent.full_name if repo_obj.parent else None,
+                    is_explored=True,
+                    exploration_timestamp=datetime.now().isoformat(),
+                    is_epfl=repo_obj.owner.login.lower() in self.epfl_entities
                 )
                 
                 # Collect items to queue
@@ -800,7 +821,13 @@ class GitHubCrawler:
             logger.debug(f"Edges CSV exported to {edges_csv}")
             
             nodes_csv = round_dir / f"nodes_round_{round_num:02d}.csv"
-            export_nodes_csv(self.graph, nodes_csv, self.seed_nodes)
+            export_nodes_csv(
+                self.graph, 
+                nodes_csv, 
+                self.seed_nodes,
+                discovered_nodes=self.discovered_nodes,
+                epfl_entities=self.epfl_entities
+            )
             logger.debug(f"Nodes CSV exported to {nodes_csv}")
         
         # Optional visualizations

@@ -137,6 +137,7 @@ open-pulse-crawler crawl DeepLabCut/DeepLabCut \
 - `--no-csv`: Skip CSV output
 - `--visualize, -v`: Generate graph visualization (PNG)
 - `--verbose`: Enable verbose logging
+- `--epfl-list`: Path to file containing EPFL entities (one per line) to flag in output
 
 #### Dependency Options (New!)
 - `--crawl-dependencies`: Crawl downstream dependencies (SBOM)
@@ -188,13 +189,13 @@ repo1,lib1,depends_on,repo,repo
 
 ### CSV Output (Nodes)
 
-All discovered nodes:
+All discovered nodes (including unexplored frontier nodes):
 
 ```csv
-id,name,type,is_seed
-caviri,Carlos Vivar,user,true
-sdsc-ordes/gimie,gimie,repo,true
-torvalds,Linus Torvalds,user,false
+id,name,type,is_seed,is_explored,exploration_timestamp,is_epfl
+caviri,Carlos Vivar,user,true,true,2025-11-19T10:00:00,false
+sdsc-ordes/gimie,gimie,repo,true,true,2025-11-19T10:00:05,true
+torvalds,Linus Torvalds,user,false,false,,false
 ```
 
 ### Visualization
