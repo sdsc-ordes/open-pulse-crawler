@@ -12,7 +12,8 @@ A powerful GitHub crawler based on breadth-first search (BFS) strategy to discov
 - ⏸️ **State Management**: Save and resume crawler state
 - 📝 **Rich Logging**: Timestamped logs with progress tracking and statistics
 - 📉 **Progress Tracking**: Real-time progress bars with percentage, ETA, and statistics using tqdm
-- 🎯 **Relationship Mapping**: Tracks "owner of", "contributor of", "member of", "fork of", and "parent of" relationships
+- 🎯 **Relationship Mapping**: Tracks "owner of", "contributor of", "member of", "fork of", "parent of", and "depends on" relationships
+- 🔗 **Dependency Graph**: Crawl repository dependencies (SBOM) and dependents ("Used by")
 - 🚦 **Intelligent Rate Limiting**: Adaptive rate limit management with semaphores, delays, and multi-token rotation
 - ⚡ **Concurrent Control**: Configurable request throttling to prevent API abuse
 
@@ -104,6 +105,24 @@ open-pulse-crawler crawl \
 open-pulse-crawler crawl --resume --state-file state.json
 ```
 
+### Dependency & Dependent Crawling
+
+The crawler can also discover relationships based on repository dependencies (using GitHub's SBOM) and dependents (using the "Used by" graph).
+
+```bash
+open-pulse-crawler crawl DeepLabCut/DeepLabCut \
+  --rounds 1 \
+  --crawl-dependencies \
+  --crawl-dependents \
+  --min-stars 10 \
+  --max-dependents 50
+```
+
+- `--crawl-dependencies`: Crawl downstream dependencies (what the repo uses).
+- `--crawl-dependents`: Crawl upstream dependents (who uses the repo).
+- `--min-stars N`: Filter dependents/dependencies by minimum star count (default: 0).
+- `--max-dependents N`: Limit the number of dependents to fetch per repository (default: all).
+
 ### Command-Line Options
 
 #### Basic Options
@@ -118,6 +137,12 @@ open-pulse-crawler crawl --resume --state-file state.json
 - `--no-csv`: Skip CSV output
 - `--visualize, -v`: Generate graph visualization (PNG)
 - `--verbose`: Enable verbose logging
+
+#### Dependency Options (New!)
+- `--crawl-dependencies`: Crawl downstream dependencies (SBOM)
+- `--crawl-dependents`: Crawl upstream dependents ("Used by")
+- `--min-stars`: Minimum stars for filtering dependents/dependencies (default: 0)
+- `--max-dependents`: Maximum number of dependents to fetch (default: all)
 
 #### Rate Limiting Options (New!)
 - `--request-delay`: Minimum delay in seconds between API requests (default: 0.0)
@@ -158,6 +183,7 @@ source,target,property,source_type,target_type
 caviri,caviri/repo1,owner of,user,repo
 user1,org1,member of,user,org
 repo1,repo2,parent of,repo,repo
+repo1,lib1,depends_on,repo,repo
 ```
 
 ### CSV Output (Nodes)
@@ -189,7 +215,7 @@ When `--visualize` is enabled, generates a PNG image with:
 3. **Relationship Mapping**:
    - Users/Orgs → Repos: "owner of" or "contributor of"
    - Users → Orgs: "member of"
-   - Repos → Repos: "parent of" (for forks)
+   - Repos → Repos: "parent of" (for forks) or "depends_on" (for dependencies)
 4. **Caching**: Stores API responses to avoid redundant calls
 5. **Rate Limiting**: Automatically handles GitHub API rate limits with token rotation
 

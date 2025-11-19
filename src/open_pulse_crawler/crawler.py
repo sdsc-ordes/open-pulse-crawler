@@ -15,6 +15,7 @@ from .models import (
     GitHubItemType
 )
 from .github_client import GitHubClient
+from .dependency_utils import fetch_dependencies_sbom, fetch_dependents
 
 logger = logging.getLogger(__name__)
 
@@ -23,11 +24,15 @@ class GitHubCrawler:
     """BFS crawler for GitHub entities."""
     
     def __init__(
-        self,
-        client: GitHubClient,
+        self, 
+        client: GitHubClient, 
         max_rounds: int = 3,
         state_file: Optional[Path] = None,
-        batch_size: Optional[int] = None
+        batch_size: Optional[int] = None,
+        crawl_dependencies: bool = False,
+        crawl_dependents: bool = False,
+        min_stars: int = 0,
+        max_dependents: Optional[int] = None
     ):
         """
         Initialize the crawler.
@@ -37,11 +42,18 @@ class GitHubCrawler:
             max_rounds: Maximum number of BFS rounds
             state_file: File to save/load crawler state
             batch_size: Number of nodes to process concurrently (default: matches client's max_concurrent_requests)
+            crawl_dependencies: Whether to crawl dependencies (downstream)
+            crawl_dependents: Whether to crawl dependents (upstream)
+            min_stars: Minimum stars for dependents/dependencies filtering
         """
         self.client = client
         self.max_rounds = max_rounds
         self.state_file = state_file
         self.batch_size = batch_size if batch_size is not None else client.semaphore._value
+        self.crawl_dependencies = crawl_dependencies
+        self.crawl_dependents = crawl_dependents
+        self.min_stars = min_stars
+        self.max_dependents = max_dependents
         
         # Graph data
         self.graph = GraphData()
@@ -407,6 +419,28 @@ class GitHubCrawler:
                 if repo.is_fork and repo.forked_from:
                     items_to_queue.append(('repo', repo.forked_from))
                 
+                # Crawl dependencies (downstream) - Cached path
+                if self.crawl_dependencies:
+                    try:
+                        # Use current token for API calls
+                        token = self.client.tokens[self.client.current_token_idx]
+                        dependencies = fetch_dependencies_sbom(repo_full_name, token)
+                        repo.dependencies.extend(dependencies)
+                        for dep in dependencies:
+                            items_to_queue.append(('repo', dep))
+                    except Exception as e:
+                        logger.warning(f"Failed to crawl dependencies for {repo_full_name}: {e}")
+
+                # Crawl dependents (upstream) - Cached path
+                if self.crawl_dependents:
+                    try:
+                        dependents = fetch_dependents(repo_full_name, min_stars=self.min_stars)
+                        repo.dependents.extend(dependents)
+                        for dep in dependents:
+                            items_to_queue.append(('repo', dep))
+                    except Exception as e:
+                        logger.warning(f"Failed to crawl dependents for {repo_full_name}: {e}")
+
                 # Add all items to queue in a single lock acquisition
                 with self.visited_lock:
                     for item_type, identifier in items_to_queue:
@@ -446,6 +480,32 @@ class GitHubCrawler:
                 if repo.is_fork and repo.forked_from:
                     items_to_queue.append(('repo', repo.forked_from))
                 
+                # Crawl dependencies (downstream)
+                if self.crawl_dependencies:
+                    try:
+                        # Use current token for API calls
+                        token = self.client.tokens[self.client.current_token_idx]
+                        dependencies = fetch_dependencies_sbom(repo_full_name, token)
+                        repo.dependencies.extend(dependencies)
+                        for dep in dependencies:
+                            items_to_queue.append(('repo', dep))
+                    except Exception as e:
+                        logger.warning(f"Failed to crawl dependencies for {repo_full_name}: {e}")
+
+                # Crawl dependents (upstream)
+                if self.crawl_dependents:
+                    try:
+                        dependents = fetch_dependents(
+                            repo_full_name, 
+                            min_stars=self.min_stars,
+                            max_dependents=self.max_dependents
+                        )
+                        repo.dependents.extend(dependents)
+                        for dep in dependents:
+                            items_to_queue.append(('repo', dep))
+                    except Exception as e:
+                        logger.warning(f"Failed to crawl dependents for {repo_full_name}: {e}")
+
                 # Add all items to queue in a single lock acquisition
                 with self.visited_lock:
                     for item_type, identifier in items_to_queue:

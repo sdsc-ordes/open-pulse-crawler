@@ -160,7 +160,32 @@ def export_to_csv(graph: GraphData, output_path: Path, seed_nodes: Set[str]):
                 'source_type': 'repo',
                 'target_type': 'repo',
             })
+
+        # Dependencies (repo -> dependency)
+        for dep_name in repo.dependencies:
+            edges.append({
+                'source': repo.full_name,
+                'target': dep_name,
+                'property': 'depends_on',
+                'source_type': 'repo',
+                'target_type': 'repo',
+            })
+
+        # Dependents (dependent -> repo)
+        for dep_name in repo.dependents:
+            edges.append({
+                'source': dep_name,
+                'target': repo.full_name,
+                'property': 'depends_on',
+                'source_type': 'repo',
+                'target_type': 'repo',
+            })
     
+    # Deduplicate edges to prevent double-counting (e.g. if A depends on B, and both are in graph)
+    # Convert list of dicts to set of frozen items, then back to list of dicts
+    unique_edges = {tuple(sorted(d.items())) for d in edges}
+    edges = [dict(t) for t in unique_edges]
+
     # Write to CSV
     try:
         with open(output_path, 'w', newline='') as f:

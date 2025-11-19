@@ -8,10 +8,12 @@ import threading
 from typing import List, Optional, Dict, Any
 from pathlib import Path
 import json
+import re
 from github import Github, GithubException, RateLimitExceededException
 from github.Repository import Repository
 from github.NamedUser import NamedUser
 from github.Organization import Organization
+from github_dependents_info import GithubDependentsInfo
 import hashlib
 
 logger = logging.getLogger(__name__)

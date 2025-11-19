@@ -71,7 +71,7 @@ def get_github_tokens() -> List[str]:
 
 @app.command()
 def crawl(
-    seeds: List[str] = typer.Argument(
+    seeds: Optional[List[str]] = typer.Argument(
         None,
         help="Initial seed nodes (users, orgs, or repos). Can be usernames, org/repo, or full GitHub URLs."
     ),
@@ -141,6 +141,26 @@ def crawl(
         False,
         "--incremental-export",
         help="Export graph data after each round (in addition to final export)"
+    ),
+    crawl_dependencies: bool = typer.Option(
+        False,
+        "--crawl-dependencies",
+        help="Crawl repository dependencies (downstream) via SBOM"
+    ),
+    crawl_dependents: bool = typer.Option(
+        False,
+        "--crawl-dependents",
+        help="Crawl repository dependents (upstream) via GitHub 'Used by' graph"
+    ),
+    min_stars: int = typer.Option(
+        0,
+        "--min-stars",
+        help="Minimum stars for filtering dependents/dependencies"
+    ),
+    max_dependents: Optional[int] = typer.Option(
+        None,
+        "--max-dependents",
+        help="Maximum number of dependents to fetch (default: None = all)"
     ),
     verbose: bool = typer.Option(
         False,
@@ -224,7 +244,11 @@ def crawl(
         client, 
         max_rounds=rounds, 
         state_file=state_file,
-        batch_size=batch_size
+        batch_size=batch_size,
+        crawl_dependencies=crawl_dependencies,
+        crawl_dependents=crawl_dependents,
+        min_stars=min_stars,
+        max_dependents=max_dependents
     )
     
     # Setup incremental export callback if requested

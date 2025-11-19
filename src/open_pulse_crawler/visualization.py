@@ -163,6 +163,16 @@ def visualize_graph(
             
             if repo.is_fork and repo.forked_from and repo.forked_from in graph.repos:
                 G.add_edge(repo.forked_from, repo.full_name, relationship='parent_of')
+            
+            # Dependencies (Repo -> Repo)
+            for dep in repo.dependencies:
+                if dep in graph.repos:
+                    G.add_edge(repo.full_name, dep, relationship='depends_on')
+            
+            # Dependents (Repo -> Repo)
+            for dep in repo.dependents:
+                if dep in graph.repos:
+                    G.add_edge(dep, repo.full_name, relationship='depends_on')
         
         # Add edges from explored to discovered nodes
         for node_id, (node_type, parent_id, parent_type) in discovered_nodes.items():
@@ -352,6 +362,7 @@ def visualize_graph(
             'contributor_of': '#4ecdc4',  # Teal - contribution
             'member_of': '#95e1d3',       # Light teal - membership
             'parent_of': '#ffd93d',       # Yellow - fork relationship
+            'depends_on': '#ff9f43',      # Orange - dependency
         }
         
         # Separate nodes by exploration status and type

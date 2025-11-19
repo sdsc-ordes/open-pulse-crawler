@@ -54,6 +54,10 @@ class RepoModel(BaseModel):
     is_fork: bool = False
     forked_from: Optional[str] = None
 
+    # Dependency information
+    dependents: List[str] = Field(default_factory=list)
+    dependencies: List[str] = Field(default_factory=list)
+
 
 class GraphData(BaseModel):
     """Holds references to users, orgs, and repos discovered."""
