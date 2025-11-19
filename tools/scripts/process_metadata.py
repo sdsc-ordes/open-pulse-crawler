@@ -292,6 +292,7 @@ def process(
     timeout: float = typer.Option(600.0, "--timeout", help="Request timeout in seconds (default: 600s / 10 minutes)"),
     retry_failed: bool = typer.Option(False, "--retry-failed", help="Process only previously failed items"),
     skip_cached: bool = typer.Option(False, "--skip-cached", help="Skip items that are already cached (already successfully downloaded)"),
+    by_connections: bool = typer.Option(False, "--by-connections", help="Rank items by number of connections (highest first) instead of entity type"),
 ):
     """
     Download metadata and extract affiliations from CSV.
@@ -379,14 +380,48 @@ def process(
             if skipped_count > 0:
                 typer.echo(f"⏭️  Skipped {skipped_count} cached items (--skip-cached enabled)")
         
-        # Sort items by priority: org > user > repo
-        # This ensures we process orgs first, then users, then repos
-        type_priority = {'org': 0, 'user': 1, 'repo': 2}
-        items_sorted = sorted(
-            items_to_process.items(),
-            key=lambda x: (type_priority.get(x[1], 999), x[0])
-        )
-        items_to_process = dict(items_sorted)
+        # Sort items by connection count or entity type priority
+        if by_connections:
+            typer.echo("🔗 Sorting by number of connections (highest first)...")
+            # Count connections for each item from the CSV
+            connection_counts = {}
+            with open(csv_path, 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    source = row.get('source', '').strip()
+                    target = row.get('target', '').strip()
+                    source_type = row.get('source_type', '').strip()
+                    target_type = row.get('target_type', '').strip()
+                    
+                    # Count connections for items we care about
+                    if source and source_type in allowed_types and source in items_to_process:
+                        connection_counts[source] = connection_counts.get(source, 0) + 1
+                    if target and target_type in allowed_types and target in items_to_process:
+                        connection_counts[target] = connection_counts.get(target, 0) + 1
+            
+            # Sort by connection count (descending), then by name for ties
+            items_sorted = sorted(
+                items_to_process.items(),
+                key=lambda x: (-connection_counts.get(x[0], 0), x[0])
+            )
+            items_to_process = dict(items_sorted)
+            
+            # Show top 10 most connected items
+            top_items = list(items_sorted)[:10]
+            if top_items:
+                typer.echo("🏆 Top 10 most connected items:")
+                for idx, (item, item_type) in enumerate(top_items, 1):
+                    connections = connection_counts.get(item, 0)
+                    typer.echo(f"   {idx}. {item} ({item_type}): {connections} connections")
+        else:
+            # Original: Sort items by priority: org > user > repo
+            # This ensures we process orgs first, then users, then repos
+            type_priority = {'org': 0, 'user': 1, 'repo': 2}
+            items_sorted = sorted(
+                items_to_process.items(),
+                key=lambda x: (type_priority.get(x[1], 999), x[0])
+            )
+            items_to_process = dict(items_sorted)
         
         # Apply limit if specified (after sorting, so we get orgs/users first)
         if limit and len(items_to_process) > limit:

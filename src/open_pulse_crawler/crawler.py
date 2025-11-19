@@ -192,12 +192,15 @@ class GitHubCrawler:
                 if user_obj.get('type') == 'Organization':
                     logger.debug(f"{username} is an organization, not a user")
                     return None
+                
+                user_type_str = user_obj.get('type', 'User')
+                user_type = GitHubItemType.BOT if user_type_str == 'Bot' else GitHubItemType.USER
                     
                 user = UserModel(
                     login=user_obj['login'],
                     name=user_obj.get('name', ''),
                     id=user_obj.get('id', 0),
-                    type=GitHubItemType.USER
+                    type=user_type
                 )
                 
                 # Use cached repos data if available

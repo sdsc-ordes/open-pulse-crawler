@@ -127,6 +127,11 @@ def crawl(
         "--visualize-clusters",
         help="Generate separate visualizations for each disconnected cluster"
     ),
+    exclude_bots: bool = typer.Option(
+        False,
+        "--exclude-bots",
+        help="Exclude bots from visualization"
+    ),
     show_unexplored: bool = typer.Option(
         False,
         "--show-unexplored",
@@ -386,7 +391,7 @@ def crawl(
                 console.print(f"[blue]Generating main visualization...[/blue]")
                 try:
                     discovered = crawler.discovered_nodes if show_unexplored else None
-                    visualize_graph(crawler.graph, viz_path, crawler.seed_nodes, crawler.visited, discovered)
+                    visualize_graph(crawler.graph, viz_path, crawler.seed_nodes, crawler.visited, discovered, exclude_bots=exclude_bots)
                     console.print(f"[green]✓[/green] Visualization: {viz_path}")
                 except Exception as e:
                     console.print(f"[red]✗[/red] Visualization failed: {e}")
@@ -396,7 +401,7 @@ def crawl(
                 console.print(f"[blue]Generating cluster visualizations...[/blue]")
                 try:
                     discovered = crawler.discovered_nodes if show_unexplored else None
-                    viz_clusters(crawler.graph, clusters_dir, crawler.seed_nodes, crawler.visited, discovered)
+                    viz_clusters(crawler.graph, clusters_dir, crawler.seed_nodes, crawler.visited, discovered, exclude_bots=exclude_bots)
                     console.print(f"[green]✓[/green] Cluster visualizations: {clusters_dir}/")
                 except Exception as e:
                     console.print(f"[red]✗[/red] Cluster visualization failed: {e}")

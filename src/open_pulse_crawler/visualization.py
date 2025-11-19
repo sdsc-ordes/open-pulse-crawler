@@ -40,7 +40,8 @@ def visualize_graph(
     visited_nodes: Optional[Set[str]] = None,
     discovered_nodes: Optional[Dict[str, tuple]] = None,
     figsize: tuple = (24, 24),
-    dpi: int = 300
+    dpi: int = 300,
+    exclude_bots: bool = False
 ):
     """
     Visualize the graph with color-coded node types using a modern dark theme.
@@ -56,6 +57,7 @@ def visualize_graph(
                          for discovered but not yet explored nodes.
         figsize: Figure size in inches
         dpi: Resolution in dots per inch
+        exclude_bots: Whether to exclude bots from the visualization
     """
     if not VISUALIZATION_AVAILABLE:
         logger.error("Visualization requires networkx and matplotlib. Install with: pip install networkx matplotlib")
@@ -77,6 +79,13 @@ def visualize_graph(
         
         # Add explored nodes with attributes (from main graph)
         for user in graph.users.values():
+            # Skip bots if requested
+            if exclude_bots:
+                is_bot_type = user.type == 'Bot'
+                is_bot_name = user.login.endswith('[bot]')
+                if is_bot_type or is_bot_name:
+                    continue
+
             G.add_node(
                 user.login,
                 node_type='user',
@@ -590,7 +599,8 @@ def visualize_clusters(
     visited_nodes: Optional[Set[str]] = None,
     discovered_nodes: Optional[Dict[str, tuple]] = None,
     figsize: tuple = (16, 16),
-    dpi: int = 300
+    dpi: int = 300,
+    exclude_bots: bool = False
 ):
     """
     Create separate visualizations for each disconnected cluster in the graph.
@@ -605,6 +615,7 @@ def visualize_clusters(
                          for discovered but not yet explored nodes.
         figsize: Figure size for each cluster visualization
         dpi: Resolution in dots per inch
+        exclude_bots: Whether to exclude bots from the visualization
     """
     if not VISUALIZATION_AVAILABLE:
         logger.error("Visualization requires networkx and matplotlib. Install with: pip install networkx matplotlib")
@@ -623,6 +634,13 @@ def visualize_clusters(
         
         # Add nodes with attributes (same as main visualization)
         for user in graph.users.values():
+            # Skip bots if requested
+            if exclude_bots:
+                is_bot_type = user.type == 'Bot'
+                is_bot_name = user.login.endswith('[bot]')
+                if is_bot_type or is_bot_name:
+                    continue
+
             G.add_node(
                 user.login,
                 node_type='user',
@@ -691,6 +709,10 @@ def visualize_clusters(
             discovered_nodes = {}
         
         for node_id, (node_type, parent_id, parent_type) in discovered_nodes.items():
+            # Skip bots if requested
+            if exclude_bots and node_id.endswith('[bot]'):
+                continue
+
             # Add the discovered node if not already in graph
             if node_id not in G:
                 G.add_node(
@@ -785,6 +807,21 @@ def visualize_clusters(
                     iterations=100,  # Limited iterations
                     seed=None
                 )
+            
+            # Add jitter to prevent exact overlaps
+            # This addresses the issue where nodes with identical connectivity patterns
+            # can end up at the exact same position, causing visual overlap
+            jitter_strength = 0.05  # 5% of coordinate space
+            np.random.seed(42 + idx)  # Reproducible jitter, different for each cluster
+            
+            for node in pos:
+                # Add random offset to both x and y coordinates
+                current_pos = np.array(pos[node])
+                jitter = np.array([
+                    np.random.uniform(-jitter_strength, jitter_strength),
+                    np.random.uniform(-jitter_strength, jitter_strength)
+                ])
+                pos[node] = current_pos + jitter
             
             # Separate nodes by exploration status
             component_seed_nodes = [n for n in component if subgraph.nodes[n].get('is_seed', False)]
