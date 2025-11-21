@@ -63,10 +63,10 @@ def resolve_pypi_package(package_name: str) -> Optional[str]:
         logger.debug(f"Error resolving PyPI package {package_name}: {e}")
         return None
 
-def fetch_dependencies_sbom(repo_full_name: str, token: str) -> List[str]:
+def fetch_dependencies_sbom(repo_full_name: str, token: str) -> Optional[List[str]]:
     """
     Fetch dependencies from GitHub SBOM API.
-    Returns a list of 'owner/repo' strings.
+    Returns a list of 'owner/repo' strings, or None if fetch failed.
     """
     url = f"https://api.github.com/repos/{repo_full_name}/dependency-graph/sbom"
     headers = {
@@ -81,7 +81,11 @@ def fetch_dependencies_sbom(repo_full_name: str, token: str) -> List[str]:
         resp = requests.get(url, headers=headers, timeout=10)
         if resp.status_code != 200:
             logger.debug(f"Failed to fetch SBOM for {repo_full_name}: {resp.status_code}")
-            return []
+            # If dependency graph is disabled (422), cache as empty.
+            # For other errors (403, 404, 5xx), return None to avoid caching.
+            if resp.status_code == 422:
+                return []
+            return None
             
         data = resp.json()
         if "sbom" not in data or "packages" not in data["sbom"]:
@@ -98,6 +102,21 @@ def fetch_dependencies_sbom(repo_full_name: str, token: str) -> List[str]:
                         found = True
                         break
             
+            # Also check if the package name itself looks like a GitHub repo (owner/repo)
+            # This is common for some package managers or direct git dependencies
+            if not found:
+                name = pkg.get("name", "")
+                if "/" in name and not name.startswith("@"):
+                    # Potential GitHub repo format "owner/repo"
+                    # Verify it's not just a scoped package name like @types/node
+                    parts = name.split("/")
+                    if len(parts) == 2:
+                        # It's a simple heuristic, but might catch some direct deps
+                        # We could verify it exists, but that's expensive.
+                        # Let's assume if it's in SBOM and looks like owner/repo, it might be one.
+                        # However, without a URL, it's risky.
+                        pass
+
             if found:
                 continue
                 
@@ -124,23 +143,33 @@ def fetch_dependencies_sbom(repo_full_name: str, token: str) -> List[str]:
                 match = re.match(r"pkg:pypi/([^/?#]+)", purl_base)
                 if match:
                     pkg_name = match.group(1)
+                    # Try to resolve PyPI package to GitHub repo
                     repo = resolve_pypi_package(pkg_name)
                     if repo:
                         dependencies.add(repo)
-                        
+                    else:
+                        # Fallback: if we can't resolve to a repo, we can't add it to the graph
+                        # as a node, but we could log it or handle it differently if needed.
+                        # For now, we only track dependencies that are GitHub repositories.
+                        pass
+            
+            # Handle other package types if needed (e.g., npm, maven)
+            # For now, we focus on PyPI as it's the most common in this context
+            
     except Exception as e:
         logger.warning(f"Error fetching dependencies for {repo_full_name}: {e}")
+        return None
         
     return list(dependencies)
 
-def fetch_dependents(repo_full_name: str, min_stars: int = 0, max_dependents: Optional[int] = None) -> List[str]:
+def fetch_dependents(repo_full_name: str, min_stars: int = 0, max_dependents: Optional[int] = None) -> Optional[List[str]]:
     """
     Fetch dependents using github-dependents-info.
-    Returns a list of 'owner/repo' strings.
+    Returns a list of 'owner/repo' strings, or None if fetch failed.
     """
     if not GITHUB_DEPENDENTS_INFO_AVAILABLE:
         logger.warning("github-dependents-info not installed, skipping dependents fetch")
-        return []
+        return None
         
     dependents = []
     try:
@@ -178,5 +207,6 @@ def fetch_dependents(repo_full_name: str, min_stars: int = 0, max_dependents: Op
                     
     except Exception as e:
         logger.warning(f"Error fetching dependents for {repo_full_name}: {e}")
+        return None
         
     return dependents

@@ -567,6 +567,7 @@ def visualize_graph(
             mpatches.Patch(facecolor=edge_color_map['contributor_of'], label='Contributor of', edgecolor='#ffffff', linewidth=1),
             mpatches.Patch(facecolor=edge_color_map['member_of'], label='Member of', edgecolor='#ffffff', linewidth=1),
             mpatches.Patch(facecolor=edge_color_map['parent_of'], label='Parent of (fork)', edgecolor='#ffffff', linewidth=1),
+            mpatches.Patch(facecolor=edge_color_map['depends_on'], label='Depends on', edgecolor='#ffffff', linewidth=1),
         ])
         legend = ax.legend(
             handles=legend_elements, 

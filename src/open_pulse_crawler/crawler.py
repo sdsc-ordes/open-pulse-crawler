@@ -440,22 +440,60 @@ class GitHubCrawler:
                 # Crawl dependencies (downstream) - Cached path
                 if self.crawl_dependencies:
                     try:
-                        # Use current token for API calls
-                        token = self.client.tokens[self.client.current_token_idx]
-                        dependencies = fetch_dependencies_sbom(repo_full_name, token)
-                        repo.dependencies.extend(dependencies)
-                        for dep in dependencies:
-                            items_to_queue.append(('repo', dep))
+                        # Check cache
+                        cache_endpoint = f"sbom/{repo_full_name}"
+                        cached_deps = self.client.cache.get(cache_endpoint) if self.client.cache else None
+                        
+                        if cached_deps is not None:
+                            dependencies = cached_deps
+                            logger.debug(f"Cache hit for dependencies of {repo_full_name}")
+                        else:
+                            # Use current token for API calls
+                            token = self.client.tokens[self.client.current_token_idx]
+                            dependencies = fetch_dependencies_sbom(repo_full_name, token)
+                            
+                            if dependencies is not None:
+                                # Save to cache
+                                if self.client.cache:
+                                    self.client.cache.set(cache_endpoint, "", dependencies)
+                        
+                        # Add dependencies to repo model (whether from cache or API)
+                        if dependencies is not None:
+                            repo.dependencies.extend(dependencies)
+                            # Do not queue dependencies for next round
+                            # for dep in dependencies:
+                            #     items_to_queue.append(('repo', dep))
                     except Exception as e:
                         logger.warning(f"Failed to crawl dependencies for {repo_full_name}: {e}")
 
                 # Crawl dependents (upstream) - Cached path
                 if self.crawl_dependents:
                     try:
-                        dependents = fetch_dependents(repo_full_name, min_stars=self.min_stars)
-                        repo.dependents.extend(dependents)
-                        for dep in dependents:
-                            items_to_queue.append(('repo', dep))
+                        # Check cache
+                        cache_endpoint = f"dependents/{repo_full_name}"
+                        cache_params = f"min_stars={self.min_stars}&max_dependents={self.max_dependents}"
+                        cached_dependents = self.client.cache.get(cache_endpoint, cache_params) if self.client.cache else None
+                        
+                        if cached_dependents is not None:
+                            dependents = cached_dependents
+                            logger.debug(f"Cache hit for dependents of {repo_full_name}")
+                        else:
+                            dependents = fetch_dependents(
+                                repo_full_name, 
+                                min_stars=self.min_stars,
+                                max_dependents=self.max_dependents
+                            )
+                            
+                            if dependents is not None:
+                                # Save to cache
+                                if self.client.cache:
+                                    self.client.cache.set(cache_endpoint, cache_params, dependents)
+                        
+                        # Add dependents to repo model and queue (whether from cache or API)
+                        if dependents is not None:
+                            repo.dependents.extend(dependents)
+                            for dep in dependents:
+                                items_to_queue.append(('repo', dep))
                     except Exception as e:
                         logger.warning(f"Failed to crawl dependents for {repo_full_name}: {e}")
 
@@ -504,26 +542,60 @@ class GitHubCrawler:
                 # Crawl dependencies (downstream)
                 if self.crawl_dependencies:
                     try:
-                        # Use current token for API calls
-                        token = self.client.tokens[self.client.current_token_idx]
-                        dependencies = fetch_dependencies_sbom(repo_full_name, token)
-                        repo.dependencies.extend(dependencies)
-                        for dep in dependencies:
-                            items_to_queue.append(('repo', dep))
+                        # Check cache
+                        cache_endpoint = f"sbom/{repo_full_name}"
+                        cached_deps = self.client.cache.get(cache_endpoint) if self.client.cache else None
+                        
+                        if cached_deps is not None:
+                            dependencies = cached_deps
+                            logger.debug(f"Cache hit for dependencies of {repo_full_name}")
+                        else:
+                            # Use current token for API calls
+                            token = self.client.tokens[self.client.current_token_idx]
+                            dependencies = fetch_dependencies_sbom(repo_full_name, token)
+                            
+                            if dependencies is not None:
+                                # Save to cache
+                                if self.client.cache:
+                                    self.client.cache.set(cache_endpoint, "", dependencies)
+                        
+                        # Add dependencies to repo model (whether from cache or API)
+                        if dependencies is not None:
+                            repo.dependencies.extend(dependencies)
+                            # Do not queue dependencies for next round
+                            # for dep in dependencies:
+                            #     items_to_queue.append(('repo', dep))
                     except Exception as e:
                         logger.warning(f"Failed to crawl dependencies for {repo_full_name}: {e}")
 
                 # Crawl dependents (upstream)
                 if self.crawl_dependents:
                     try:
-                        dependents = fetch_dependents(
-                            repo_full_name, 
-                            min_stars=self.min_stars,
-                            max_dependents=self.max_dependents
-                        )
-                        repo.dependents.extend(dependents)
-                        for dep in dependents:
-                            items_to_queue.append(('repo', dep))
+                        # Check cache
+                        cache_endpoint = f"dependents/{repo_full_name}"
+                        cache_params = f"min_stars={self.min_stars}&max_dependents={self.max_dependents}"
+                        cached_dependents = self.client.cache.get(cache_endpoint, cache_params) if self.client.cache else None
+                        
+                        if cached_dependents is not None:
+                            dependents = cached_dependents
+                            logger.debug(f"Cache hit for dependents of {repo_full_name}")
+                        else:
+                            dependents = fetch_dependents(
+                                repo_full_name, 
+                                min_stars=self.min_stars,
+                                max_dependents=self.max_dependents
+                            )
+                            
+                            if dependents is not None:
+                                # Save to cache
+                                if self.client.cache:
+                                    self.client.cache.set(cache_endpoint, cache_params, dependents)
+                        
+                        # Add dependents to repo model and queue (whether from cache or API)
+                        if dependents is not None:
+                            repo.dependents.extend(dependents)
+                            for dep in dependents:
+                                items_to_queue.append(('repo', dep))
                     except Exception as e:
                         logger.warning(f"Failed to crawl dependents for {repo_full_name}: {e}")
 
