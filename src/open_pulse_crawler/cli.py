@@ -71,7 +71,7 @@ def get_github_tokens() -> List[str]:
 
 @app.command()
 def crawl(
-    seeds: List[str] = typer.Argument(
+    seeds: Optional[List[str]] = typer.Argument(
         None,
         help="Initial seed nodes (users, orgs, or repos). Can be usernames, org/repo, or full GitHub URLs."
     ),
@@ -127,6 +127,11 @@ def crawl(
         "--visualize-clusters",
         help="Generate separate visualizations for each disconnected cluster"
     ),
+    exclude_bots: bool = typer.Option(
+        False,
+        "--exclude-bots",
+        help="Exclude bots from visualization"
+    ),
     show_unexplored: bool = typer.Option(
         False,
         "--show-unexplored",
@@ -136,6 +141,26 @@ def crawl(
         False,
         "--incremental-export",
         help="Export graph data after each round (in addition to final export)"
+    ),
+    crawl_dependencies: bool = typer.Option(
+        False,
+        "--crawl-dependencies",
+        help="Crawl repository dependencies (downstream) via SBOM"
+    ),
+    crawl_dependents: bool = typer.Option(
+        False,
+        "--crawl-dependents",
+        help="Crawl repository dependents (upstream) via GitHub 'Used by' graph"
+    ),
+    min_stars: int = typer.Option(
+        0,
+        "--min-stars",
+        help="Minimum stars for filtering dependents/dependencies"
+    ),
+    max_dependents: Optional[int] = typer.Option(
+        None,
+        "--max-dependents",
+        help="Maximum number of dependents to fetch (default: None = all)"
     ),
     verbose: bool = typer.Option(
         False,
@@ -168,6 +193,12 @@ def crawl(
         help="Number of nodes to process concurrently (default: matches --max-concurrent)",
         min=1,
         max=50
+    ),
+    epfl_list: Optional[Path] = typer.Option(
+        None,
+        "--epfl-list",
+        help="Path to file containing EPFL entities (one per line)",
+        exists=True
     )
 ):
     """
@@ -207,6 +238,20 @@ def crawl(
     if cache_dir:
         cache_dir.mkdir(parents=True, exist_ok=True)
     
+    # Load EPFL entities
+    epfl_entities = set()
+    if epfl_list:
+        try:
+            with open(epfl_list, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith('#'):
+                        epfl_entities.add(line)
+            console.print(f"[green]✓[/green] Loaded {len(epfl_entities)} EPFL entities from {epfl_list}")
+        except Exception as e:
+            console.print(f"[red]Error reading EPFL list: {e}[/red]")
+            raise typer.Exit(1)
+
     # Initialize client and crawler
     client = GitHubClient(
         tokens, 
@@ -219,7 +264,12 @@ def crawl(
         client, 
         max_rounds=rounds, 
         state_file=state_file,
-        batch_size=batch_size
+        batch_size=batch_size,
+        crawl_dependencies=crawl_dependencies,
+        crawl_dependents=crawl_dependents,
+        min_stars=min_stars,
+        max_dependents=max_dependents,
+        epfl_entities=epfl_entities
     )
     
     # Setup incremental export callback if requested
@@ -372,7 +422,13 @@ def crawl(
         console.print(f"[green]✓[/green] CSV (edges): {edges_csv_path}")
         
         nodes_csv_path = output_dir / f"nodes_{timestamp}.csv"
-        export_nodes_csv(crawler.graph, nodes_csv_path, crawler.seed_nodes)
+        export_nodes_csv(
+            crawler.graph, 
+            nodes_csv_path, 
+            crawler.seed_nodes,
+            discovered_nodes=crawler.discovered_nodes,
+            epfl_entities=epfl_entities
+        )
         console.print(f"[green]✓[/green] CSV (nodes): {nodes_csv_path}")
     
     # Visualization
@@ -386,7 +442,7 @@ def crawl(
                 console.print(f"[blue]Generating main visualization...[/blue]")
                 try:
                     discovered = crawler.discovered_nodes if show_unexplored else None
-                    visualize_graph(crawler.graph, viz_path, crawler.seed_nodes, crawler.visited, discovered)
+                    visualize_graph(crawler.graph, viz_path, crawler.seed_nodes, crawler.visited, discovered, exclude_bots=exclude_bots)
                     console.print(f"[green]✓[/green] Visualization: {viz_path}")
                 except Exception as e:
                     console.print(f"[red]✗[/red] Visualization failed: {e}")
@@ -396,7 +452,7 @@ def crawl(
                 console.print(f"[blue]Generating cluster visualizations...[/blue]")
                 try:
                     discovered = crawler.discovered_nodes if show_unexplored else None
-                    viz_clusters(crawler.graph, clusters_dir, crawler.seed_nodes, crawler.visited, discovered)
+                    viz_clusters(crawler.graph, clusters_dir, crawler.seed_nodes, crawler.visited, discovered, exclude_bots=exclude_bots)
                     console.print(f"[green]✓[/green] Cluster visualizations: {clusters_dir}/")
                 except Exception as e:
                     console.print(f"[red]✗[/red] Cluster visualization failed: {e}")

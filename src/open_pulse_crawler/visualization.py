@@ -40,7 +40,8 @@ def visualize_graph(
     visited_nodes: Optional[Set[str]] = None,
     discovered_nodes: Optional[Dict[str, tuple]] = None,
     figsize: tuple = (24, 24),
-    dpi: int = 300
+    dpi: int = 300,
+    exclude_bots: bool = False
 ):
     """
     Visualize the graph with color-coded node types using a modern dark theme.
@@ -56,6 +57,7 @@ def visualize_graph(
                          for discovered but not yet explored nodes.
         figsize: Figure size in inches
         dpi: Resolution in dots per inch
+        exclude_bots: Whether to exclude bots from the visualization
     """
     if not VISUALIZATION_AVAILABLE:
         logger.error("Visualization requires networkx and matplotlib. Install with: pip install networkx matplotlib")
@@ -77,6 +79,13 @@ def visualize_graph(
         
         # Add explored nodes with attributes (from main graph)
         for user in graph.users.values():
+            # Skip bots if requested
+            if exclude_bots:
+                is_bot_type = user.type == 'Bot'
+                is_bot_name = user.login.endswith('[bot]')
+                if is_bot_type or is_bot_name:
+                    continue
+
             G.add_node(
                 user.login,
                 node_type='user',
@@ -154,6 +163,16 @@ def visualize_graph(
             
             if repo.is_fork and repo.forked_from and repo.forked_from in graph.repos:
                 G.add_edge(repo.forked_from, repo.full_name, relationship='parent_of')
+            
+            # Dependencies (Repo -> Repo)
+            for dep in repo.dependencies:
+                if dep in graph.repos:
+                    G.add_edge(repo.full_name, dep, relationship='depends_on')
+            
+            # Dependents (Repo -> Repo)
+            for dep in repo.dependents:
+                if dep in graph.repos:
+                    G.add_edge(dep, repo.full_name, relationship='depends_on')
         
         # Add edges from explored to discovered nodes
         for node_id, (node_type, parent_id, parent_type) in discovered_nodes.items():
@@ -343,6 +362,7 @@ def visualize_graph(
             'contributor_of': '#4ecdc4',  # Teal - contribution
             'member_of': '#95e1d3',       # Light teal - membership
             'parent_of': '#ffd93d',       # Yellow - fork relationship
+            'depends_on': '#ff9f43',      # Orange - dependency
         }
         
         # Separate nodes by exploration status and type
@@ -547,6 +567,7 @@ def visualize_graph(
             mpatches.Patch(facecolor=edge_color_map['contributor_of'], label='Contributor of', edgecolor='#ffffff', linewidth=1),
             mpatches.Patch(facecolor=edge_color_map['member_of'], label='Member of', edgecolor='#ffffff', linewidth=1),
             mpatches.Patch(facecolor=edge_color_map['parent_of'], label='Parent of (fork)', edgecolor='#ffffff', linewidth=1),
+            mpatches.Patch(facecolor=edge_color_map['depends_on'], label='Depends on', edgecolor='#ffffff', linewidth=1),
         ])
         legend = ax.legend(
             handles=legend_elements, 
@@ -590,7 +611,8 @@ def visualize_clusters(
     visited_nodes: Optional[Set[str]] = None,
     discovered_nodes: Optional[Dict[str, tuple]] = None,
     figsize: tuple = (16, 16),
-    dpi: int = 300
+    dpi: int = 300,
+    exclude_bots: bool = False
 ):
     """
     Create separate visualizations for each disconnected cluster in the graph.
@@ -605,6 +627,7 @@ def visualize_clusters(
                          for discovered but not yet explored nodes.
         figsize: Figure size for each cluster visualization
         dpi: Resolution in dots per inch
+        exclude_bots: Whether to exclude bots from the visualization
     """
     if not VISUALIZATION_AVAILABLE:
         logger.error("Visualization requires networkx and matplotlib. Install with: pip install networkx matplotlib")
@@ -623,6 +646,13 @@ def visualize_clusters(
         
         # Add nodes with attributes (same as main visualization)
         for user in graph.users.values():
+            # Skip bots if requested
+            if exclude_bots:
+                is_bot_type = user.type == 'Bot'
+                is_bot_name = user.login.endswith('[bot]')
+                if is_bot_type or is_bot_name:
+                    continue
+
             G.add_node(
                 user.login,
                 node_type='user',
@@ -691,6 +721,10 @@ def visualize_clusters(
             discovered_nodes = {}
         
         for node_id, (node_type, parent_id, parent_type) in discovered_nodes.items():
+            # Skip bots if requested
+            if exclude_bots and node_id.endswith('[bot]'):
+                continue
+
             # Add the discovered node if not already in graph
             if node_id not in G:
                 G.add_node(
@@ -785,6 +819,21 @@ def visualize_clusters(
                     iterations=100,  # Limited iterations
                     seed=None
                 )
+            
+            # Add jitter to prevent exact overlaps
+            # This addresses the issue where nodes with identical connectivity patterns
+            # can end up at the exact same position, causing visual overlap
+            jitter_strength = 0.05  # 5% of coordinate space
+            np.random.seed(42 + idx)  # Reproducible jitter, different for each cluster
+            
+            for node in pos:
+                # Add random offset to both x and y coordinates
+                current_pos = np.array(pos[node])
+                jitter = np.array([
+                    np.random.uniform(-jitter_strength, jitter_strength),
+                    np.random.uniform(-jitter_strength, jitter_strength)
+                ])
+                pos[node] = current_pos + jitter
             
             # Separate nodes by exploration status
             component_seed_nodes = [n for n in component if subgraph.nodes[n].get('is_seed', False)]

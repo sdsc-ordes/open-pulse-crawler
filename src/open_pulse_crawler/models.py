@@ -14,7 +14,14 @@ class GitHubItemType(str, Enum):
     UNKNOWN = "Unknown"
 
 
-class UserModel(BaseModel):
+class BaseEntityModel(BaseModel):
+    """Base model for all GitHub entities."""
+    is_explored: bool = False
+    exploration_timestamp: Optional[str] = None
+    is_epfl: bool = False
+
+
+class UserModel(BaseEntityModel):
     """Model representing a GitHub user."""
     login: str
     name: str = ""
@@ -27,7 +34,7 @@ class UserModel(BaseModel):
     forked_repositories: List[str] = Field(default_factory=list)
 
 
-class OrgModel(BaseModel):
+class OrgModel(BaseEntityModel):
     """Model representing a GitHub organization."""
     login: str
     name: str = ""
@@ -41,7 +48,7 @@ class OrgModel(BaseModel):
     forked_repositories: List[str] = Field(default_factory=list)
 
 
-class RepoModel(BaseModel):
+class RepoModel(BaseEntityModel):
     """Model representing a GitHub repository."""
     full_name: str
     name: str = ""
@@ -53,6 +60,10 @@ class RepoModel(BaseModel):
     # Fork information
     is_fork: bool = False
     forked_from: Optional[str] = None
+
+    # Dependency information
+    dependents: List[str] = Field(default_factory=list)
+    dependencies: List[str] = Field(default_factory=list)
 
 
 class GraphData(BaseModel):

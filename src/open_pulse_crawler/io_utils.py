@@ -4,7 +4,7 @@ import csv
 import json
 import logging
 from pathlib import Path
-from typing import List, Set
+from typing import List, Set, Dict, Optional, Tuple
 
 from .models import GraphData, GitHubItemType
 
@@ -160,7 +160,32 @@ def export_to_csv(graph: GraphData, output_path: Path, seed_nodes: Set[str]):
                 'source_type': 'repo',
                 'target_type': 'repo',
             })
+
+        # Dependencies (repo -> dependency)
+        for dep_name in repo.dependencies:
+            edges.append({
+                'source': repo.full_name,
+                'target': dep_name,
+                'property': 'depends_on',
+                'source_type': 'repo',
+                'target_type': 'repo',
+            })
+
+        # Dependents (dependent -> repo)
+        for dep_name in repo.dependents:
+            edges.append({
+                'source': dep_name,
+                'target': repo.full_name,
+                'property': 'depends_on',
+                'source_type': 'repo',
+                'target_type': 'repo',
+            })
     
+    # Deduplicate edges to prevent double-counting (e.g. if A depends on B, and both are in graph)
+    # Convert list of dicts to set of frozen items, then back to list of dicts
+    unique_edges = {tuple(sorted(d.items())) for d in edges}
+    edges = [dict(t) for t in unique_edges]
+
     # Write to CSV
     try:
         with open(output_path, 'w', newline='') as f:
@@ -174,18 +199,28 @@ def export_to_csv(graph: GraphData, output_path: Path, seed_nodes: Set[str]):
         raise
 
 
-def export_nodes_csv(graph: GraphData, output_path: Path, seed_nodes: Set[str]):
+def export_nodes_csv(
+    graph: GraphData, 
+    output_path: Path, 
+    seed_nodes: Set[str],
+    discovered_nodes: Optional[Dict[str, tuple]] = None,
+    epfl_entities: Optional[Set[str]] = None
+):
     """
     Export node data to CSV format.
     
-    CSV format: id,name,type,is_seed
+    CSV format: id,name,type,is_seed,is_explored,exploration_timestamp,is_epfl
     
     Args:
         graph: GraphData to export
         output_path: Path to output CSV file
         seed_nodes: Set of initial seed node identifiers
+        discovered_nodes: Optional dict of discovered but unexplored nodes
+        epfl_entities: Optional set of EPFL entity names
     """
+    epfl_entities = {e.lower() for e in (epfl_entities or set())}
     nodes = []
+    processed_ids = set()
     
     # Add users
     for user in graph.users.values():
@@ -194,7 +229,11 @@ def export_nodes_csv(graph: GraphData, output_path: Path, seed_nodes: Set[str]):
             'name': user.name or user.login,
             'type': 'user',
             'is_seed': user.login in seed_nodes,
+            'is_explored': user.is_explored,
+            'exploration_timestamp': user.exploration_timestamp,
+            'is_epfl': user.is_epfl
         })
+        processed_ids.add(user.login)
     
     # Add orgs
     for org in graph.orgs.values():
@@ -203,7 +242,11 @@ def export_nodes_csv(graph: GraphData, output_path: Path, seed_nodes: Set[str]):
             'name': org.name or org.login,
             'type': 'org',
             'is_seed': org.login in seed_nodes,
+            'is_explored': org.is_explored,
+            'exploration_timestamp': org.exploration_timestamp,
+            'is_epfl': org.is_epfl
         })
+        processed_ids.add(org.login)
     
     # Add repos
     for repo in graph.repos.values():
@@ -212,12 +255,40 @@ def export_nodes_csv(graph: GraphData, output_path: Path, seed_nodes: Set[str]):
             'name': repo.name or repo.full_name,
             'type': 'repo',
             'is_seed': repo.full_name in seed_nodes,
+            'is_explored': repo.is_explored,
+            'exploration_timestamp': repo.exploration_timestamp,
+            'is_epfl': repo.is_epfl
         })
+        processed_ids.add(repo.full_name)
+        
+    # Add discovered but unexplored nodes
+    if discovered_nodes:
+        for node_id, (node_type, _, _) in discovered_nodes.items():
+            if node_id not in processed_ids:
+                # Determine if EPFL
+                is_epfl = False
+                if node_type == 'repo':
+                    owner = node_id.split('/')[0]
+                    is_epfl = owner.lower() in epfl_entities
+                else:
+                    is_epfl = node_id.lower() in epfl_entities
+                
+                nodes.append({
+                    'id': node_id,
+                    'name': node_id, # We don't have the name for unexplored nodes
+                    'type': node_type,
+                    'is_seed': node_id in seed_nodes,
+                    'is_explored': False,
+                    'exploration_timestamp': None,
+                    'is_epfl': is_epfl
+                })
+                processed_ids.add(node_id)
     
     # Write to CSV
     try:
         with open(output_path, 'w', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=['id', 'name', 'type', 'is_seed'])
+            fieldnames = ['id', 'name', 'type', 'is_seed', 'is_explored', 'exploration_timestamp', 'is_epfl']
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
             writer.writerows(nodes)
         

@@ -4,7 +4,6 @@ import asyncio
 import csv
 import json
 import os
-import socket
 import sys
 import time
 from pathlib import Path
@@ -56,20 +55,6 @@ class MetadataProcessor:
         if failed_count > 0:
             typer.echo(f"⚠️  Found {failed_count} previously failed items (will be retried if in scope)")
     
-    def get_epfl_items_from_cache(self) -> Set[str]:
-        """Scan cache for items that are related to EPFL."""
-        epfl_items = set()
-        for file in self.output_dir.glob("*.json"):
-            try:
-                with open(file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    if data.get('output', {}).get('relatedToEPFL', False):
-                        item_name = file.stem.replace("_", "/", 1)
-                        epfl_items.add(item_name)
-            except Exception:
-                continue
-        return epfl_items
-    
     def _get_api_endpoint(self, item: str, item_type: str) -> str:
         """Construct API endpoint based on item type."""
         github_url = f"https://github.com/{item}"
@@ -99,7 +84,7 @@ class MetadataProcessor:
         """Convert item name to safe filename."""
         return item.replace("/", "_").replace("\\", "_")
     
-    async def download_metadata(self, session: aiohttp.ClientSession, item: str, item_type: str, semaphore: asyncio.Semaphore, max_retries: int = 1) -> bool:
+    async def download_metadata(self, session: aiohttp.ClientSession, item: str, item_type: str, semaphore: asyncio.Semaphore, max_retries: int = 3) -> bool:
         """Download metadata for a single item asynchronously with retry logic."""
         if item in self.cache:
             return True
@@ -118,8 +103,7 @@ class MetadataProcessor:
                     else:
                         typer.echo(f"🔄 Retry {attempt}/{max_retries}: {item} ({item_type})")
                     
-                    # Set sock_read explicitly to match total, and sock_connect to something reasonable
-                    timeout = aiohttp.ClientTimeout(total=self.timeout, sock_connect=60.0, sock_read=self.timeout)
+                    timeout = aiohttp.ClientTimeout(total=self.timeout)
                     async with session.get(endpoint, timeout=timeout) as response:
                         response.raise_for_status()
                         data = await response.json()
@@ -187,16 +171,7 @@ class MetadataProcessor:
         """Download metadata for all items in parallel."""
         semaphore = asyncio.Semaphore(self.max_concurrent)
         
-        # Use a custom connector to enforce IPv4 and connection limits
-        # This often helps with Docker networking stability issues
-        connector = aiohttp.TCPConnector(
-            limit=0,  # Limit is handled by semaphore
-            family=socket.AF_INET,  # Force IPv4
-            ttl_dns_cache=300,
-            force_close=False
-        )
-        
-        async with aiohttp.ClientSession(connector=connector) as session:
+        async with aiohttp.ClientSession() as session:
             tasks = [
                 self.download_metadata(session, item, item_type, semaphore)
                 for item, item_type in items_to_process.items()
@@ -318,7 +293,6 @@ def process(
     retry_failed: bool = typer.Option(False, "--retry-failed", help="Process only previously failed items"),
     skip_cached: bool = typer.Option(False, "--skip-cached", help="Skip items that are already cached (already successfully downloaded)"),
     by_connections: bool = typer.Option(False, "--by-connections", help="Rank items by number of connections (highest first) instead of entity type"),
-    prioritize_epfl: bool = typer.Option(False, "--prioritize-epfl", help="Prioritize items connected to EPFL-related entities (based on cache)"),
 ):
     """
     Download metadata and extract affiliations from CSV.
@@ -406,31 +380,6 @@ def process(
             if skipped_count > 0:
                 typer.echo(f"⏭️  Skipped {skipped_count} cached items (--skip-cached enabled)")
         
-        # Identify EPFL-related items from cache if prioritization is enabled
-        epfl_related_items = set()
-        if prioritize_epfl:
-            typer.echo("🇨🇭 Scanning cache for EPFL-related items to prioritize connections...")
-            cached_epfl_items = processor.get_epfl_items_from_cache()
-            typer.echo(f"   Found {len(cached_epfl_items)} EPFL items in cache")
-            
-            # Find items connected to these EPFL items
-            with open(csv_path, 'r', encoding='utf-8') as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    source = row.get('source', '').strip()
-                    target = row.get('target', '').strip()
-                    
-                    # If source is EPFL, prioritize target
-                    if source in cached_epfl_items and target in items_to_process:
-                        epfl_related_items.add(target)
-                    
-                    # If target is EPFL, prioritize source
-                    if target in cached_epfl_items and source in items_to_process:
-                        epfl_related_items.add(source)
-            
-            if epfl_related_items:
-                typer.echo(f"   🚀 Prioritizing {len(epfl_related_items)} items connected to EPFL entities")
-        
         # Sort items by connection count or entity type priority
         if by_connections:
             typer.echo("🔗 Sorting by number of connections (highest first)...")
@@ -451,14 +400,9 @@ def process(
                         connection_counts[target] = connection_counts.get(target, 0) + 1
             
             # Sort by connection count (descending), then by name for ties
-            # If prioritize_epfl is on, give massive boost to epfl_related_items
             items_sorted = sorted(
                 items_to_process.items(),
-                key=lambda x: (
-                    0 if (prioritize_epfl and x[0] in epfl_related_items) else 1,
-                    -connection_counts.get(x[0], 0), 
-                    x[0]
-                )
+                key=lambda x: (-connection_counts.get(x[0], 0), x[0])
             )
             items_to_process = dict(items_sorted)
             
@@ -473,14 +417,9 @@ def process(
             # Original: Sort items by priority: org > user > repo
             # This ensures we process orgs first, then users, then repos
             type_priority = {'org': 0, 'user': 1, 'repo': 2}
-            
             items_sorted = sorted(
                 items_to_process.items(),
-                key=lambda x: (
-                    0 if (prioritize_epfl and x[0] in epfl_related_items) else 1,
-                    type_priority.get(x[1], 999), 
-                    x[0]
-                )
+                key=lambda x: (type_priority.get(x[1], 999), x[0])
             )
             items_to_process = dict(items_sorted)
         

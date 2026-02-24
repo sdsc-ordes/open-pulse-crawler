@@ -15,6 +15,7 @@ from .models import (
     GitHubItemType
 )
 from .github_client import GitHubClient
+from .dependency_utils import fetch_dependencies_sbom, fetch_dependents
 
 logger = logging.getLogger(__name__)
 
@@ -23,11 +24,16 @@ class GitHubCrawler:
     """BFS crawler for GitHub entities."""
     
     def __init__(
-        self,
-        client: GitHubClient,
+        self, 
+        client: GitHubClient, 
         max_rounds: int = 3,
         state_file: Optional[Path] = None,
-        batch_size: Optional[int] = None
+        batch_size: Optional[int] = None,
+        crawl_dependencies: bool = False,
+        crawl_dependents: bool = False,
+        min_stars: int = 0,
+        max_dependents: Optional[int] = None,
+        epfl_entities: Optional[Set[str]] = None
     ):
         """
         Initialize the crawler.
@@ -37,11 +43,20 @@ class GitHubCrawler:
             max_rounds: Maximum number of BFS rounds
             state_file: File to save/load crawler state
             batch_size: Number of nodes to process concurrently (default: matches client's max_concurrent_requests)
+            crawl_dependencies: Whether to crawl dependencies (downstream)
+            crawl_dependents: Whether to crawl dependents (upstream)
+            min_stars: Minimum stars for dependents/dependencies filtering
+            epfl_entities: Set of entity names (users/orgs) that belong to EPFL
         """
         self.client = client
         self.max_rounds = max_rounds
         self.state_file = state_file
         self.batch_size = batch_size if batch_size is not None else client.semaphore._value
+        self.crawl_dependencies = crawl_dependencies
+        self.crawl_dependents = crawl_dependents
+        self.min_stars = min_stars
+        self.max_dependents = max_dependents
+        self.epfl_entities = {e.lower() for e in (epfl_entities or set())}
         
         # Graph data
         self.graph = GraphData()
@@ -192,12 +207,18 @@ class GitHubCrawler:
                 if user_obj.get('type') == 'Organization':
                     logger.debug(f"{username} is an organization, not a user")
                     return None
+                
+                user_type_str = user_obj.get('type', 'User')
+                user_type = GitHubItemType.BOT if user_type_str == 'Bot' else GitHubItemType.USER
                     
                 user = UserModel(
                     login=user_obj['login'],
                     name=user_obj.get('name', ''),
                     id=user_obj.get('id', 0),
-                    type=GitHubItemType.USER
+                    type=user_type,
+                    is_explored=True,
+                    exploration_timestamp=datetime.now().isoformat(),
+                    is_epfl=user_obj['login'].lower() in self.epfl_entities
                 )
                 
                 # Use cached repos data if available
@@ -235,7 +256,10 @@ class GitHubCrawler:
                     login=user_obj.login,
                     name=user_obj.name or '',
                     id=user_obj.id,
-                    type=GitHubItemType.USER if user_obj.type == 'User' else GitHubItemType.BOT
+                    type=GitHubItemType.USER if user_obj.type == 'User' else GitHubItemType.BOT,
+                    is_explored=True,
+                    exploration_timestamp=datetime.now().isoformat(),
+                    is_epfl=user_obj.login.lower() in self.epfl_entities
                 )
                 
                 # Get user's repositories from live API
@@ -289,7 +313,10 @@ class GitHubCrawler:
                     login=org_obj['login'],
                     name=org_obj.get('name', ''),
                     id=org_obj.get('id', 0),
-                    type=GitHubItemType.ORGANIZATION
+                    type=GitHubItemType.ORGANIZATION,
+                    is_explored=True,
+                    exploration_timestamp=datetime.now().isoformat(),
+                    is_epfl=org_obj['login'].lower() in self.epfl_entities
                 )
                 
                 # Use cached members data if available
@@ -322,7 +349,10 @@ class GitHubCrawler:
                     login=org_obj.login,
                     name=org_obj.name or '',
                     id=org_obj.id,
-                    type=GitHubItemType.ORGANIZATION
+                    type=GitHubItemType.ORGANIZATION,
+                    is_explored=True,
+                    exploration_timestamp=datetime.now().isoformat(),
+                    is_epfl=org_obj.login.lower() in self.epfl_entities
                 )
                 
                 # Get organization members from live API
@@ -381,7 +411,10 @@ class GitHubCrawler:
                     type=GitHubItemType.REPOSITORY,
                     owner=repo_obj.get('owner', ''),
                     is_fork=repo_obj.get('is_fork', False),
-                    forked_from=repo_obj.get('parent')
+                    forked_from=repo_obj.get('parent'),
+                    is_explored=True,
+                    exploration_timestamp=datetime.now().isoformat(),
+                    is_epfl=repo_obj.get('owner', '').lower() in self.epfl_entities
                 )
                 
                 # Collect items to queue
@@ -404,6 +437,66 @@ class GitHubCrawler:
                 if repo.is_fork and repo.forked_from:
                     items_to_queue.append(('repo', repo.forked_from))
                 
+                # Crawl dependencies (downstream) - Cached path
+                if self.crawl_dependencies:
+                    try:
+                        # Check cache
+                        cache_endpoint = f"sbom/{repo_full_name}"
+                        cached_deps = self.client.cache.get(cache_endpoint) if self.client.cache else None
+                        
+                        if cached_deps is not None:
+                            dependencies = cached_deps
+                            logger.debug(f"Cache hit for dependencies of {repo_full_name}")
+                        else:
+                            # Use current token for API calls
+                            token = self.client.tokens[self.client.current_token_idx]
+                            dependencies = fetch_dependencies_sbom(repo_full_name, token)
+                            
+                            if dependencies is not None:
+                                # Save to cache
+                                if self.client.cache:
+                                    self.client.cache.set(cache_endpoint, "", dependencies)
+                        
+                        # Add dependencies to repo model (whether from cache or API)
+                        if dependencies is not None:
+                            repo.dependencies.extend(dependencies)
+                            # Do not queue dependencies for next round
+                            # for dep in dependencies:
+                            #     items_to_queue.append(('repo', dep))
+                    except Exception as e:
+                        logger.warning(f"Failed to crawl dependencies for {repo_full_name}: {e}")
+
+                # Crawl dependents (upstream) - Cached path
+                if self.crawl_dependents:
+                    try:
+                        # Check cache
+                        cache_endpoint = f"dependents/{repo_full_name}"
+                        cache_params = f"min_stars={self.min_stars}&max_dependents={self.max_dependents}"
+                        cached_dependents = self.client.cache.get(cache_endpoint, cache_params) if self.client.cache else None
+                        
+                        if cached_dependents is not None:
+                            dependents = cached_dependents
+                            logger.debug(f"Cache hit for dependents of {repo_full_name}")
+                        else:
+                            dependents = fetch_dependents(
+                                repo_full_name, 
+                                min_stars=self.min_stars,
+                                max_dependents=self.max_dependents
+                            )
+                            
+                            if dependents is not None:
+                                # Save to cache
+                                if self.client.cache:
+                                    self.client.cache.set(cache_endpoint, cache_params, dependents)
+                        
+                        # Add dependents to repo model and queue (whether from cache or API)
+                        if dependents is not None:
+                            repo.dependents.extend(dependents)
+                            for dep in dependents:
+                                items_to_queue.append(('repo', dep))
+                    except Exception as e:
+                        logger.warning(f"Failed to crawl dependents for {repo_full_name}: {e}")
+
                 # Add all items to queue in a single lock acquisition
                 with self.visited_lock:
                     for item_type, identifier in items_to_queue:
@@ -418,7 +511,10 @@ class GitHubCrawler:
                     type=GitHubItemType.REPOSITORY,
                     owner=repo_obj.owner.login,
                     is_fork=repo_obj.fork,
-                    forked_from=repo_obj.parent.full_name if repo_obj.parent else None
+                    forked_from=repo_obj.parent.full_name if repo_obj.parent else None,
+                    is_explored=True,
+                    exploration_timestamp=datetime.now().isoformat(),
+                    is_epfl=repo_obj.owner.login.lower() in self.epfl_entities
                 )
                 
                 # Collect items to queue
@@ -443,6 +539,66 @@ class GitHubCrawler:
                 if repo.is_fork and repo.forked_from:
                     items_to_queue.append(('repo', repo.forked_from))
                 
+                # Crawl dependencies (downstream)
+                if self.crawl_dependencies:
+                    try:
+                        # Check cache
+                        cache_endpoint = f"sbom/{repo_full_name}"
+                        cached_deps = self.client.cache.get(cache_endpoint) if self.client.cache else None
+                        
+                        if cached_deps is not None:
+                            dependencies = cached_deps
+                            logger.debug(f"Cache hit for dependencies of {repo_full_name}")
+                        else:
+                            # Use current token for API calls
+                            token = self.client.tokens[self.client.current_token_idx]
+                            dependencies = fetch_dependencies_sbom(repo_full_name, token)
+                            
+                            if dependencies is not None:
+                                # Save to cache
+                                if self.client.cache:
+                                    self.client.cache.set(cache_endpoint, "", dependencies)
+                        
+                        # Add dependencies to repo model (whether from cache or API)
+                        if dependencies is not None:
+                            repo.dependencies.extend(dependencies)
+                            # Do not queue dependencies for next round
+                            # for dep in dependencies:
+                            #     items_to_queue.append(('repo', dep))
+                    except Exception as e:
+                        logger.warning(f"Failed to crawl dependencies for {repo_full_name}: {e}")
+
+                # Crawl dependents (upstream)
+                if self.crawl_dependents:
+                    try:
+                        # Check cache
+                        cache_endpoint = f"dependents/{repo_full_name}"
+                        cache_params = f"min_stars={self.min_stars}&max_dependents={self.max_dependents}"
+                        cached_dependents = self.client.cache.get(cache_endpoint, cache_params) if self.client.cache else None
+                        
+                        if cached_dependents is not None:
+                            dependents = cached_dependents
+                            logger.debug(f"Cache hit for dependents of {repo_full_name}")
+                        else:
+                            dependents = fetch_dependents(
+                                repo_full_name, 
+                                min_stars=self.min_stars,
+                                max_dependents=self.max_dependents
+                            )
+                            
+                            if dependents is not None:
+                                # Save to cache
+                                if self.client.cache:
+                                    self.client.cache.set(cache_endpoint, cache_params, dependents)
+                        
+                        # Add dependents to repo model and queue (whether from cache or API)
+                        if dependents is not None:
+                            repo.dependents.extend(dependents)
+                            for dep in dependents:
+                                items_to_queue.append(('repo', dep))
+                    except Exception as e:
+                        logger.warning(f"Failed to crawl dependents for {repo_full_name}: {e}")
+
                 # Add all items to queue in a single lock acquisition
                 with self.visited_lock:
                     for item_type, identifier in items_to_queue:
@@ -737,7 +893,13 @@ class GitHubCrawler:
             logger.debug(f"Edges CSV exported to {edges_csv}")
             
             nodes_csv = round_dir / f"nodes_round_{round_num:02d}.csv"
-            export_nodes_csv(self.graph, nodes_csv, self.seed_nodes)
+            export_nodes_csv(
+                self.graph, 
+                nodes_csv, 
+                self.seed_nodes,
+                discovered_nodes=self.discovered_nodes,
+                epfl_entities=self.epfl_entities
+            )
             logger.debug(f"Nodes CSV exported to {nodes_csv}")
         
         # Optional visualizations
