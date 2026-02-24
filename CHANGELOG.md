@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Root `Dockerfile` — multi-stage build (uv builder + python:3.12-slim runtime), exposes port 8000, runs uvicorn as non-root user.
+- `.dockerignore` to keep production images lean.
+- Dockerfile structure and API entrypoint tests (`tests/test_dockerfile.py`).
+- Deployment documentation (`docs/DEPLOYMENT.md`).
 - `AGENTS.md` with contributor and AI-agent guidelines.
 - `CHANGELOG.md` following Keep a Changelog format.
 - Bearer-token auth module (`src/open_pulse_crawler/auth.py`) using `HTTPBearer` + `secrets.compare_digest` against `API_TOKEN` env var.
