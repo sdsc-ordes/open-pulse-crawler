@@ -24,6 +24,8 @@ dependencies = [
   "github-dependents-info>=1.6.3",
   "fastapi>=0.115.0",
   "uvicorn[standard]>=0.34.0",
+  "streamlit>=1.30.0",
+  "httpx>=0.27.0",
 ]
 
 [project.optional-dependencies]

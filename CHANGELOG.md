@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Streamlit placeholder GUI (`src/open_pulse_crawler/gui.py`) with token input sidebar, crawl form (seeds + BFS rounds), and live job-status results area.
+- `streamlit` and `httpx` added to project dependencies.
 - Root `Dockerfile` — multi-stage build (uv builder + python:3.12-slim runtime), exposes port 8000, runs uvicorn as non-root user.
 - `.dockerignore` to keep production images lean.
 - Dockerfile structure and API entrypoint tests (`tests/test_dockerfile.py`).
