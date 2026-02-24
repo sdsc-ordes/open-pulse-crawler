@@ -12,7 +12,17 @@ All endpoints except `/api/v1/health` require a Bearer token:
 Authorization: Bearer <token>
 ```
 
-The token is validated against the `API_TOKEN` environment variable on the server.
+The token is validated against the `API_TOKEN` environment variable on the server
+using a constant-time comparison (`secrets.compare_digest`).
+
+| Scenario                       | Status    | Detail                                    |
+| ------------------------------ | --------- | ----------------------------------------- |
+| Missing / non-Bearer header    | `401/403` | Not authenticated                         |
+| Invalid token                  | `401`     | Invalid or missing API token              |
+| `API_TOKEN` env var not set    | `503`     | API_TOKEN is not configured on the server |
+
+The authentication logic lives in `src/open_pulse_crawler/auth.py` and is applied
+as a FastAPI dependency on every protected endpoint.
 
 ## Endpoints
 

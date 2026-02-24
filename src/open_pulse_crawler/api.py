@@ -4,49 +4,18 @@ from __future__ import annotations
 
 import logging
 import os
-import secrets
 import uuid
 from enum import Enum
 from typing import Dict, List, Optional
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, status
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
 from . import __version__
+from .auth import verify_token
 from .models import GraphData
 
 logger = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# Authentication
-# ---------------------------------------------------------------------------
-
-_bearer_scheme = HTTPBearer()
-
-
-def _get_api_token() -> str:
-    token = os.environ.get("API_TOKEN", "")
-    if not token:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="API_TOKEN is not configured on the server",
-        )
-    return token
-
-
-def verify_token(
-    credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
-) -> str:
-    """Dependency that validates the Bearer token against the API_TOKEN env var."""
-    api_token = _get_api_token()
-    if not secrets.compare_digest(credentials.credentials, api_token):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or missing API token",
-        )
-    return credentials.credentials
-
 
 # ---------------------------------------------------------------------------
 # Request / response models
