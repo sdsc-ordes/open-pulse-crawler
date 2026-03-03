@@ -111,6 +111,51 @@ class TestCrawl:
         )
         assert resp.status_code == 422
 
+    def test_missing_github_token_marks_job_failed(
+        self, client: TestClient, auth_header: dict
+    ):
+        with patch.dict(os.environ, {"GITHUB_TOKEN": ""}, clear=False):
+            start = client.post(
+                "/api/v1/crawl",
+                json={"seeds": ["torvalds"], "max_rounds": 1},
+                headers=auth_header,
+            )
+            assert start.status_code == 202
+            job_id = start.json()["job_id"]
+
+            status_resp = client.get(f"/api/v1/crawl/{job_id}", headers=auth_header)
+            assert status_resp.status_code == 200
+            body = status_resp.json()
+            assert body["status"] == JobStatus.FAILED.value
+            assert "GITHUB_TOKEN" in (body.get("detail") or "")
+
+    def test_bad_github_credentials_marks_job_failed(
+        self, client: TestClient, auth_header: dict
+    ):
+        with patch.dict(os.environ, {"GITHUB_TOKEN": "ghp_valid_format_token"}, clear=False):
+            with patch("open_pulse_crawler.github_client.GitHubClient"):
+                with patch("open_pulse_crawler.crawler.GitHubCrawler") as crawler_cls:
+                    crawler = crawler_cls.return_value
+                    crawler.add_seeds.return_value = None
+                    crawler.crawl.side_effect = Exception("Bad credentials")
+
+                    start = client.post(
+                        "/api/v1/crawl",
+                        json={"seeds": ["torvalds"], "max_rounds": 1},
+                        headers=auth_header,
+                    )
+                    assert start.status_code == 202
+                    job_id = start.json()["job_id"]
+
+                    status_resp = client.get(
+                        f"/api/v1/crawl/{job_id}",
+                        headers=auth_header,
+                    )
+                    assert status_resp.status_code == 200
+                    body = status_resp.json()
+                    assert body["status"] == JobStatus.FAILED.value
+                    assert "Bad credentials" in (body.get("detail") or "")
+
 
 # ── Job status endpoint ──────────────────────────────────────────────────
 
