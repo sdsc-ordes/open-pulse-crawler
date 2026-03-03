@@ -1,6 +1,88 @@
 # Deployment Guide
 
-## Docker (Recommended)
+## Docker Compose Stack (API + GUI + Nginx)
+
+The repository includes a `docker-compose.yml` that orchestrates three services:
+
+- `api`: FastAPI backend (`open_pulse_crawler.api:app`) on internal port `8000`
+- `gui`: Streamlit app (`open_pulse_crawler.gui`) on internal port `8501`
+- `nginx`: reverse proxy on external port `80` (or `OPC_PORT`) routing:
+  - `/api/*` -> FastAPI
+  - `/` -> Streamlit (including WebSocket upgrades)
+
+All services join the shared `opc` bridge network and use health checks so startup
+ordering follows service readiness.
+
+### Prerequisites
+
+- Docker Engine 24+
+- Docker Compose plugin (`docker compose`)
+
+### Configure environment
+
+Create a local `.env` file from the template:
+
+```bash
+cp .env.dist .env
+```
+
+Set at least:
+
+```bash
+GITHUB_TOKEN=ghp_your_token_here
+API_TOKEN=your-api-token
+```
+
+Optional:
+
+```bash
+# Exposed host port for nginx (default: 80)
+OPC_PORT=8080
+```
+
+### Start the full stack
+
+```bash
+docker compose up -d --build
+```
+
+Then open:
+
+- Default (`OPC_PORT` unset): `http://localhost/` (GUI),
+  `http://localhost/api/v1/health`, `http://localhost/api/v1/docs`
+- Custom port (for example `OPC_PORT=8080`): `http://localhost:8080/`,
+  `http://localhost:8080/api/v1/health`, `http://localhost:8080/api/v1/docs`
+
+### Verify service health
+
+```bash
+docker compose ps
+```
+
+Each service (`api`, `gui`, `nginx`) should report `healthy`.
+
+### Stop the stack
+
+```bash
+docker compose down
+```
+
+### Run the integration test script
+
+The repository provides `tests/test_integration.sh` to build the stack and run
+end-to-end HTTP checks through Nginx.
+
+```bash
+bash tests/test_integration.sh
+```
+
+Use a custom port if needed:
+
+```bash
+OPC_PORT=18080 bash tests/test_integration.sh
+```
+
+## Single-Container API Deployment
 
 The project ships a multi-stage `Dockerfile` at the repository root that
 produces a small production image based on `python:3.12-slim`.
@@ -60,7 +142,7 @@ docker run -d \
 | Exposed port | `8000`                           |
 | Run user     | `app` (UID 1000, non-root)       |
 
-## Running without Docker
+## Running Without Docker
 
 ```bash
 # Install the package (with uv or pip)

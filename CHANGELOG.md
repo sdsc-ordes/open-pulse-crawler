@@ -29,5 +29,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `fastapi` and `uvicorn[standard]` added to project dependencies; `httpx` added to dev dependencies.
 - API test suite (`tests/test_api.py`).
 - API documentation (`docs/API.md`).
+- Docker Compose stack (`docker-compose.yml`) for `api`, `gui`, and `nginx` services on a shared network with env-file configuration and per-service health checks.
+- End-to-end Docker integration test script (`tests/test_integration.sh`) validating health, auth behavior, and GUI/API routing through Nginx.
+
+### Changed
+
+- Expanded deployment docs in `docs/DEPLOYMENT.md` with Docker Compose setup, environment configuration, health verification, and integration test usage.
+- Updated `README.md` with dedicated REST API and Docker/GUI quick-start sections and links to deployment/API docs.
+- Completed API docs (`docs/API.md`) with reverse-proxy base URL notes and practical `curl` examples for crawl/status/graph flows.
 
 [Unreleased]: https://github.com/sdsc-ordes/open-pulse-crawler/compare/v0.1.0...HEAD

@@ -3,6 +3,8 @@
 Base path: `/api/v1`
 
 Interactive Swagger docs are available at `/api/v1/docs` when the server is running.
+When using Docker Compose with Nginx, the same API is reachable at
+`http://localhost/api/v1` (or `http://localhost:${OPC_PORT}/api/v1` if overridden).
 
 ## Authentication
 
@@ -111,6 +113,45 @@ Return the full graph data for a **completed** crawl job.
 ```
 
 Returns `404` if the job ID is unknown, or `409 Conflict` if the job has not completed yet.
+
+## Quick curl examples
+
+With Docker Compose + Nginx:
+
+```bash
+export API_BASE="http://localhost/api/v1"
+export API_TOKEN="my-secret-api-token"
+```
+
+Running FastAPI directly (no Nginx):
+
+```bash
+export API_BASE="http://localhost:8000/api/v1"
+export API_TOKEN="my-secret-api-token"
+```
+
+Start crawl:
+
+```bash
+curl -X POST "$API_BASE/crawl" \
+  -H "Authorization: Bearer $API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"seeds":["torvalds"],"max_rounds":2}'
+```
+
+Check status:
+
+```bash
+curl "$API_BASE/crawl/<job_id>" \
+  -H "Authorization: Bearer $API_TOKEN"
+```
+
+Fetch graph:
+
+```bash
+curl "$API_BASE/graph/<job_id>" \
+  -H "Authorization: Bearer $API_TOKEN"
+```
 
 ## Running the Server
 

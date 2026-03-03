@@ -56,7 +56,53 @@ You can create a `.env` file in your project directory:
 
 ```bash
 GITHUB_TOKEN=ghp_your_token_here
+API_TOKEN=your_api_token_for_rest_api
 ```
+
+## REST API
+
+Open Pulse Crawler includes a FastAPI service at `/api/v1` with:
+
+- `GET /api/v1/health` (public)
+- `POST /api/v1/crawl` (Bearer auth)
+- `GET /api/v1/crawl/{job_id}` (Bearer auth)
+- `GET /api/v1/graph/{job_id}` (Bearer auth)
+
+Run locally:
+
+```bash
+export GITHUB_TOKEN="ghp_..."
+export API_TOKEN="my-secret-api-token"
+uvicorn open_pulse_crawler.api:app --host 0.0.0.0 --port 8000
+```
+
+See `docs/API.md` for endpoint details and example payloads.
+
+## Docker and GUI
+
+The repository ships a three-container stack:
+
+- FastAPI backend (`api`)
+- Streamlit GUI (`gui`)
+- Nginx reverse proxy (`nginx`)
+
+Start everything with Docker Compose:
+
+```bash
+cp .env.dist .env
+docker compose up -d --build
+```
+
+Open:
+
+- `http://localhost/` for the Streamlit GUI
+- `http://localhost/api/v1/health` for API health
+- `http://localhost/api/v1/docs` for Swagger docs
+
+If you set `OPC_PORT` (for example `OPC_PORT=8080`), replace `localhost` with
+`localhost:<port>` in the URLs above.
+
+See `docs/DEPLOYMENT.md` for full deployment options and integration checks.
 
 ## Usage
 
