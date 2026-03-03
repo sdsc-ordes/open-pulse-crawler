@@ -40,6 +40,37 @@ pip install -e .
 pip install -e ".[viz]"
 ```
 
+## Testing
+
+Ensure dev dependencies are installed first:
+
+```bash
+uv sync --extra dev
+```
+
+Run the Python unit tests in parallel (recommended):
+
+```bash
+uv run pytest -n auto
+```
+
+Run the same fast unit-test path used in CI:
+
+```bash
+uv run pytest -n auto -m "not integration"
+```
+
+If your machine has limited CPU or memory, cap workers explicitly:
+
+```bash
+uv run pytest -n 2 -m "not integration"
+# or serialize for debugging
+uv run pytest -n 1 -m "not integration"
+```
+
+Integration checks remain separate from this fast unit-test path. Run
+`tests/test_integration.sh` when you specifically want to validate the Docker stack.
+
 ## Configuration
 
 Set your GitHub personal access token(s) in the environment:

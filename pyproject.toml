@@ -37,6 +37,7 @@ viz = [
 dev = [
   "pytest>=7.0.0",
   "pytest-cov>=4.0.0",
+  "pytest-xdist>=3.6.0",
   "black>=23.0.0",
   "ruff>=0.1.0",
   "httpx>=0.27.0",
@@ -53,3 +54,10 @@ packages = ["src/open_pulse_crawler"]
 
 [tool.hatch.build]
 packages = ["src/open_pulse_crawler"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q -n auto --dist=loadfile"
+markers = [
+  "integration: marks slower integration tests",
+]

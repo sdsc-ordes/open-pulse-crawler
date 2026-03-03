@@ -9,8 +9,8 @@ from pathlib import Path
 import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DOCKERFILE = PROJECT_ROOT / "Dockerfile"
-DOCKERIGNORE = PROJECT_ROOT / ".dockerignore"
+DOCKERFILE = PROJECT_ROOT / "tools" / "image" / "Dockerfile"
+DOCKERIGNORE = PROJECT_ROOT / "tools" / "image" / ".dockerignore"
 
 
 class TestDockerfileStructure:
