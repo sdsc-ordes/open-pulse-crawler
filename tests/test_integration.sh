@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Integration test for the docker-compose stack.
-# Builds all three services (api, gui, nginx) and runs basic HTTP checks.
+# Uses the infra compose file and runs basic HTTP checks.
 #
 # Usage:
 #   bash tests/test_integration.sh              # uses port 18080
@@ -12,7 +12,7 @@ cd "$PROJECT_ROOT"
 
 PROJECT_NAME="opc-test-$$"
 TEST_PORT="${OPC_PORT:-18080}"
-COMPOSE="docker compose -p $PROJECT_NAME"
+COMPOSE="docker compose -f infra/docker-compose.yml -p $PROJECT_NAME"
 CREATED_ENV=""
 
 cleanup() {
@@ -32,7 +32,7 @@ ENVEOF
     echo "==> Created temporary .env"
 fi
 
-echo "==> Building and starting stack (port $TEST_PORT)..."
+echo "==> Starting stack (port $TEST_PORT)..."
 OPC_PORT="$TEST_PORT" $COMPOSE up -d --build --wait
 
 BASE="http://localhost:$TEST_PORT"

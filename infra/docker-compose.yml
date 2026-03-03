@@ -1,10 +1,8 @@
 services:
   api:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ${OPC_IMAGE:-ghcr.io/sdsc-ordes/open-pulse-crawler:latest}
     env_file:
-      - .env
+      - ../.env
     expose:
       - "8000"
     healthcheck:
@@ -24,11 +22,9 @@ services:
     restart: unless-stopped
 
   gui:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ${OPC_IMAGE:-ghcr.io/sdsc-ordes/open-pulse-crawler:latest}
     env_file:
-      - .env
+      - ../.env
     entrypoint: ["streamlit", "run"]
     command:
       - /usr/local/lib/python3.12/site-packages/open_pulse_crawler/gui.py
@@ -61,7 +57,7 @@ services:
       context: ./nginx
       dockerfile: Dockerfile
     env_file:
-      - .env
+      - ../.env
     ports:
       - "${OPC_PORT:-80}:80"
     depends_on:

@@ -2,13 +2,16 @@
 
 ## Docker Compose Stack (API + GUI + Nginx)
 
-The repository includes a `docker-compose.yml` that orchestrates three services:
+The repository includes `infra/docker-compose.yml` that orchestrates three services:
 
 - `api`: FastAPI backend (`open_pulse_crawler.api:app`) on internal port `8000`
 - `gui`: Streamlit app (`open_pulse_crawler.gui`) on internal port `8501`
 - `nginx`: reverse proxy on external port `80` (or `OPC_PORT`) routing:
   - `/api/*` -> FastAPI
   - `/` -> Streamlit (including WebSocket upgrades)
+
+The `api` and `gui` services pull a prebuilt image from the registry by default:
+`ghcr.io/sdsc-ordes/open-pulse-crawler:latest`. Override with `OPC_IMAGE` if needed.
 
 All services join the shared `opc` bridge network and use health checks so startup
 ordering follows service readiness.
@@ -43,7 +46,21 @@ OPC_PORT=8080
 ### Start the full stack
 
 ```bash
-docker compose up -d --build
+docker compose -f infra/docker-compose.yml up -d --build
+```
+
+### Use a different application image (optional)
+
+```bash
+OPC_IMAGE=ghcr.io/sdsc-ordes/open-pulse-crawler:develop \
+docker compose -f infra/docker-compose.yml up -d --build
+```
+
+### Pull latest image explicitly (optional)
+
+```bash
+docker compose -f infra/docker-compose.yml pull api gui
+docker compose -f infra/docker-compose.yml up -d --build
 ```
 
 Then open:
@@ -56,7 +73,7 @@ Then open:
 ### Verify service health
 
 ```bash
-docker compose ps
+docker compose -f infra/docker-compose.yml ps
 ```
 
 Each service (`api`, `gui`, `nginx`) should report `healthy`.
@@ -64,7 +81,7 @@ Each service (`api`, `gui`, `nginx`) should report `healthy`.
 ### Stop the stack
 
 ```bash
-docker compose down
+docker compose -f infra/docker-compose.yml down
 ```
 
 ### Run the integration test script

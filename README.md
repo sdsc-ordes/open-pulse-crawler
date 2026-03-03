@@ -68,6 +68,10 @@ Open Pulse Crawler includes a FastAPI service at `/api/v1` with:
 - `GET /api/v1/crawl/{job_id}` (Bearer auth)
 - `GET /api/v1/graph/{job_id}` (Bearer auth)
 
+The crawl request body supports the same core crawl controls as the CLI, including
+dependent/dependency crawling, `min_stars`, `max_dependents`, `batch_size`, and inline
+`epfl_entities` tagging.
+
 Run locally:
 
 ```bash
@@ -90,7 +94,7 @@ Start everything with Docker Compose:
 
 ```bash
 cp .env.dist .env
-docker compose up -d --build
+docker compose -f infra/docker-compose.yml up -d --build
 ```
 
 Open:

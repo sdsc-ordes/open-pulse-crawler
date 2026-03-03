@@ -32,6 +32,25 @@ class JobStatus(str, Enum):
 class CrawlRequest(BaseModel):
     seeds: List[str] = Field(..., min_length=1, description="Seed nodes (users, orgs, or repos)")
     max_rounds: int = Field(default=2, ge=1, le=10, description="BFS rounds")
+    crawl_dependencies: bool = Field(
+        default=False, description="Crawl repository dependencies (downstream)"
+    )
+    crawl_dependents: bool = Field(
+        default=False, description="Crawl repository dependents (upstream)"
+    )
+    min_stars: int = Field(
+        default=0, ge=0, description="Minimum stars for dependency/dependent filtering"
+    )
+    max_dependents: Optional[int] = Field(
+        default=None, ge=1, description="Maximum number of dependents to fetch"
+    )
+    batch_size: Optional[int] = Field(
+        default=None, ge=1, description="Number of nodes to process concurrently"
+    )
+    epfl_entities: List[str] = Field(
+        default_factory=list,
+        description="Entity names (users/orgs) that belong to EPFL",
+    )
 
 
 class CrawlJobResponse(BaseModel):
@@ -77,7 +96,17 @@ _jobs: Dict[str, _JobRecord] = {}
 # ---------------------------------------------------------------------------
 
 
-def _run_crawl(job_id: str, seeds: List[str], max_rounds: int) -> None:
+def _run_crawl(
+    job_id: str,
+    seeds: List[str],
+    max_rounds: int,
+    crawl_dependencies: bool,
+    crawl_dependents: bool,
+    min_stars: int,
+    max_dependents: Optional[int],
+    batch_size: Optional[int],
+    epfl_entities: List[str],
+) -> None:
     """Execute a crawl in the background and store results."""
     record = _jobs[job_id]
     record.status = JobStatus.RUNNING
@@ -94,7 +123,16 @@ def _run_crawl(job_id: str, seeds: List[str], max_rounds: int) -> None:
             return
 
         client = GitHubClient(tokens=tokens)
-        crawler = GitHubCrawler(client=client, max_rounds=max_rounds)
+        crawler = GitHubCrawler(
+            client=client,
+            max_rounds=max_rounds,
+            batch_size=batch_size,
+            crawl_dependencies=crawl_dependencies,
+            crawl_dependents=crawl_dependents,
+            min_stars=min_stars,
+            max_dependents=max_dependents,
+            epfl_entities=set(epfl_entities),
+        )
         crawler.add_seeds(seeds)
         crawler.crawl(show_progress=False)
 
@@ -137,7 +175,18 @@ def start_crawl(
     """Start a new crawl job (runs in the background)."""
     job_id = str(uuid.uuid4())
     _jobs[job_id] = _JobRecord()
-    background_tasks.add_task(_run_crawl, job_id, body.seeds, body.max_rounds)
+    background_tasks.add_task(
+        _run_crawl,
+        job_id,
+        body.seeds,
+        body.max_rounds,
+        body.crawl_dependencies,
+        body.crawl_dependents,
+        body.min_stars,
+        body.max_dependents,
+        body.batch_size,
+        body.epfl_entities,
+    )
     return CrawlJobResponse(job_id=job_id, status=JobStatus.PENDING)
 
 

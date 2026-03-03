@@ -53,11 +53,21 @@ Start a new crawl job. The crawl runs asynchronously in the background.
 | ------------ | ---------- | -------- | ------- | ------------------------------------- |
 | `seeds`      | `string[]` | yes      | —       | Seed nodes (users, orgs, or repos)    |
 | `max_rounds` | `int`      | no       | `2`     | BFS rounds (1–10)                     |
+| `crawl_dependencies` | `bool` | no | `false` | Crawl repository dependencies (downstream) |
+| `crawl_dependents` | `bool` | no | `false` | Crawl repository dependents (upstream) |
+| `min_stars` | `int` | no | `0` | Minimum stars for dependency/dependent filtering |
+| `max_dependents` | `int \| null` | no | `null` | Maximum number of dependents to fetch (>=1) |
+| `batch_size` | `int \| null` | no | `null` | Number of nodes processed concurrently (>=1) |
+| `epfl_entities` | `string[]` | no | `[]` | Entity names (users/orgs) tagged as EPFL |
 
 ```json
 {
   "seeds": ["torvalds", "sdsc-ordes/gimie"],
-  "max_rounds": 3
+  "max_rounds": 3,
+  "crawl_dependents": true,
+  "min_stars": 10,
+  "max_dependents": 100,
+  "epfl_entities": ["epfl", "dslab-epfl"]
 }
 ```
 

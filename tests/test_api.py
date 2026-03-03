@@ -111,6 +111,28 @@ class TestCrawl:
         )
         assert resp.status_code == 422
 
+    def test_new_parameter_bounds(self, client: TestClient, auth_header: dict):
+        resp = client.post(
+            "/api/v1/crawl",
+            json={"seeds": ["a"], "min_stars": -1},
+            headers=auth_header,
+        )
+        assert resp.status_code == 422
+
+        resp = client.post(
+            "/api/v1/crawl",
+            json={"seeds": ["a"], "max_dependents": 0},
+            headers=auth_header,
+        )
+        assert resp.status_code == 422
+
+        resp = client.post(
+            "/api/v1/crawl",
+            json={"seeds": ["a"], "batch_size": 0},
+            headers=auth_header,
+        )
+        assert resp.status_code == 422
+
     def test_missing_github_token_marks_job_failed(
         self, client: TestClient, auth_header: dict
     ):
@@ -155,6 +177,47 @@ class TestCrawl:
                     body = status_resp.json()
                     assert body["status"] == JobStatus.FAILED.value
                     assert "Bad credentials" in (body.get("detail") or "")
+
+    def test_crawl_passes_dependents_and_epfl_to_crawler(
+        self, client: TestClient, auth_header: dict
+    ):
+        request_body = {
+            "seeds": ["torvalds"],
+            "max_rounds": 1,
+            "crawl_dependencies": True,
+            "crawl_dependents": True,
+            "min_stars": 25,
+            "max_dependents": 50,
+            "batch_size": 4,
+            "epfl_entities": ["epfl", "dslab-epfl"],
+        }
+
+        with patch.dict(os.environ, {"GITHUB_TOKEN": "ghp_valid_format_token"}, clear=False):
+            with patch("open_pulse_crawler.github_client.GitHubClient"):
+                with patch("open_pulse_crawler.crawler.GitHubCrawler") as crawler_cls:
+                    crawler = crawler_cls.return_value
+                    crawler.add_seeds.return_value = None
+                    crawler.crawl.return_value = None
+                    crawler.graph.users = {}
+                    crawler.graph.orgs = {}
+                    crawler.graph.repos = {}
+
+                    resp = client.post(
+                        "/api/v1/crawl",
+                        json=request_body,
+                        headers=auth_header,
+                    )
+
+                    assert resp.status_code == 202
+                    crawler_cls.assert_called_once()
+                    call_kwargs = crawler_cls.call_args.kwargs
+                    assert call_kwargs["max_rounds"] == 1
+                    assert call_kwargs["crawl_dependencies"] is True
+                    assert call_kwargs["crawl_dependents"] is True
+                    assert call_kwargs["min_stars"] == 25
+                    assert call_kwargs["max_dependents"] == 50
+                    assert call_kwargs["batch_size"] == 4
+                    assert call_kwargs["epfl_entities"] == {"epfl", "dslab-epfl"}
 
 
 # ── Job status endpoint ──────────────────────────────────────────────────

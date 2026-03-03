@@ -4,10 +4,10 @@ build-backend = "hatchling.build"
 
 [project]
 name = "open-pulse-crawler"
-version = "0.1.0"
+version = "1.0.0"
 description = "GitHub BFS Crawler - Discover users, organizations, and repositories"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = { text = "Apache 2.0" }
 authors = [
   { name = "caviri" }
