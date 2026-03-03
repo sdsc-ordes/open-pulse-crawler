@@ -1,0 +1,49 @@
+# Version control
+.git
+.gitignore
+
+# Python artefacts
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+dist/
+build/
+.eggs
+
+# Virtual environments
+.venv
+venv
+env
+
+# IDE / editor
+.vscode
+.idea
+*.swp
+*.swo
+
+# CI / tooling
+.github
+.devcontainer
+.ruff_cache
+.mypy_cache
+.pytest_cache
+htmlcov
+.coverage
+
+# Data / output
+output/
+*.json
+*.csv
+
+# Secrets
+.env
+.env.*
+!.env.dist
+
+# Docs & tests (not needed in image)
+docs/
+tests/
+tools/
+*.md
+!README.md

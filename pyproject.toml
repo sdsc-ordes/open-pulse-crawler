@@ -4,10 +4,10 @@ build-backend = "hatchling.build"
 
 [project]
 name = "open-pulse-crawler"
-version = "0.1.0"
+version = "1.0.0"
 description = "GitHub BFS Crawler - Discover users, organizations, and repositories"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = { text = "Apache 2.0" }
 authors = [
   { name = "caviri" }
@@ -22,6 +22,10 @@ dependencies = [
   "tqdm>=4.66.0",
   "scipy==1.16.2",
   "github-dependents-info>=1.6.3",
+  "fastapi>=0.115.0",
+  "uvicorn[standard]>=0.34.0",
+  "streamlit>=1.30.0",
+  "httpx>=0.27.0",
 ]
 
 [project.optional-dependencies]
@@ -33,8 +37,10 @@ viz = [
 dev = [
   "pytest>=7.0.0",
   "pytest-cov>=4.0.0",
+  "pytest-xdist>=3.6.0",
   "black>=23.0.0",
   "ruff>=0.1.0",
+  "httpx>=0.27.0",
 ]
 
 [project.urls]
@@ -48,3 +54,10 @@ packages = ["src/open_pulse_crawler"]
 
 [tool.hatch.build]
 packages = ["src/open_pulse_crawler"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q -n auto --dist=loadfile"
+markers = [
+  "integration: marks slower integration tests",
+]
