@@ -16,6 +16,8 @@ from .models import (
 )
 from .github_client import GitHubClient
 from .dependency_utils import fetch_dependencies_sbom, fetch_dependents
+from .gimie_client import GimieJsonLdClient
+from .gimie_jsonld import parse_gimie_repo_jsonld
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +35,11 @@ class GitHubCrawler:
         crawl_dependents: bool = False,
         min_stars: int = 0,
         max_dependents: Optional[int] = None,
-        epfl_entities: Optional[Set[str]] = None
+        epfl_entities: Optional[Set[str]] = None,
+        gimie_repos: bool = False,
+        gimie_api_base: str = "http://host.docker.internal:1234",
+        gimie_store_jsonld_dir: Optional[Path] = None,
+        gimie_skip_existing_jsonld: bool = False,
     ):
         """
         Initialize the crawler.
@@ -47,6 +53,10 @@ class GitHubCrawler:
             crawl_dependents: Whether to crawl dependents (upstream)
             min_stars: Minimum stars for dependents/dependencies filtering
             epfl_entities: Set of entity names (users/orgs) that belong to EPFL
+            gimie_repos: When true, populate repository nodes from gimie JSON-LD.
+            gimie_api_base: Base URL for the gimie JSON-LD API.
+            gimie_store_jsonld_dir: Optional directory to store gimie JSON-LD payloads.
+            gimie_skip_existing_jsonld: If storing, skip HTTP when payload file exists under jsonld_dir.
         """
         self.client = client
         self.max_rounds = max_rounds
@@ -57,6 +67,17 @@ class GitHubCrawler:
         self.min_stars = min_stars
         self.max_dependents = max_dependents
         self.epfl_entities = {e.lower() for e in (epfl_entities or set())}
+
+        # Optional gimie hybrid repo population.
+        self.gimie_repos = gimie_repos
+        self.gimie_client: Optional[GimieJsonLdClient] = None
+        if self.gimie_repos:
+            self.gimie_client = GimieJsonLdClient(
+                api_base=gimie_api_base,
+                jsonld_repo_segment="gimie",
+                jsonld_dir=gimie_store_jsonld_dir,
+                skip_existing_jsonld=gimie_skip_existing_jsonld,
+            )
         
         # Graph data
         self.graph = GraphData()
@@ -397,6 +418,137 @@ class GitHubCrawler:
     def _process_repository(self, repo_full_name: str) -> Optional[RepoModel]:
         """Process a repository and return RepoModel."""
         try:
+            # ── Optional gimie hybrid repo processing ─────────────────────
+            if self.gimie_repos and self.gimie_client is not None:
+                try:
+                    payload = self.gimie_client.fetch_repo_jsonld(repo_full_name)
+                    if payload is not None:
+                        parsed = parse_gimie_repo_jsonld(payload)
+                        repo_name = parsed.repo_full_name.split("/", 1)[1]
+
+                        repo = RepoModel(
+                            full_name=parsed.repo_full_name,
+                            name=repo_name,
+                            id=0,
+                            type=GitHubItemType.REPOSITORY,
+                            owner=parsed.owner_login,
+                            is_fork=False,
+                            forked_from=None,
+                            is_explored=True,
+                            exploration_timestamp=datetime.now().isoformat(),
+                            is_epfl=parsed.owner_login.lower() in self.epfl_entities,
+                        )
+
+                        repo.contributors.extend(parsed.contributor_logins)
+
+                        items_to_queue: List[tuple] = []
+
+                        # Add owner node (org/user), but don't fail if type is missing.
+                        owner_kind = parsed.login_type_map.get(parsed.owner_login)
+                        owner_node_type = (
+                            "org"
+                            if owner_kind == "org"
+                            else "user"
+                            if owner_kind == "user"
+                            else "user_or_org"
+                        )
+                        items_to_queue.append((owner_node_type, parsed.owner_login))
+
+                        # Add contributors.
+                        for contributor_login in parsed.contributor_logins:
+                            kind = parsed.login_type_map.get(contributor_login)
+                            node_type = (
+                                "org"
+                                if kind == "org"
+                                else "user"
+                                if kind == "user"
+                                else "user_or_org"
+                            )
+                            items_to_queue.append((node_type, contributor_login))
+
+                        # Crawl dependencies/dependents using existing logic (SBOM + "Used by").
+                        if self.crawl_dependencies:
+                            try:
+                                cache_endpoint = f"sbom/{repo_full_name}"
+                                cached_deps = (
+                                    self.client.cache.get(cache_endpoint)
+                                    if self.client.cache
+                                    else None
+                                )
+
+                                if cached_deps is not None:
+                                    dependencies = cached_deps
+                                    logger.debug(f"Cache hit for dependencies of {repo_full_name}")
+                                else:
+                                    token = self.client.tokens[self.client.current_token_idx]
+                                    dependencies = fetch_dependencies_sbom(repo_full_name, token)
+                                    if dependencies is not None and self.client.cache:
+                                        self.client.cache.set(cache_endpoint, "", dependencies)
+
+                                if dependencies is not None:
+                                    repo.dependencies.extend(dependencies)
+                            except Exception as e:
+                                logger.warning(
+                                    f"Failed to crawl dependencies for {repo_full_name}: {e}"
+                                )
+
+                        if self.crawl_dependents:
+                            try:
+                                cache_endpoint = f"dependents/{repo_full_name}"
+                                cache_params = (
+                                    f"min_stars={self.min_stars}&max_dependents={self.max_dependents}"
+                                )
+                                cached_dependents = (
+                                    self.client.cache.get(cache_endpoint, cache_params)
+                                    if self.client.cache
+                                    else None
+                                )
+
+                                if cached_dependents is not None:
+                                    dependents = cached_dependents
+                                    logger.debug(f"Cache hit for dependents of {repo_full_name}")
+                                else:
+                                    dependents = fetch_dependents(
+                                        repo_full_name,
+                                        min_stars=self.min_stars,
+                                        max_dependents=self.max_dependents,
+                                    )
+                                    if dependents is not None and self.client.cache:
+                                        self.client.cache.set(
+                                            cache_endpoint, cache_params, dependents
+                                        )
+
+                                if dependents is not None:
+                                    repo.dependents.extend(dependents)
+                                    for dep in dependents:
+                                        items_to_queue.append(("repo", dep))
+                            except Exception as e:
+                                logger.warning(
+                                    f"Failed to crawl dependents for {repo_full_name}: {e}"
+                                )
+
+                        with self.visited_lock:
+                            for item_type, identifier in items_to_queue:
+                                if identifier not in self.visited:
+                                    self.queue.append(
+                                        (item_type, identifier, self.current_round + 1)
+                                    )
+                                    self._track_discovered_node(
+                                        item_type,
+                                        identifier,
+                                        repo_full_name,
+                                        "repo",
+                                    )
+
+                        return repo
+                except Exception as exc:
+                    logger.warning(
+                        "Gimie hybrid failed for %s; falling back to GitHub API: %s",
+                        repo_full_name,
+                        exc,
+                    )
+
+            # ── Default GitHub API processing ──────────────────────────────
             repo_obj = self.client.get_repository(repo_full_name)
             if not repo_obj:
                 return None
@@ -874,25 +1026,25 @@ class GitHubCrawler:
         from .io_utils import export_to_json, export_to_csv, export_nodes_csv
         from .visualization import visualize_graph, visualize_clusters as viz_clusters, VISUALIZATION_AVAILABLE
         
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        round_dir = output_dir / f"round_{round_num:02d}_{timestamp}"
+        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        round_dir = output_dir / f"{timestamp}.round_{round_num:02d}"
         round_dir.mkdir(parents=True, exist_ok=True)
         
         logger.info(f"Exporting round {round_num} to {round_dir}")
         
         # Export JSON
         if not no_json:
-            json_path = round_dir / f"graph_round_{round_num:02d}.json"
+            json_path = round_dir / f"{timestamp}.graph.json"
             export_to_json(self.graph, json_path)
             logger.debug(f"JSON exported to {json_path}")
         
         # Export CSVs
         if not no_csv:
-            edges_csv = round_dir / f"edges_round_{round_num:02d}.csv"
+            edges_csv = round_dir / f"{timestamp}.edges.csv"
             export_to_csv(self.graph, edges_csv, self.seed_nodes)
             logger.debug(f"Edges CSV exported to {edges_csv}")
             
-            nodes_csv = round_dir / f"nodes_round_{round_num:02d}.csv"
+            nodes_csv = round_dir / f"{timestamp}.nodes.csv"
             export_nodes_csv(
                 self.graph, 
                 nodes_csv, 
@@ -911,7 +1063,7 @@ class GitHubCrawler:
                 discovered = self.discovered_nodes if show_unexplored else None
                 
                 if visualize:
-                    viz_path = round_dir / f"graph_round_{round_num:02d}.png"
+                    viz_path = round_dir / f"{timestamp}.graph.png"
                     try:
                         visualize_graph(self.graph, viz_path, self.seed_nodes, self.visited, discovered)
                         logger.debug(f"Visualization exported to {viz_path}")
@@ -919,7 +1071,7 @@ class GitHubCrawler:
                         logger.error(f"Visualization failed: {e}")
                 
                 if visualize_clusters:
-                    clusters_dir = round_dir / "clusters"
+                    clusters_dir = round_dir / f"{timestamp}.clusters"
                     try:
                         viz_clusters(self.graph, clusters_dir, self.seed_nodes, self.visited, discovered)
                         logger.debug(f"Cluster visualizations exported to {clusters_dir}/")

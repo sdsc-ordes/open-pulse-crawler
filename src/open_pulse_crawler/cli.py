@@ -200,6 +200,28 @@ def crawl(
         help="Path to file containing EPFL entities (one per line)",
         exists=True
     )
+    ,
+    # ── Optional gimie hybrid repo discovery ──────────────────────────────
+    gimie_repos: bool = typer.Option(
+        False,
+        "--gimie-repos",
+        help="Populate repositories from gimie JSON-LD (keep user/org from GitHub API).",
+    ),
+    gimie_api_base: str = typer.Option(
+        "http://host.docker.internal:1234",
+        "--gimie-api-base",
+        help="Base URL for the gimie JSON-LD API.",
+    ),
+    gimie_store_jsonld: bool = typer.Option(
+        False,
+        "--gimie-store-jsonld",
+        help="Store raw gimie JSON-LD payloads under output-dir/jsonld/ during crawl.",
+    ),
+    gimie_skip_existing_jsonld: bool = typer.Option(
+        False,
+        "--gimie-skip-existing-jsonld",
+        help="Skip HTTP when a payload already exists under output-dir/jsonld/ (crawler output only).",
+    ),
 ):
     """
     Crawl GitHub to discover users, organizations, and repositories.
@@ -252,6 +274,12 @@ def crawl(
             console.print(f"[red]Error reading EPFL list: {e}[/red]")
             raise typer.Exit(1)
 
+    # ── gimie hybrid repo option wiring ─────────────────────────────────────
+    jsonld_dir: Optional[Path] = None
+    if gimie_repos:
+        if gimie_store_jsonld:
+            jsonld_dir = output_dir / "jsonld"
+
     # Initialize client and crawler
     client = GitHubClient(
         tokens, 
@@ -269,7 +297,11 @@ def crawl(
         crawl_dependents=crawl_dependents,
         min_stars=min_stars,
         max_dependents=max_dependents,
-        epfl_entities=epfl_entities
+        epfl_entities=epfl_entities,
+        gimie_repos=gimie_repos,
+        gimie_api_base=gimie_api_base,
+        gimie_store_jsonld_dir=jsonld_dir,
+        gimie_skip_existing_jsonld=gimie_skip_existing_jsonld,
     )
     
     # Setup incremental export callback if requested
@@ -407,21 +439,21 @@ def crawl(
     # Export results
     console.print("\n[bold blue]Exporting results...[/bold blue]\n")
     
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
     
     # JSON export
     if not no_json:
-        json_path = output_dir / f"graph_{timestamp}.json"
+        json_path = output_dir / f"{timestamp}.graph.json"
         export_to_json(crawler.graph, json_path)
         console.print(f"[green]✓[/green] JSON: {json_path}")
     
     # CSV export
     if not no_csv:
-        edges_csv_path = output_dir / f"edges_{timestamp}.csv"
+        edges_csv_path = output_dir / f"{timestamp}.edges.csv"
         export_to_csv(crawler.graph, edges_csv_path, crawler.seed_nodes)
         console.print(f"[green]✓[/green] CSV (edges): {edges_csv_path}")
         
-        nodes_csv_path = output_dir / f"nodes_{timestamp}.csv"
+        nodes_csv_path = output_dir / f"{timestamp}.nodes.csv"
         export_nodes_csv(
             crawler.graph, 
             nodes_csv_path, 
@@ -438,7 +470,7 @@ def crawl(
             console.print("Install with: pip install networkx matplotlib")
         else:
             if visualize:
-                viz_path = output_dir / f"graph_{timestamp}.png"
+                viz_path = output_dir / f"{timestamp}.graph.png"
                 console.print(f"[blue]Generating main visualization...[/blue]")
                 try:
                     discovered = crawler.discovered_nodes if show_unexplored else None
@@ -448,7 +480,7 @@ def crawl(
                     console.print(f"[red]✗[/red] Visualization failed: {e}")
             
             if visualize_clusters:
-                clusters_dir = output_dir / f"clusters_{timestamp}"
+                clusters_dir = output_dir / f"{timestamp}.clusters"
                 console.print(f"[blue]Generating cluster visualizations...[/blue]")
                 try:
                     discovered = crawler.discovered_nodes if show_unexplored else None
