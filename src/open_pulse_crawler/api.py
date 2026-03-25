@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import logging
 import os
+import zipfile
 import uuid
 from enum import Enum
+from pathlib import Path
 from typing import Dict, List, Optional
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, status
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from . import __version__
@@ -52,6 +55,28 @@ class CrawlRequest(BaseModel):
         description="Entity names (users/orgs) that belong to EPFL",
     )
 
+    # ── Optional gimie JSON-LD hybrid repo fetching ─────────────────────────
+    gimie_repos: bool = Field(
+        default=False,
+        description="Populate repository nodes from gimie JSON-LD (users/orgs still from GitHub).",
+    )
+    gimie_api_base: str = Field(
+        default="http://host.docker.internal:1234",
+        description="Base URL for the gimie JSON-LD API.",
+    )
+    gimie_store_jsonld: bool = Field(
+        default=False,
+        description="Store raw gimie JSON-LD payloads on disk under the job directory.",
+    )
+    gimie_skip_existing_jsonld: bool = Field(
+        default=False,
+        description="If storing, skip fetching JSON-LD payloads when files already exist.",
+    )
+    gimie_archive_on_download: bool = Field(
+        default=False,
+        description="If true, try to ensure jsonld.zip is created after crawl completion.",
+    )
+
 
 class CrawlJobResponse(BaseModel):
     job_id: str
@@ -87,6 +112,8 @@ class _JobRecord(BaseModel):
     status: JobStatus = JobStatus.PENDING
     detail: Optional[str] = None
     graph: Optional[GraphData] = None
+    jsonld_dir: Optional[str] = None
+    jsonld_zip_path: Optional[str] = None
 
 
 _jobs: Dict[str, _JobRecord] = {}
@@ -106,6 +133,11 @@ def _run_crawl(
     max_dependents: Optional[int],
     batch_size: Optional[int],
     epfl_entities: List[str],
+    gimie_repos: bool,
+    gimie_api_base: str,
+    gimie_store_jsonld: bool,
+    gimie_skip_existing_jsonld: bool,
+    gimie_archive_on_download: bool,
 ) -> None:
     """Execute a crawl in the background and store results."""
     record = _jobs[job_id]
@@ -122,6 +154,15 @@ def _run_crawl(
             record.detail = "GITHUB_TOKEN environment variable is not set"
             return
 
+        jsonld_dir: Optional[Path] = None
+        jsonld_zip_path: Optional[Path] = None
+        if gimie_repos and gimie_store_jsonld:
+            data_root = Path(os.environ.get("OPC_DATA_DIR", "/tmp/open-pulse-crawler"))
+            job_root = data_root / job_id
+            jsonld_dir = job_root / "jsonld"
+            jsonld_dir.mkdir(parents=True, exist_ok=True)
+            jsonld_zip_path = job_root / "jsonld.zip"
+
         client = GitHubClient(tokens=tokens)
         crawler = GitHubCrawler(
             client=client,
@@ -132,11 +173,30 @@ def _run_crawl(
             min_stars=min_stars,
             max_dependents=max_dependents,
             epfl_entities=set(epfl_entities),
+            gimie_repos=gimie_repos,
+            gimie_api_base=gimie_api_base,
+            gimie_store_jsonld_dir=jsonld_dir,
+            gimie_skip_existing_jsonld=gimie_skip_existing_jsonld,
         )
         crawler.add_seeds(seeds)
         crawler.crawl(show_progress=False)
 
         record.graph = crawler.graph
+        if jsonld_dir is not None:
+            record.jsonld_dir = str(jsonld_dir)
+            record.jsonld_zip_path = str(jsonld_zip_path) if jsonld_zip_path else None
+            if gimie_archive_on_download and jsonld_zip_path:
+                # Best-effort zip creation; download endpoint also works on-demand.
+                try:
+                    if jsonld_zip_path.exists():
+                        jsonld_zip_path.unlink()
+                    with zipfile.ZipFile(
+                        jsonld_zip_path, "w", compression=zipfile.ZIP_DEFLATED
+                    ) as zf:
+                        for file_path in sorted(jsonld_dir.glob("*.json")):
+                            zf.write(file_path, file_path.name)
+                except Exception as exc:
+                    logger.warning("Failed to create jsonld zip: %s", exc)
         record.status = JobStatus.COMPLETED
     except Exception as exc:
         logger.exception("Crawl job %s failed", job_id)
@@ -186,6 +246,11 @@ def start_crawl(
         body.max_dependents,
         body.batch_size,
         body.epfl_entities,
+        body.gimie_repos,
+        body.gimie_api_base,
+        body.gimie_store_jsonld,
+        body.gimie_skip_existing_jsonld,
+        body.gimie_archive_on_download,
     )
     return CrawlJobResponse(job_id=job_id, status=JobStatus.PENDING)
 
@@ -227,3 +292,47 @@ def get_graph(
             detail=f"Job is not completed (current status: {record.status.value})",
         )
     return GraphResponse(job_id=job_id, graph=record.graph.model_dump())
+
+
+@app.get("/api/v1/crawl/{job_id}/jsonld.zip", response_class=FileResponse)
+def get_jsonld_zip(
+    job_id: str,
+    _token: str = Depends(verify_token),
+) -> FileResponse:
+    """Download stored gimie JSON-LD payloads for a completed job."""
+    record = _jobs.get(job_id)
+    if record is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+    if record.status != JobStatus.COMPLETED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Job is not completed (current status: {record.status.value})",
+        )
+    if not record.jsonld_dir:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="JSON-LD payloads were not stored for this job",
+        )
+
+    jsonld_dir = Path(record.jsonld_dir)
+    if not jsonld_dir.exists():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="JSON-LD directory missing on disk")
+
+    # Reuse an existing zip if already created.
+    if record.jsonld_zip_path:
+        zip_path = Path(record.jsonld_zip_path)
+        if zip_path.exists():
+            return FileResponse(path=str(zip_path), filename="jsonld.zip", media_type="application/zip")
+
+    job_root = jsonld_dir.parent
+    zip_path = job_root / "jsonld.zip"
+    try:
+        if zip_path.exists():
+            zip_path.unlink()
+        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for file_path in sorted(jsonld_dir.glob("*.json")):
+                zf.write(file_path, file_path.name)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to create jsonld zip: {exc}") from exc
+
+    return FileResponse(path=str(zip_path), filename="jsonld.zip", media_type="application/zip")
