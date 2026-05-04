@@ -35,7 +35,6 @@ class GitHubCrawler:
         crawl_dependents: bool = False,
         min_stars: int = 0,
         max_dependents: Optional[int] = None,
-        epfl_entities: Optional[Set[str]] = None,
         gimie_repos: bool = False,
         gimie_api_base: str = "http://host.docker.internal:1234",
         gimie_store_jsonld_dir: Optional[Path] = None,
@@ -52,7 +51,6 @@ class GitHubCrawler:
             crawl_dependencies: Whether to crawl dependencies (downstream)
             crawl_dependents: Whether to crawl dependents (upstream)
             min_stars: Minimum stars for dependents/dependencies filtering
-            epfl_entities: Set of entity names (users/orgs) that belong to EPFL
             gimie_repos: When true, populate repository nodes from gimie JSON-LD.
             gimie_api_base: Base URL for the gimie JSON-LD API.
             gimie_store_jsonld_dir: Optional directory to store gimie JSON-LD payloads.
@@ -66,7 +64,6 @@ class GitHubCrawler:
         self.crawl_dependents = crawl_dependents
         self.min_stars = min_stars
         self.max_dependents = max_dependents
-        self.epfl_entities = {e.lower() for e in (epfl_entities or set())}
 
         # Optional gimie hybrid repo population.
         self.gimie_repos = gimie_repos
@@ -239,7 +236,6 @@ class GitHubCrawler:
                     type=user_type,
                     is_explored=True,
                     exploration_timestamp=datetime.now().isoformat(),
-                    is_epfl=user_obj['login'].lower() in self.epfl_entities
                 )
                 
                 # Use cached repos data if available
@@ -280,7 +276,6 @@ class GitHubCrawler:
                     type=GitHubItemType.USER if user_obj.type == 'User' else GitHubItemType.BOT,
                     is_explored=True,
                     exploration_timestamp=datetime.now().isoformat(),
-                    is_epfl=user_obj.login.lower() in self.epfl_entities
                 )
                 
                 # Get user's repositories from live API
@@ -337,7 +332,6 @@ class GitHubCrawler:
                     type=GitHubItemType.ORGANIZATION,
                     is_explored=True,
                     exploration_timestamp=datetime.now().isoformat(),
-                    is_epfl=org_obj['login'].lower() in self.epfl_entities
                 )
                 
                 # Use cached members data if available
@@ -373,7 +367,6 @@ class GitHubCrawler:
                     type=GitHubItemType.ORGANIZATION,
                     is_explored=True,
                     exploration_timestamp=datetime.now().isoformat(),
-                    is_epfl=org_obj.login.lower() in self.epfl_entities
                 )
                 
                 # Get organization members from live API
@@ -436,7 +429,6 @@ class GitHubCrawler:
                             forked_from=None,
                             is_explored=True,
                             exploration_timestamp=datetime.now().isoformat(),
-                            is_epfl=parsed.owner_login.lower() in self.epfl_entities,
                         )
 
                         repo.contributors.extend(parsed.contributor_logins)
@@ -566,7 +558,6 @@ class GitHubCrawler:
                     forked_from=repo_obj.get('parent'),
                     is_explored=True,
                     exploration_timestamp=datetime.now().isoformat(),
-                    is_epfl=repo_obj.get('owner', '').lower() in self.epfl_entities
                 )
                 
                 # Collect items to queue
@@ -666,7 +657,6 @@ class GitHubCrawler:
                     forked_from=repo_obj.parent.full_name if repo_obj.parent else None,
                     is_explored=True,
                     exploration_timestamp=datetime.now().isoformat(),
-                    is_epfl=repo_obj.owner.login.lower() in self.epfl_entities
                 )
                 
                 # Collect items to queue
@@ -1050,7 +1040,6 @@ class GitHubCrawler:
                 nodes_csv, 
                 self.seed_nodes,
                 discovered_nodes=self.discovered_nodes,
-                epfl_entities=self.epfl_entities
             )
             logger.debug(f"Nodes CSV exported to {nodes_csv}")
         

@@ -194,13 +194,6 @@ def crawl(
         min=1,
         max=50
     ),
-    epfl_list: Optional[Path] = typer.Option(
-        None,
-        "--epfl-list",
-        help="Path to file containing EPFL entities (one per line)",
-        exists=True
-    )
-    ,
     # ── Optional gimie hybrid repo discovery ──────────────────────────────
     gimie_repos: bool = typer.Option(
         False,
@@ -260,20 +253,6 @@ def crawl(
     if cache_dir:
         cache_dir.mkdir(parents=True, exist_ok=True)
     
-    # Load EPFL entities
-    epfl_entities = set()
-    if epfl_list:
-        try:
-            with open(epfl_list, 'r') as f:
-                for line in f:
-                    line = line.strip()
-                    if line and not line.startswith('#'):
-                        epfl_entities.add(line)
-            console.print(f"[green]✓[/green] Loaded {len(epfl_entities)} EPFL entities from {epfl_list}")
-        except Exception as e:
-            console.print(f"[red]Error reading EPFL list: {e}[/red]")
-            raise typer.Exit(1)
-
     # ── gimie hybrid repo option wiring ─────────────────────────────────────
     jsonld_dir: Optional[Path] = None
     if gimie_repos:
@@ -297,7 +276,6 @@ def crawl(
         crawl_dependents=crawl_dependents,
         min_stars=min_stars,
         max_dependents=max_dependents,
-        epfl_entities=epfl_entities,
         gimie_repos=gimie_repos,
         gimie_api_base=gimie_api_base,
         gimie_store_jsonld_dir=jsonld_dir,
@@ -455,11 +433,10 @@ def crawl(
         
         nodes_csv_path = output_dir / f"{timestamp}.nodes.csv"
         export_nodes_csv(
-            crawler.graph, 
-            nodes_csv_path, 
+            crawler.graph,
+            nodes_csv_path,
             crawler.seed_nodes,
             discovered_nodes=crawler.discovered_nodes,
-            epfl_entities=epfl_entities
         )
         console.print(f"[green]✓[/green] CSV (nodes): {nodes_csv_path}")
     

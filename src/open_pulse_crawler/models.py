@@ -18,7 +18,6 @@ class BaseEntityModel(BaseModel):
     """Base model for all GitHub entities."""
     is_explored: bool = False
     exploration_timestamp: Optional[str] = None
-    is_epfl: bool = False
 
 
 class UserModel(BaseEntityModel):
