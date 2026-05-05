@@ -231,7 +231,7 @@ open-pulse-crawler crawl DeepLabCut/DeepLabCut \
 - `--max-concurrent`: Maximum number of concurrent API requests (default: 5)
 - `--rate-limit-buffer`: Buffer of requests to keep before waiting (default: 50)
 
-See [RATE_LIMITING.md](./RATE_LIMITING.md) for detailed guide on rate limiting and API management.
+See [docs/CONCURRENCY.md](./docs/CONCURRENCY.md) for the detailed guide on concurrency, rate limiting, and multi-token rotation.
 
 ## Output Formats
 

@@ -92,6 +92,13 @@ class GitHubCrawler:
         # Thread-safe access to graph and visited set
         self.graph_lock = threading.Lock()
         self.visited_lock = threading.Lock()
+
+        # Cooperative pause / cancel flags. The HTTP API toggles these via
+        # the JobRecord; the BFS loop checks them between rounds and at
+        # the head of each batch to honour Pause/Cancel without ripping
+        # work mid-flight (network calls / thread-pool tasks finish first).
+        self.pause_requested: bool = False
+        self.cancel_requested: bool = False
         
         # Statistics per round
         self.round_stats: List[Dict] = []
@@ -821,6 +828,23 @@ class GitHubCrawler:
         
         try:
             while self.queue and self.current_round < self.max_rounds:
+                # Honour cooperative cancel between rounds. Inside a single
+                # round we let the in-flight thread pool drain (work that's
+                # already mid-network-call finishes) and then break.
+                if self.cancel_requested:
+                    logger.info("Crawl cancellation requested — exiting BFS")
+                    break
+
+                # If paused, sleep in 1s ticks until either the flag clears
+                # or a cancel comes in. Pause is a between-rounds construct
+                # — same reason as cancel: don't tear down active work.
+                while self.pause_requested and not self.cancel_requested:
+                    import time as _t
+                    _t.sleep(1.0)
+                if self.cancel_requested:
+                    logger.info("Crawl cancellation while paused — exiting BFS")
+                    break
+
                 # Start new round
                 round_start_time = __import__('time').time()
                 nodes_in_round = []

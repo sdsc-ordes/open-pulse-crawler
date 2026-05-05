@@ -28,8 +28,17 @@ logger = logging.getLogger(__name__)
 class JobStatus(str, Enum):
     PENDING = "pending"
     RUNNING = "running"
+    PAUSED = "paused"
+    CANCELLED = "cancelled"
     COMPLETED = "completed"
     FAILED = "failed"
+
+
+# States the BFS loop has stopped or never started running. Used by the
+# DELETE endpoint so we don't drop a still-active job out from under itself.
+_TERMINAL_STATES = {
+    JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED, JobStatus.PENDING,
+}
 
 
 class CrawlRequest(BaseModel):
@@ -268,7 +277,16 @@ def _run_crawl(
         record.graph = crawler.graph
         if jsonld_dir is not None:
             record.jsonld_dir = str(jsonld_dir)
-        record.status = JobStatus.COMPLETED
+        # If a cancel was requested mid-flight the crawler exits its loop
+        # cleanly; reflect that in the final status so callers know the
+        # graph is partial, not "completed". Pause that wasn't followed by
+        # cancel just makes us slow — once it lifts the loop resumes and
+        # eventually completes.
+        if crawler.cancel_requested:
+            record.status = JobStatus.CANCELLED
+            record.detail = record.detail or "cancelled via /cancel"
+        else:
+            record.status = JobStatus.COMPLETED
         record.completed_at = datetime.now(timezone.utc)
     except Exception as exc:
         logger.exception("Crawl job %s failed", job_id)
@@ -459,3 +477,115 @@ def get_graph(
             detail=f"Job is not completed (current status: {record.status.value})",
         )
     return GraphResponse(job_id=job_id, graph=record.graph.model_dump())
+
+
+# ── Job lifecycle controls ─────────────────────────────────────────────────
+#
+# Pause / resume / cancel are cooperative — they set flags on the live
+# GitHubCrawler instance which the BFS loop checks between rounds.
+# Mid-round network calls finish before the loop exits, which keeps the
+# graph in a consistent state (partial but not torn).
+
+class JobActionResponse(BaseModel):
+    job_id: str
+    status: JobStatus
+    detail: Optional[str] = None
+
+
+def _job_or_404(job_id: str) -> _JobRecord:
+    record = _jobs.get(job_id)
+    if record is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+    return record
+
+
+@app.post("/api/v1/crawl/{job_id}/pause", response_model=JobActionResponse)
+def pause_crawl(
+    job_id: str,
+    _token: str = Depends(verify_token),
+) -> JobActionResponse:
+    """Request the BFS loop to pause between rounds.
+
+    The currently in-flight round drains first; once the round boundary is
+    hit the loop sleeps in 1-second ticks until ``resume`` (or ``cancel``)
+    is called. Status flips to ``paused`` immediately.
+    """
+    record = _job_or_404(job_id)
+    if record.status not in (JobStatus.RUNNING, JobStatus.PAUSED):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot pause a job in state {record.status.value!r}",
+        )
+    if record.crawler is not None:
+        record.crawler.pause_requested = True
+    record.status = JobStatus.PAUSED
+    record.detail = "paused"
+    return JobActionResponse(job_id=job_id, status=record.status, detail=record.detail)
+
+
+@app.post("/api/v1/crawl/{job_id}/resume", response_model=JobActionResponse)
+def resume_crawl(
+    job_id: str,
+    _token: str = Depends(verify_token),
+) -> JobActionResponse:
+    """Lift a previous pause and let the BFS loop continue."""
+    record = _job_or_404(job_id)
+    if record.status != JobStatus.PAUSED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot resume a job in state {record.status.value!r}",
+        )
+    if record.crawler is not None:
+        record.crawler.pause_requested = False
+    record.status = JobStatus.RUNNING
+    record.detail = None
+    return JobActionResponse(job_id=job_id, status=record.status)
+
+
+@app.post("/api/v1/crawl/{job_id}/cancel", response_model=JobActionResponse)
+def cancel_crawl(
+    job_id: str,
+    _token: str = Depends(verify_token),
+) -> JobActionResponse:
+    """Ask the BFS loop to stop at the next round boundary.
+
+    The job's final ``status`` becomes ``cancelled`` once the loop exits.
+    The graph collected so far is preserved and accessible (partial).
+    """
+    record = _job_or_404(job_id)
+    if record.status not in (JobStatus.RUNNING, JobStatus.PAUSED, JobStatus.PENDING):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot cancel a job in state {record.status.value!r}",
+        )
+    if record.crawler is not None:
+        record.crawler.cancel_requested = True
+        # If currently paused, also lift the pause so the loop wakes up
+        # and notices the cancel flag.
+        record.crawler.pause_requested = False
+    # Leave status as-is for now — the worker thread will flip to
+    # CANCELLED when the loop actually exits, so callers see the
+    # transition rather than a phantom.
+    record.detail = "cancellation requested"
+    return JobActionResponse(job_id=job_id, status=record.status, detail=record.detail)
+
+
+@app.delete("/api/v1/crawl/{job_id}", response_model=JobActionResponse)
+def delete_crawl(
+    job_id: str,
+    _token: str = Depends(verify_token),
+) -> JobActionResponse:
+    """Drop a terminal job from the in-memory registry.
+
+    Refuses to delete a still-active job (RUNNING / PAUSED) — cancel it
+    first. Useful for clearing the listing in long-lived deployments.
+    """
+    record = _job_or_404(job_id)
+    if record.status not in _TERMINAL_STATES:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Job is still active ({record.status.value}); cancel it first.",
+        )
+    final_status = record.status
+    del _jobs[job_id]
+    return JobActionResponse(job_id=job_id, status=final_status, detail="deleted")
