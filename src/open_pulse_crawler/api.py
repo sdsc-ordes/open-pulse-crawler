@@ -56,6 +56,15 @@ class CrawlRequest(BaseModel):
     max_dependents: Optional[int] = Field(
         default=None, ge=1, description="Maximum number of dependents to fetch"
     )
+    max_contributors: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Skip contributor expansion for repos with more than N contributors. "
+            "The repo node stays in the graph; only its contributor users are "
+            "not queued. Useful for avoiding mega-projects."
+        ),
+    )
     batch_size: Optional[int] = Field(
         default=None, ge=1, description="Number of nodes to process concurrently"
     )
@@ -103,6 +112,23 @@ _CRAWL_REQUEST_EXAMPLES = {
             "crawl_dependents": True,
             "min_stars": 10,
             "max_dependents": 50,
+        },
+    },
+    "epfl_with_megaproject_skip": {
+        "summary": "Skip mega-projects by contributor count",
+        "description": (
+            "Crawl from an EPFL-flavoured seed list and skip contributor "
+            "expansion for any repo with more than 200 contributors. The repo "
+            "node still lands in the graph (with owner / fork / dependency "
+            "edges if those are enabled), but its contributors are not queued "
+            "as new BFS frontier nodes. The first time a repo is fetched the "
+            "count is captured and cached, so subsequent crawls re-apply the "
+            "rule without further API calls."
+        ),
+        "value": {
+            "seeds": ["epfl", "dslab-epfl", "sdsc-ordes/gimie"],
+            "max_rounds": 2,
+            "max_contributors": 200,
         },
     },
 }
@@ -219,6 +245,7 @@ def _run_crawl(
     crawl_dependents: bool,
     min_stars: int,
     max_dependents: Optional[int],
+    max_contributors: Optional[int],
     batch_size: Optional[int],
 ) -> None:
     """Execute a crawl in the background and store results."""
@@ -261,6 +288,7 @@ def _run_crawl(
             crawl_dependents=crawl_dependents,
             min_stars=min_stars,
             max_dependents=max_dependents,
+            max_contributors=max_contributors,
             gimie_repos=gimie_repos,
             gimie_api_base=gimie_api_base,
             gimie_store_jsonld_dir=jsonld_dir,
@@ -335,6 +363,7 @@ def start_crawl(
         body.crawl_dependents,
         body.min_stars,
         body.max_dependents,
+        body.max_contributors,
         body.batch_size,
     )
     return CrawlJobResponse(job_id=job_id, status=JobStatus.PENDING)

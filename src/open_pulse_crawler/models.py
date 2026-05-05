@@ -64,6 +64,17 @@ class RepoModel(BaseEntityModel):
     dependents: List[str] = Field(default_factory=list)
     dependencies: List[str] = Field(default_factory=list)
 
+    # Total contributor count reported by GitHub. Captured once when the repo
+    # is first fetched and persisted in the cache so subsequent crawls can
+    # apply a `--max-contributors` skip rule without re-querying. ``None``
+    # means we don't have a count yet (cache miss + count fetch failed).
+    contributor_count: Optional[int] = None
+    # True when the crawler skipped this repo's contributor expansion because
+    # ``contributor_count`` exceeded the configured threshold. The repo node
+    # itself remains in the graph (with owner / fork / deps as usual); only
+    # contributor edges are dropped.
+    skipped_high_contributors: bool = False
+
 
 class GraphData(BaseModel):
     """Holds references to users, orgs, and repos discovered."""

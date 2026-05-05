@@ -225,6 +225,7 @@ open-pulse-crawler crawl DeepLabCut/DeepLabCut \
 - `--crawl-dependents`: Crawl upstream dependents ("Used by")
 - `--min-stars`: Minimum stars for filtering dependents/dependencies (default: 0)
 - `--max-dependents`: Maximum number of dependents to fetch (default: all)
+- `--max-contributors`: Skip contributor expansion for repos with more than N contributors. The repo node still lands in the graph (with owner / fork / deps); only its contributors are not queued. Useful for avoiding mega-projects (e.g. linux kernel) that would dominate the BFS frontier. The total count is cached, so this is roughly free on re-crawls. Default: unlimited.
 
 #### Rate Limiting Options (New!)
 - `--request-delay`: Minimum delay in seconds between API requests (default: 0.0)

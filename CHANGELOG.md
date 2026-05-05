@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `--max-contributors` skip rule (CLI flag, REST API field on `POST /api/v1/crawl`, Streamlit GUI input under "Performance & filtering", and constructor argument on `GitHubCrawler`). When set, repos with more than N contributors stay in the graph but their contributor users are not queued for BFS expansion — owner / fork / dependency / dependent edges are unaffected. Useful for avoiding mega-projects (linux kernel, etc.) that would otherwise dominate the frontier.
+- `RepoModel.contributor_count` and `RepoModel.skipped_high_contributors` fields. The total contributor count is captured the first time a repo is fetched (one cheap `per_page=1` request via `repo.get_contributors().totalCount`) and cached alongside the existing `repo:{full_name}` entry, so repeat crawls re-apply the skip rule with zero additional API calls.
+- `GitHubClient.get_contributor_count(repo_full_name)` helper — cache-first lookup with a single live fallback on miss; write-throughs the count so the next call hits cache.
+- Streamlit GUI brought to parity with the REST API: form now exposes `crawl_dependencies`, `crawl_dependents`, `min_stars`, `max_dependents`, `max_contributors`, and `batch_size` (under collapsible "Dependency crawling" and "Performance & filtering" expanders, with sensible defaults that don't surface the params in the request body unless changed). Results panel now shows live progress (current round, nodes processed, queue size, ETA) for active jobs, includes pause / resume / cancel / delete controls gated by current status, and offers a graph download button once the job is `completed`. API errors are surfaced with their `detail` message instead of a generic HTTP error string.
 - MkDocs documentation site (Material theme) at `mkdocs.yml`, with a `docs` extra group in `pyproject.toml` (`mkdocs`, `mkdocs-material`, `pymdown-extensions`). Rendered Mermaid diagrams via `pymdownx.superfences`: an architecture diagram on the home page, a job-lifecycle state diagram and a request-flow sequence diagram in `docs/API.md`, and a Compose-stack flow diagram in `docs/DEPLOYMENT.md`. Build verified locally with `mkdocs build --strict`.
 - `docs/index.md` landing page introducing the project and linking into the existing docs.
 - GitHub Action `.github/workflows/docs.yaml` that builds the site on push / PR to `main` / `develop` (with `--strict`) and deploys to GitHub Pages from `main` via `actions/deploy-pages`. **Requires Pages source = "GitHub Actions"** in repo Settings → Pages.
@@ -47,6 +51,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Fixed `infra/docker-compose.yml` nginx healthcheck: replaced `wget http://localhost/api/v1/health` with `wget http://127.0.0.1/api/v1/health`. Inside the Alpine container, `localhost` resolves to `::1` (IPv6) but `infra/nginx/nginx.conf` only declares `listen 80;` (IPv4-only), so the probe was getting "Connection refused" while external access worked fine. Stack went from `unhealthy` to healthy in 7s after recreate.
 - Crawl export filenames: timestamp first, then kind — e.g. `YYYYMMDDHHMMSS.graph.json`, `YYYYMMDDHHMMSS.edges.csv`, `YYYYMMDDHHMMSS.nodes.csv`, `YYYYMMDDHHMMSS.graph.png`, directory `YYYYMMDDHHMMSS.clusters/`. Incremental round folders are `YYYYMMDDHHMMSS.round_NN/` with the same inner naming.
 - Gimie JSON-LD: on success (HTTP 2xx) or when using an existing payload file with skip-existing, remove matching `jsonld_errors/<repo>.*.json` files for that repository.
 - Gimie JSON-LD: log a short preview of the HTTP error response body when the gimie endpoint returns non-2xx (in addition to optional `jsonld_errors/` files).

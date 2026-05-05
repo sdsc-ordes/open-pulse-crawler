@@ -26,8 +26,8 @@ class GitHubCrawler:
     """BFS crawler for GitHub entities."""
     
     def __init__(
-        self, 
-        client: GitHubClient, 
+        self,
+        client: GitHubClient,
         max_rounds: int = 3,
         state_file: Optional[Path] = None,
         batch_size: Optional[int] = None,
@@ -35,6 +35,7 @@ class GitHubCrawler:
         crawl_dependents: bool = False,
         min_stars: int = 0,
         max_dependents: Optional[int] = None,
+        max_contributors: Optional[int] = None,
         gimie_repos: bool = False,
         gimie_api_base: str = "http://host.docker.internal:1234",
         gimie_store_jsonld_dir: Optional[Path] = None,
@@ -42,7 +43,7 @@ class GitHubCrawler:
     ):
         """
         Initialize the crawler.
-        
+
         Args:
             client: GitHub API client
             max_rounds: Maximum number of BFS rounds
@@ -51,6 +52,11 @@ class GitHubCrawler:
             crawl_dependencies: Whether to crawl dependencies (downstream)
             crawl_dependents: Whether to crawl dependents (upstream)
             min_stars: Minimum stars for dependents/dependencies filtering
+            max_contributors: When set, repos with strictly more contributors are
+                kept in the graph but their contributor edges are NOT expanded
+                (no users queued from this repo). Useful for avoiding mega-projects
+                like the linux kernel that would dominate the BFS frontier.
+                Default ``None`` = unlimited.
             gimie_repos: When true, populate repository nodes from gimie JSON-LD.
             gimie_api_base: Base URL for the gimie JSON-LD API.
             gimie_store_jsonld_dir: Optional directory to store gimie JSON-LD payloads.
@@ -64,6 +70,7 @@ class GitHubCrawler:
         self.crawl_dependents = crawl_dependents
         self.min_stars = min_stars
         self.max_dependents = max_dependents
+        self.max_contributors = max_contributors
 
         # Optional gimie hybrid repo population.
         self.gimie_repos = gimie_repos
@@ -577,11 +584,37 @@ class GitHubCrawler:
                     owner_type = 'org' if owner_type_str == 'Organization' else 'user'
                     items_to_queue.append((owner_type, owner_login))
                 
-                # Use cached contributors data if available
-                cached_contributors = repo_obj.get('contributors', [])
-                repo.contributors.extend(cached_contributors)
-                for contributor_login in cached_contributors:
-                    items_to_queue.append(('user', contributor_login))
+                # Apply the --max-contributors skip rule. The cached entry
+                # already carries ``contributor_count`` (captured the first
+                # time this repo was fetched) so this branch costs zero API
+                # calls. If the count is missing from the cache (older entry)
+                # we fall back to the live fetcher, which makes one cheap
+                # ``per_page=1`` request and writes through.
+                cached_count = repo_obj.get('contributor_count')
+                if isinstance(cached_count, int):
+                    repo.contributor_count = cached_count
+                elif self.max_contributors is not None:
+                    fetched = self.client.get_contributor_count(repo_full_name)
+                    if fetched is not None:
+                        repo.contributor_count = fetched
+
+                if (
+                    self.max_contributors is not None
+                    and repo.contributor_count is not None
+                    and repo.contributor_count > self.max_contributors
+                ):
+                    repo.skipped_high_contributors = True
+                    logger.info(
+                        f"Skipping contributor expansion for {repo_full_name} "
+                        f"({repo.contributor_count} contributors > "
+                        f"max_contributors={self.max_contributors})"
+                    )
+                else:
+                    # Use cached contributors data if available
+                    cached_contributors = repo_obj.get('contributors', [])
+                    repo.contributors.extend(cached_contributors)
+                    for contributor_login in cached_contributors:
+                        items_to_queue.append(('user', contributor_login))
                 
                 # If it's a fork, add parent
                 if repo.is_fork and repo.forked_from:
@@ -673,14 +706,36 @@ class GitHubCrawler:
                 owner_type = 'org' if repo_obj.owner.type == 'Organization' else 'user'
                 items_to_queue.append((owner_type, repo_obj.owner.login))
                 
-                # Get contributors from live API (limited to avoid too many API calls)
+                # Get contributors from live API (limited to avoid too many API calls).
+                # ``totalCount`` is one cheap ``per_page=1`` request; we read it
+                # before iterating so the --max-contributors skip rule can
+                # kick in without paginating the full list of a megaproject.
                 try:
                     contributors = self.client._make_request(repo_obj.get_contributors)
-                    for i, contributor in enumerate(contributors):
-                        if i >= 10:  # Limit to top 10 contributors
-                            break
-                        repo.contributors.append(contributor.login)
-                        items_to_queue.append(('user', contributor.login))
+                    try:
+                        repo.contributor_count = int(contributors.totalCount)
+                    except Exception as e:
+                        logger.debug(
+                            f"Failed to read contributor totalCount for {repo_full_name}: {e}"
+                        )
+
+                    if (
+                        self.max_contributors is not None
+                        and repo.contributor_count is not None
+                        and repo.contributor_count > self.max_contributors
+                    ):
+                        repo.skipped_high_contributors = True
+                        logger.info(
+                            f"Skipping contributor expansion for {repo_full_name} "
+                            f"({repo.contributor_count} contributors > "
+                            f"max_contributors={self.max_contributors})"
+                        )
+                    else:
+                        for i, contributor in enumerate(contributors):
+                            if i >= 10:  # Limit to top 10 contributors
+                                break
+                            repo.contributors.append(contributor.login)
+                            items_to_queue.append(('user', contributor.login))
                 except Exception as e:
                     logger.warning(f"Failed to get contributors for repo {repo_full_name}: {e}")
                 

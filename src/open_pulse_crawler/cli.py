@@ -162,6 +162,17 @@ def crawl(
         "--max-dependents",
         help="Maximum number of dependents to fetch (default: None = all)"
     ),
+    max_contributors: Optional[int] = typer.Option(
+        None,
+        "--max-contributors",
+        help=(
+            "Skip contributor expansion for repos with more than N contributors. "
+            "The repo node stays in the graph (with owner / fork / deps); only "
+            "contributor users are not queued. Useful for avoiding mega-projects "
+            "(e.g. linux kernel) that would dominate the BFS frontier. "
+            "Default: None = unlimited."
+        ),
+    ),
     verbose: bool = typer.Option(
         False,
         "--verbose",
@@ -268,14 +279,15 @@ def crawl(
         rate_limit_buffer=rate_limit_buffer
     )
     crawler = GitHubCrawler(
-        client, 
-        max_rounds=rounds, 
+        client,
+        max_rounds=rounds,
         state_file=state_file,
         batch_size=batch_size,
         crawl_dependencies=crawl_dependencies,
         crawl_dependents=crawl_dependents,
         min_stars=min_stars,
         max_dependents=max_dependents,
+        max_contributors=max_contributors,
         gimie_repos=gimie_repos,
         gimie_api_base=gimie_api_base,
         gimie_store_jsonld_dir=jsonld_dir,
