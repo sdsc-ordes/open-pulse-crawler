@@ -309,14 +309,26 @@ def fetch_dependents(repo_full_name: str, min_stars: int = 0, max_dependents: Op
 
                 self.all_public_dependent_repos = list({v["name"]: v for v in self.all_public_dependent_repos}.values())
 
+                # Use .get() with a default so packages that were skipped by
+                # the early-exit on max_dependents (and therefore never had
+                # public_dependent_stars set on line 206) don't crash the
+                # sort — they simply sort to the bottom.
                 if self.sort_key == "stars":
-                    self.packages = sorted(self.packages, key=lambda d: d["public_dependent_stars"], reverse=True)
+                    self.packages = sorted(
+                        self.packages,
+                        key=lambda d: d.get("public_dependent_stars", 0),
+                        reverse=True,
+                    )
                     self.all_public_dependent_repos = sorted(
-                        self.all_public_dependent_repos, key=lambda d: d["stars"], reverse=True
+                        self.all_public_dependent_repos,
+                        key=lambda d: d.get("stars", 0),
+                        reverse=True,
                     )
                 else:
-                    self.packages = sorted(self.packages, key=lambda d: d["name"])
-                    self.all_public_dependent_repos = sorted(self.all_public_dependent_repos, key=lambda d: d["name"])
+                    self.packages = sorted(self.packages, key=lambda d: d.get("name", ""))
+                    self.all_public_dependent_repos = sorted(
+                        self.all_public_dependent_repos, key=lambda d: d.get("name", "")
+                    )
 
                 doc_url_to_use = "https://github.com/nvuillam/github-dependents-info"
                 if self.doc_url is not None:
@@ -354,26 +366,24 @@ def fetch_dependents(repo_full_name: str, min_stars: int = 0, max_dependents: Op
         finally:
             root_logger.removeFilter(warning_filter)
         
-        if hasattr(gh_deps, 'result') and "packages" in gh_deps.result:
-            for pkg_entry in gh_deps.result["packages"]:
-                # Handle case where packages might be a list of lists or just a list of dicts
-                packages_list = pkg_entry if isinstance(pkg_entry, list) else [pkg_entry]
-                
-                for pkg in packages_list:
-                    if not isinstance(pkg, dict):
-                        continue
-                        
-                    public_deps = pkg.get("public_dependents", [])
-                    for dep in public_deps:
-                        repo_name = dep.get("name") # This is usually 'owner/repo'
-                        if repo_name:
-                            dependents.append(repo_name)
-                            if max_dependents is not None and len(dependents) >= max_dependents:
-                                break
+        # Our LimitedGithubDependentsInfo override populates ``self.packages``
+        # in place — each package dict gets ``public_dependents`` set on
+        # line 276. The parent class's ``self.result`` is never built by our
+        # override, so iterate ``packages`` directly.
+        for pkg in getattr(gh_deps, "packages", []) or []:
+            if not isinstance(pkg, dict):
+                continue
+            public_deps = pkg.get("public_dependents", []) or []
+            for dep in public_deps:
+                if not isinstance(dep, dict):
+                    continue
+                repo_name = dep.get("name")  # 'owner/repo'
+                if repo_name:
+                    dependents.append(repo_name)
                     if max_dependents is not None and len(dependents) >= max_dependents:
                         break
-                if max_dependents is not None and len(dependents) >= max_dependents:
-                    break
+            if max_dependents is not None and len(dependents) >= max_dependents:
+                break
                     
     except Exception as e:
         logger.warning(f"Error fetching dependents for {repo_full_name}: {e}")

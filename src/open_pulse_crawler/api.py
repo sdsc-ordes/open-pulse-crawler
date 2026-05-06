@@ -5,10 +5,13 @@ from __future__ import annotations
 import logging
 import os
 import uuid
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import Dict, List, Optional
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, status
+from fastapi import BackgroundTasks, Body, Depends, FastAPI, HTTPException, status
 from pydantic import BaseModel, Field
 
 from . import __version__
@@ -25,8 +28,17 @@ logger = logging.getLogger(__name__)
 class JobStatus(str, Enum):
     PENDING = "pending"
     RUNNING = "running"
+    PAUSED = "paused"
+    CANCELLED = "cancelled"
     COMPLETED = "completed"
     FAILED = "failed"
+
+
+# States the BFS loop has stopped or never started running. Used by the
+# DELETE endpoint so we don't drop a still-active job out from under itself.
+_TERMINAL_STATES = {
+    JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED, JobStatus.PENDING,
+}
 
 
 class CrawlRequest(BaseModel):
@@ -44,13 +56,82 @@ class CrawlRequest(BaseModel):
     max_dependents: Optional[int] = Field(
         default=None, ge=1, description="Maximum number of dependents to fetch"
     )
+    max_contributors: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Skip contributor expansion for repos with more than N contributors. "
+            "The repo node stays in the graph; only its contributor users are "
+            "not queued. Useful for avoiding mega-projects."
+        ),
+    )
     batch_size: Optional[int] = Field(
         default=None, ge=1, description="Number of nodes to process concurrently"
     )
-    epfl_entities: List[str] = Field(
-        default_factory=list,
-        description="Entity names (users/orgs) that belong to EPFL",
-    )
+
+
+# Named examples surfaced in Swagger UI as a dropdown selector when editing
+# the POST /api/v1/crawl request body.
+_CRAWL_REQUEST_EXAMPLES = {
+    "single_repo": {
+        "summary": "Single repo, shallow crawl",
+        "description": (
+            "Smallest viable crawl: one repo seed, one BFS round. "
+            "Useful as a smoke test."
+        ),
+        "value": {
+            "seeds": ["sdsc-ordes/open-pulse-crawler"],
+            "max_rounds": 1,
+        },
+    },
+    "sdsc_ordes_no_dependents": {
+        "summary": "Org without dependents",
+        "description": (
+            "Discover everything reachable from the sdsc-ordes org via "
+            "ownership and contributor edges. Does not pull in downstream/"
+            "upstream dependency repos."
+        ),
+        "value": {
+            "seeds": ["sdsc-ordes"],
+            "max_rounds": 2,
+            "crawl_dependencies": False,
+            "crawl_dependents": False,
+        },
+    },
+    "repo_with_dependents": {
+        "summary": "Repo with dependents",
+        "description": (
+            "Repository seed plus dependent discovery — pulls in repos that "
+            "depend on (use) this one. Dependents are a repo-level concept on "
+            "GitHub, so this only makes sense for repository seeds, not for "
+            "user/org seeds. Capped at 50 dependents and a 10-star floor."
+        ),
+        "value": {
+            "seeds": ["sdsc-ordes/gimie"],
+            "max_rounds": 2,
+            "crawl_dependents": True,
+            "min_stars": 10,
+            "max_dependents": 50,
+        },
+    },
+    "epfl_with_megaproject_skip": {
+        "summary": "Skip mega-projects by contributor count",
+        "description": (
+            "Crawl from an EPFL-flavoured seed list and skip contributor "
+            "expansion for any repo with more than 200 contributors. The repo "
+            "node still lands in the graph (with owner / fork / dependency "
+            "edges if those are enabled), but its contributors are not queued "
+            "as new BFS frontier nodes. The first time a repo is fetched the "
+            "count is captured and cached, so subsequent crawls re-apply the "
+            "rule without further API calls."
+        ),
+        "value": {
+            "seeds": ["epfl", "dslab-epfl", "sdsc-ordes/gimie"],
+            "max_rounds": 2,
+            "max_contributors": 200,
+        },
+    },
+}
 
 
 class CrawlJobResponse(BaseModel):
@@ -66,6 +147,32 @@ class CrawlResultResponse(BaseModel):
     users: int = 0
     orgs: int = 0
     repos: int = 0
+    # Progress + timing — populated for running and completed jobs alike.
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    current_round: Optional[int] = None
+    nodes_processed: int = 0
+    nodes_in_queue: int = 0
+    # Best-effort ETA based on the current processing rate. Drifts a lot mid-BFS
+    # because the queue grows as the crawl expands; useful as a rough hint, not
+    # a guarantee.
+    estimated_completion_at: Optional[datetime] = None
+
+
+class JobSummary(BaseModel):
+    job_id: str
+    status: JobStatus
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    users: int = 0
+    orgs: int = 0
+    repos: int = 0
+    detail: Optional[str] = None
+
+
+class JobsListResponse(BaseModel):
+    jobs: List[JobSummary]
+    total: int
 
 
 class GraphResponse(BaseModel):
@@ -83,13 +190,47 @@ class HealthResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class _JobRecord(BaseModel):
+@dataclass
+class _JobRecord:
+    """In-memory state for a crawl job.
+
+    Held outside Pydantic so we can store a live ``GitHubCrawler`` reference
+    (for progress polling) without ``arbitrary_types_allowed`` gymnastics.
+    """
+
     status: JobStatus = JobStatus.PENDING
     detail: Optional[str] = None
     graph: Optional[GraphData] = None
+    jsonld_dir: Optional[str] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    # Live reference to the running ``GitHubCrawler`` so the status endpoint
+    # can read ``current_round``, ``visited``, and ``queue`` while the BFS
+    # is in flight. Cleared (or just left dangling) once the job finishes.
+    crawler: Optional[Any] = field(default=None, repr=False, compare=False)
 
 
 _jobs: Dict[str, _JobRecord] = {}
+
+# ---------------------------------------------------------------------------
+# Server-side gimie configuration (env-driven)
+# ---------------------------------------------------------------------------
+#
+# These are deployment concerns, not per-job knobs — they're read from the
+# environment once per crawl, not from the request body. Operators decide
+# whether the gimie hybrid path is enabled and where the gimie service lives;
+# clients submitting crawls don't need to know.
+
+_DEFAULT_GIMIE_API_BASE = "http://host.docker.internal:1234"
+
+
+def _bool_env(name: str, default: bool = False) -> bool:
+    """Parse a boolean env var. Truthy: true / 1 / yes / on (case-insensitive)."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("true", "1", "yes", "on")
+
 
 # ---------------------------------------------------------------------------
 # Background task
@@ -104,12 +245,13 @@ def _run_crawl(
     crawl_dependents: bool,
     min_stars: int,
     max_dependents: Optional[int],
+    max_contributors: Optional[int],
     batch_size: Optional[int],
-    epfl_entities: List[str],
 ) -> None:
     """Execute a crawl in the background and store results."""
     record = _jobs[job_id]
     record.status = JobStatus.RUNNING
+    record.started_at = datetime.now(timezone.utc)
 
     try:
         from .crawler import GitHubCrawler
@@ -120,7 +262,22 @@ def _run_crawl(
         if not tokens:
             record.status = JobStatus.FAILED
             record.detail = "GITHUB_TOKEN environment variable is not set"
+            record.completed_at = datetime.now(timezone.utc)
             return
+
+        # Read gimie config from environment (deployment concern, not per-job).
+        gimie_repos = _bool_env("GIMIE_ENABLED", default=False)
+        gimie_api_base = os.environ.get("GIMIE_API_BASE", _DEFAULT_GIMIE_API_BASE)
+        gimie_store_jsonld = _bool_env("GIMIE_STORE_JSONLD", default=False)
+        gimie_skip_existing_jsonld = _bool_env(
+            "GIMIE_SKIP_EXISTING_JSONLD", default=False
+        )
+
+        jsonld_dir: Optional[Path] = None
+        if gimie_repos and gimie_store_jsonld:
+            data_root = Path(os.environ.get("OPC_DATA_DIR", "/tmp/open-pulse-crawler"))
+            jsonld_dir = data_root / job_id / "jsonld"
+            jsonld_dir.mkdir(parents=True, exist_ok=True)
 
         client = GitHubClient(tokens=tokens)
         crawler = GitHubCrawler(
@@ -131,17 +288,39 @@ def _run_crawl(
             crawl_dependents=crawl_dependents,
             min_stars=min_stars,
             max_dependents=max_dependents,
-            epfl_entities=set(epfl_entities),
+            max_contributors=max_contributors,
+            gimie_repos=gimie_repos,
+            gimie_api_base=gimie_api_base,
+            gimie_store_jsonld_dir=jsonld_dir,
+            gimie_skip_existing_jsonld=gimie_skip_existing_jsonld,
         )
         crawler.add_seeds(seeds)
+        # Expose the live crawler + graph BEFORE running so the status endpoint
+        # can read progress (visited, queue, current_round) while the BFS is in
+        # flight.
+        record.crawler = crawler
+        record.graph = crawler.graph
         crawler.crawl(show_progress=False)
 
         record.graph = crawler.graph
-        record.status = JobStatus.COMPLETED
+        if jsonld_dir is not None:
+            record.jsonld_dir = str(jsonld_dir)
+        # If a cancel was requested mid-flight the crawler exits its loop
+        # cleanly; reflect that in the final status so callers know the
+        # graph is partial, not "completed". Pause that wasn't followed by
+        # cancel just makes us slow — once it lifts the loop resumes and
+        # eventually completes.
+        if crawler.cancel_requested:
+            record.status = JobStatus.CANCELLED
+            record.detail = record.detail or "cancelled via /cancel"
+        else:
+            record.status = JobStatus.COMPLETED
+        record.completed_at = datetime.now(timezone.utc)
     except Exception as exc:
         logger.exception("Crawl job %s failed", job_id)
         record.status = JobStatus.FAILED
         record.detail = str(exc)
+        record.completed_at = datetime.now(timezone.utc)
 
 
 # ---------------------------------------------------------------------------
@@ -168,8 +347,8 @@ def health() -> HealthResponse:
     status_code=status.HTTP_202_ACCEPTED,
 )
 def start_crawl(
-    body: CrawlRequest,
     background_tasks: BackgroundTasks,
+    body: CrawlRequest = Body(..., openapi_examples=_CRAWL_REQUEST_EXAMPLES),
     _token: str = Depends(verify_token),
 ) -> CrawlJobResponse:
     """Start a new crawl job (runs in the background)."""
@@ -184,10 +363,55 @@ def start_crawl(
         body.crawl_dependents,
         body.min_stars,
         body.max_dependents,
+        body.max_contributors,
         body.batch_size,
-        body.epfl_entities,
     )
     return CrawlJobResponse(job_id=job_id, status=JobStatus.PENDING)
+
+
+def _job_progress_snapshot(record: _JobRecord) -> Dict[str, Any]:
+    """Read live BFS progress from a running crawler, when available."""
+    snap: Dict[str, Any] = {
+        "current_round": None,
+        "nodes_processed": 0,
+        "nodes_in_queue": 0,
+    }
+    crawler = record.crawler
+    if crawler is None:
+        return snap
+    try:
+        snap["current_round"] = int(crawler.current_round)
+    except (AttributeError, TypeError):
+        pass
+    try:
+        snap["nodes_processed"] = len(crawler.visited)
+    except (AttributeError, TypeError):
+        pass
+    try:
+        snap["nodes_in_queue"] = len(crawler.queue)
+    except (AttributeError, TypeError):
+        pass
+    return snap
+
+
+def _estimate_completion(
+    started_at: Optional[datetime],
+    nodes_processed: int,
+    nodes_in_queue: int,
+) -> Optional[datetime]:
+    """Best-effort ETA based on the current node-processing rate.
+
+    Returns ``None`` until we have enough data to extrapolate (started_at is
+    set, at least one node processed, queue non-empty).
+    """
+    if started_at is None or nodes_processed <= 0 or nodes_in_queue <= 0:
+        return None
+    elapsed = (datetime.now(timezone.utc) - started_at).total_seconds()
+    if elapsed <= 0:
+        return None
+    rate = nodes_processed / elapsed  # nodes/sec
+    remaining_seconds = nodes_in_queue / rate
+    return datetime.now(timezone.utc) + timedelta(seconds=remaining_seconds)
 
 
 @app.get("/api/v1/crawl/{job_id}", response_model=CrawlResultResponse)
@@ -195,7 +419,7 @@ def get_crawl_status(
     job_id: str,
     _token: str = Depends(verify_token),
 ) -> CrawlResultResponse:
-    """Get status and summary of a crawl job."""
+    """Get status, progress, and summary of a crawl job."""
     record = _jobs.get(job_id)
     if record is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
@@ -204,12 +428,67 @@ def get_crawl_status(
         job_id=job_id,
         status=record.status,
         detail=record.detail,
+        started_at=record.started_at,
+        completed_at=record.completed_at,
     )
     if record.graph:
         resp.users = len(record.graph.users)
         resp.orgs = len(record.graph.orgs)
         resp.repos = len(record.graph.repos)
+
+    if record.status == JobStatus.RUNNING:
+        snap = _job_progress_snapshot(record)
+        resp.current_round = snap["current_round"]
+        resp.nodes_processed = snap["nodes_processed"]
+        resp.nodes_in_queue = snap["nodes_in_queue"]
+        resp.estimated_completion_at = _estimate_completion(
+            record.started_at,
+            snap["nodes_processed"],
+            snap["nodes_in_queue"],
+        )
+
     return resp
+
+
+@app.get("/api/v1/jobs", response_model=JobsListResponse)
+def list_jobs(
+    status_filter: Optional[JobStatus] = None,
+    _token: str = Depends(verify_token),
+) -> JobsListResponse:
+    """List all known jobs with status + counts.
+
+    Optional ``status_filter`` query param narrows to one ``JobStatus``
+    (e.g. ``?status_filter=completed`` for jobs ready to download).
+    """
+    summaries: List[JobSummary] = []
+    for jid, rec in _jobs.items():
+        if status_filter is not None and rec.status != status_filter:
+            continue
+        users = orgs = repos = 0
+        if rec.graph is not None:
+            users = len(rec.graph.users)
+            orgs = len(rec.graph.orgs)
+            repos = len(rec.graph.repos)
+        summaries.append(
+            JobSummary(
+                job_id=jid,
+                status=rec.status,
+                started_at=rec.started_at,
+                completed_at=rec.completed_at,
+                users=users,
+                orgs=orgs,
+                repos=repos,
+                detail=rec.detail,
+            )
+        )
+    # Newest-first ordering: completed_at, then started_at, falls back to id.
+    summaries.sort(
+        key=lambda s: (
+            s.completed_at or s.started_at or datetime.min.replace(tzinfo=timezone.utc),
+        ),
+        reverse=True,
+    )
+    return JobsListResponse(jobs=summaries, total=len(summaries))
 
 
 @app.get("/api/v1/graph/{job_id}", response_model=GraphResponse)
@@ -227,3 +506,115 @@ def get_graph(
             detail=f"Job is not completed (current status: {record.status.value})",
         )
     return GraphResponse(job_id=job_id, graph=record.graph.model_dump())
+
+
+# ── Job lifecycle controls ─────────────────────────────────────────────────
+#
+# Pause / resume / cancel are cooperative — they set flags on the live
+# GitHubCrawler instance which the BFS loop checks between rounds.
+# Mid-round network calls finish before the loop exits, which keeps the
+# graph in a consistent state (partial but not torn).
+
+class JobActionResponse(BaseModel):
+    job_id: str
+    status: JobStatus
+    detail: Optional[str] = None
+
+
+def _job_or_404(job_id: str) -> _JobRecord:
+    record = _jobs.get(job_id)
+    if record is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+    return record
+
+
+@app.post("/api/v1/crawl/{job_id}/pause", response_model=JobActionResponse)
+def pause_crawl(
+    job_id: str,
+    _token: str = Depends(verify_token),
+) -> JobActionResponse:
+    """Request the BFS loop to pause between rounds.
+
+    The currently in-flight round drains first; once the round boundary is
+    hit the loop sleeps in 1-second ticks until ``resume`` (or ``cancel``)
+    is called. Status flips to ``paused`` immediately.
+    """
+    record = _job_or_404(job_id)
+    if record.status not in (JobStatus.RUNNING, JobStatus.PAUSED):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot pause a job in state {record.status.value!r}",
+        )
+    if record.crawler is not None:
+        record.crawler.pause_requested = True
+    record.status = JobStatus.PAUSED
+    record.detail = "paused"
+    return JobActionResponse(job_id=job_id, status=record.status, detail=record.detail)
+
+
+@app.post("/api/v1/crawl/{job_id}/resume", response_model=JobActionResponse)
+def resume_crawl(
+    job_id: str,
+    _token: str = Depends(verify_token),
+) -> JobActionResponse:
+    """Lift a previous pause and let the BFS loop continue."""
+    record = _job_or_404(job_id)
+    if record.status != JobStatus.PAUSED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot resume a job in state {record.status.value!r}",
+        )
+    if record.crawler is not None:
+        record.crawler.pause_requested = False
+    record.status = JobStatus.RUNNING
+    record.detail = None
+    return JobActionResponse(job_id=job_id, status=record.status)
+
+
+@app.post("/api/v1/crawl/{job_id}/cancel", response_model=JobActionResponse)
+def cancel_crawl(
+    job_id: str,
+    _token: str = Depends(verify_token),
+) -> JobActionResponse:
+    """Ask the BFS loop to stop at the next round boundary.
+
+    The job's final ``status`` becomes ``cancelled`` once the loop exits.
+    The graph collected so far is preserved and accessible (partial).
+    """
+    record = _job_or_404(job_id)
+    if record.status not in (JobStatus.RUNNING, JobStatus.PAUSED, JobStatus.PENDING):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot cancel a job in state {record.status.value!r}",
+        )
+    if record.crawler is not None:
+        record.crawler.cancel_requested = True
+        # If currently paused, also lift the pause so the loop wakes up
+        # and notices the cancel flag.
+        record.crawler.pause_requested = False
+    # Leave status as-is for now — the worker thread will flip to
+    # CANCELLED when the loop actually exits, so callers see the
+    # transition rather than a phantom.
+    record.detail = "cancellation requested"
+    return JobActionResponse(job_id=job_id, status=record.status, detail=record.detail)
+
+
+@app.delete("/api/v1/crawl/{job_id}", response_model=JobActionResponse)
+def delete_crawl(
+    job_id: str,
+    _token: str = Depends(verify_token),
+) -> JobActionResponse:
+    """Drop a terminal job from the in-memory registry.
+
+    Refuses to delete a still-active job (RUNNING / PAUSED) — cancel it
+    first. Useful for clearing the listing in long-lived deployments.
+    """
+    record = _job_or_404(job_id)
+    if record.status not in _TERMINAL_STATES:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Job is still active ({record.status.value}); cancel it first.",
+        )
+    final_status = record.status
+    del _jobs[job_id]
+    return JobActionResponse(job_id=job_id, status=final_status, detail="deleted")

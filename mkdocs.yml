@@ -1,0 +1,81 @@
+site_name: Open Pulse Crawler
+site_description: GitHub BFS crawler — discover users, organizations, and repositories.
+site_url: https://sdsc-ordes.github.io/open-pulse-crawler/
+repo_url: https://github.com/sdsc-ordes/open-pulse-crawler
+repo_name: sdsc-ordes/open-pulse-crawler
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  language: en
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.sections
+    - navigation.indexes
+    - navigation.top
+    - toc.follow
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+    - search.suggest
+    - search.highlight
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+      toc_depth: 3
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+
+nav:
+  - Home: index.md
+  - REST API: API.md
+  - Deployment: DEPLOYMENT.md
+  - Concepts:
+      - Concurrency & rate limiting: CONCURRENCY.md
+      - Progress tracking: PROGRESS_TRACKING.md
+      - Timestamps: TIMESTAMPS.md
+      - Visualization: VISUALIZATION.md
+  - Design notes:
+      - Dependencies vs dependents: dev/dependency-graph/DEPENDENCIES_VS_DEPENDENTS.md
+      - Dependency graph investigation: dev/dependency-graph/DEPENDENCY_GRAPH_API_INVESTIGATION.md
+      - Pulse activity metrics: dev/dependency-graph/PULSE_ACTIVITY_METRICS.md
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/sdsc-ordes/open-pulse-crawler
