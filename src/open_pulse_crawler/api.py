@@ -226,6 +226,73 @@ def _run_crawl(
         record.detail = str(exc)
 
 
+def _run_crawl_graphql(
+    job_id: str,
+    seeds: List[str],
+    max_rounds: int,
+    crawl_dependencies: bool,
+    crawl_dependents: bool,
+    crawl_issues: bool,
+    crawl_prs: bool,
+    issue_max: int,
+    pr_max: int,
+    min_stars: int,
+    max_dependents: Optional[int],
+    batch_size: Optional[int],
+    epfl_entities: List[str],
+) -> None:
+    """Execute a crawl using the GraphQL-backed client.
+
+    Reuses GitHubCrawler. The GraphQL client returns cached-shape dicts,
+    so the crawler routes through its cached-path code. SBOM dependencies
+    and "Used by" dependents still go via REST (existing helpers).
+    """
+    record = _jobs[job_id]
+    record.status = JobStatus.RUNNING
+
+    try:
+        from .crawler import GitHubCrawler
+        from .graphql_client import GitHubGraphQLClient
+
+        tokens_raw = os.environ.get("GITHUB_TOKEN", "")
+        tokens = [t.strip() for t in tokens_raw.split(",") if t.strip()]
+        if not tokens:
+            record.status = JobStatus.FAILED
+            record.detail = "GITHUB_TOKEN environment variable is not set"
+            return
+
+        client = GitHubGraphQLClient(
+            tokens=tokens,
+            crawl_issues=crawl_issues,
+            crawl_prs=crawl_prs,
+            issue_max=issue_max,
+            pr_max=pr_max,
+        )
+        crawler = GitHubCrawler(
+            client=client,
+            max_rounds=max_rounds,
+            batch_size=batch_size,
+            crawl_dependencies=crawl_dependencies,
+            crawl_dependents=crawl_dependents,
+            crawl_issues=crawl_issues,
+            crawl_prs=crawl_prs,
+            issue_max=issue_max,
+            pr_max=pr_max,
+            min_stars=min_stars,
+            max_dependents=max_dependents,
+            epfl_entities=set(epfl_entities),
+        )
+        crawler.add_seeds(seeds)
+        crawler.crawl(show_progress=False)
+
+        record.graph = crawler.graph
+        record.status = JobStatus.COMPLETED
+    except Exception as exc:
+        logger.exception("GraphQL crawl job %s failed", job_id)
+        record.status = JobStatus.FAILED
+        record.detail = str(exc)
+
+
 # ---------------------------------------------------------------------------
 # FastAPI application
 # ---------------------------------------------------------------------------
@@ -277,6 +344,45 @@ def start_crawl(
         body.gimie_store_jsonld,
         body.gimie_skip_existing_jsonld,
         body.gimie_archive_on_download,
+    )
+    return CrawlJobResponse(job_id=job_id, status=JobStatus.PENDING)
+
+
+@app.post(
+    "/api/v1/crawl/graphql",
+    response_model=CrawlJobResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def start_crawl_graphql(
+    body: CrawlRequest,
+    background_tasks: BackgroundTasks,
+    _token: str = Depends(verify_token),
+) -> CrawlJobResponse:
+    """Start a crawl using the GraphQL-backed client.
+
+    Same request body as `/api/v1/crawl`. Uses GraphQL for user/org/repo
+    metadata, follows/stars/watching, teams, and issue/PR activity.
+    Contributors, SBOM dependencies, and the "Used by" dependents graph
+    still fall back to REST (no GraphQL coverage). Gimie hybrid mode is
+    not supported here — use `/api/v1/crawl` for that.
+    """
+    job_id = str(uuid.uuid4())
+    _jobs[job_id] = _JobRecord()
+    background_tasks.add_task(
+        _run_crawl_graphql,
+        job_id,
+        body.seeds,
+        body.max_rounds,
+        body.crawl_dependencies,
+        body.crawl_dependents,
+        body.crawl_issues,
+        body.crawl_prs,
+        body.issue_max,
+        body.pr_max,
+        body.min_stars,
+        body.max_dependents,
+        body.batch_size,
+        body.epfl_entities,
     )
     return CrawlJobResponse(job_id=job_id, status=JobStatus.PENDING)
 

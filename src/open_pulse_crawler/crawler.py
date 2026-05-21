@@ -401,6 +401,10 @@ class GitHubCrawler:
                         org.authored_repositories.append(repo_data['full_name'])
                     repos_to_queue.append(repo_data['full_name'])
                 
+                # Cached teams (populated by GraphQL client; REST cache omits teams).
+                for team_data in org_obj.get('teams', []) or []:
+                    self._build_team_from_dict(org_name, team_data)
+
                 # Add all items to queue in a single lock acquisition
                 with self.visited_lock:
                     for member_login in members_to_queue:
@@ -465,6 +469,35 @@ class GitHubCrawler:
         except Exception as e:
             logger.error(f"Error processing organization {org_name}: {e}")
             return None
+
+    def _build_team_from_dict(self, org_name: str, team_data: Dict):
+        """Build a TeamModel from a dict (e.g. served by the GraphQL client)."""
+        try:
+            slug = team_data["slug"]
+            full_name = f"{org_name}/{slug}"
+            parent_slug = team_data.get("parent_slug")
+            parent_full_name = f"{org_name}/{parent_slug}" if parent_slug else None
+
+            team = TeamModel(
+                full_name=full_name,
+                slug=slug,
+                name=team_data.get("name") or "",
+                id=team_data.get("id", 0),
+                org=org_name,
+                description=team_data.get("description") or "",
+                privacy=team_data.get("privacy") or "",
+                parent=parent_full_name,
+                is_explored=True,
+                exploration_timestamp=datetime.now().isoformat(),
+                is_epfl=org_name.lower() in self.epfl_entities,
+            )
+            team.members.extend(team_data.get("members", []) or [])
+            team.repositories.extend(team_data.get("repositories", []) or [])
+
+            with self.graph_lock:
+                self.graph.add_team(team)
+        except Exception as e:
+            logger.warning(f"Failed to materialize team from dict for org {org_name}: {e}")
 
     def _fetch_org_teams(self, org_obj, org_name: str):
         """Fetch teams for an org from the live API and add them to the graph.
@@ -690,7 +723,14 @@ class GitHubCrawler:
                 repo.contributors.extend(cached_contributors)
                 for contributor_login in cached_contributors:
                     items_to_queue.append(('user', contributor_login))
-                
+
+                # Cached issue/PR activity (populated by the GraphQL client when
+                # crawl_issues/crawl_prs are set; REST cache omits these).
+                repo.issue_authors.extend(repo_obj.get('issue_authors', []) or [])
+                repo.pr_authors.extend(repo_obj.get('pr_authors', []) or [])
+                repo.commenters.extend(repo_obj.get('commenters', []) or [])
+                repo.pr_reviewers.extend(repo_obj.get('pr_reviewers', []) or [])
+
                 # If it's a fork, add parent
                 if repo.is_fork and repo.forked_from:
                     items_to_queue.append(('repo', repo.forked_from))

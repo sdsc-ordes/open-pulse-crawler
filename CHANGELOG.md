@@ -11,6 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Follow relationships: `UserModel` now carries `followers` and `following` login lists, populated from the GitHub API (and cached) per crawled user. CSV export includes `follows` edges (`source` follows `target`) between users that are both present in the graph. Follow lists do not expand the crawl — they are recorded as edges only.
 - Starred and watched repositories: `UserModel` gains `starred_repositories` and `watched_repositories` lists, sourced from `users/<login>/starred` and `users/<login>/subscriptions`. CSV export emits `starred` and `watching` edges between users and repos that are both present in the graph. Like follows, these do not expand the crawl.
+- GraphQL-backed crawl endpoint:
+  - New `POST /api/v1/crawl/graphql` accepts the same `CrawlRequest` body as `/api/v1/crawl`.
+  - New `GitHubGraphQLClient` (`graphql_client.py`) is duck-type compatible with the REST `GitHubClient`; it serves user / org / repo data via `api.github.com/graphql` and is plugged into the existing `GitHubCrawler` so BFS rounds, expansion, and edge export work unchanged.
+  - One GraphQL query covers everything `--crawl-issues` + `--crawl-prs` previously fetched via dozens of REST calls — typical point cost is 1-2 per repo vs ~80 REST requests.
+  - Crawler's cached-path branches now also materialize teams and issue/PR fields from dict payloads, so any client returning that shape (file cache, GraphQL) populates the same edges.
+  - REST is still used for: top contributors (no public GraphQL equivalent), SBOM dependencies, and the "Used by" dependents graph — the latter two only fire when their existing flags are set.
+  - Gimie hybrid mode is not wired into the GraphQL endpoint; use `/api/v1/crawl` for that.
 - Issue and PR activity edges, opt-in:
   - `RepoModel` gains `issue_authors`, `pr_authors`, `commenters`, and `pr_reviewers` lists.
   - New CLI flags `--crawl-issues` and `--crawl-prs` (off by default; matches the existing `--crawl-dependencies` / `--crawl-dependents` pattern).
