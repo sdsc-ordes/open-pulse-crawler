@@ -230,11 +230,23 @@ class GitHubGraphQLClient:
 
         body = resp.json()
         if body.get("errors"):
-            # Distinguish "not found" type errors from real failures.
+            # Classify errors: NOT_FOUND is expected (entity may be a user vs
+            # org probe); INSUFFICIENT_SCOPES is a token-config problem the
+            # user must fix; everything else is a query bug or transient
+            # failure. Log accordingly so silent token-scope mismatches don't
+            # hide as "empty graph".
+            kinds = {e.get("type") for e in body["errors"] if e}
             msgs = "; ".join(
-                str(e.get("message", "")) for e in body.get("errors", []) if e
+                str(e.get("message", "")) for e in body["errors"] if e
             )
-            logger.debug(f"GraphQL errors for {variables}: {msgs}")
+            if kinds == {"NOT_FOUND"}:
+                logger.debug(f"GraphQL not-found for {variables}: {msgs}")
+            elif "INSUFFICIENT_SCOPES" in kinds:
+                logger.error(
+                    f"GraphQL token scope problem for {variables}: {msgs}"
+                )
+            else:
+                logger.warning(f"GraphQL errors for {variables}: {msgs}")
         rl = (body.get("data") or {}).get("rateLimit") or {}
         cost = rl.get("cost", 0) or 0
         remaining = rl.get("remaining")
