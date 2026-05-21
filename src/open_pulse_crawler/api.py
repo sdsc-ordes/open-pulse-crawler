@@ -47,6 +47,20 @@ class CrawlRequest(BaseModel):
     max_dependents: Optional[int] = Field(
         default=None, ge=1, description="Maximum number of dependents to fetch"
     )
+    crawl_issues: bool = Field(
+        default=False,
+        description="Fetch issue authors and conversation commenters per repo",
+    )
+    crawl_prs: bool = Field(
+        default=False,
+        description="Fetch PR authors, conversation commenters, and reviewers per repo",
+    )
+    issue_max: int = Field(
+        default=100, ge=1, description="Max issues to scan per repo (most recent first)"
+    )
+    pr_max: int = Field(
+        default=100, ge=1, description="Max PRs to scan per repo (most recent first)"
+    )
     batch_size: Optional[int] = Field(
         default=None, ge=1, description="Number of nodes to process concurrently"
     )
@@ -129,6 +143,10 @@ def _run_crawl(
     max_rounds: int,
     crawl_dependencies: bool,
     crawl_dependents: bool,
+    crawl_issues: bool,
+    crawl_prs: bool,
+    issue_max: int,
+    pr_max: int,
     min_stars: int,
     max_dependents: Optional[int],
     batch_size: Optional[int],
@@ -170,6 +188,10 @@ def _run_crawl(
             batch_size=batch_size,
             crawl_dependencies=crawl_dependencies,
             crawl_dependents=crawl_dependents,
+            crawl_issues=crawl_issues,
+            crawl_prs=crawl_prs,
+            issue_max=issue_max,
+            pr_max=pr_max,
             min_stars=min_stars,
             max_dependents=max_dependents,
             epfl_entities=set(epfl_entities),
@@ -242,6 +264,10 @@ def start_crawl(
         body.max_rounds,
         body.crawl_dependencies,
         body.crawl_dependents,
+        body.crawl_issues,
+        body.crawl_prs,
+        body.issue_max,
+        body.pr_max,
         body.min_stars,
         body.max_dependents,
         body.batch_size,

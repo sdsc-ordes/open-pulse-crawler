@@ -33,6 +33,10 @@ class GitHubCrawler:
         batch_size: Optional[int] = None,
         crawl_dependencies: bool = False,
         crawl_dependents: bool = False,
+        crawl_issues: bool = False,
+        crawl_prs: bool = False,
+        issue_max: int = 100,
+        pr_max: int = 100,
         min_stars: int = 0,
         max_dependents: Optional[int] = None,
         epfl_entities: Optional[Set[str]] = None,
@@ -51,6 +55,10 @@ class GitHubCrawler:
             batch_size: Number of nodes to process concurrently (default: matches client's max_concurrent_requests)
             crawl_dependencies: Whether to crawl dependencies (downstream)
             crawl_dependents: Whether to crawl dependents (upstream)
+            crawl_issues: Whether to fetch issue authors and conversation commenters per repo
+            crawl_prs: Whether to fetch PR authors, conversation commenters, and reviewers per repo
+            issue_max: Maximum number of issues to scan per repo (most recent)
+            pr_max: Maximum number of PRs to scan per repo (most recent)
             min_stars: Minimum stars for dependents/dependencies filtering
             epfl_entities: Set of entity names (users/orgs) that belong to EPFL
             gimie_repos: When true, populate repository nodes from gimie JSON-LD.
@@ -64,6 +72,10 @@ class GitHubCrawler:
         self.batch_size = batch_size if batch_size is not None else client.semaphore._value
         self.crawl_dependencies = crawl_dependencies
         self.crawl_dependents = crawl_dependents
+        self.crawl_issues = crawl_issues
+        self.crawl_prs = crawl_prs
+        self.issue_max = issue_max
+        self.pr_max = pr_max
         self.min_stars = min_stars
         self.max_dependents = max_dependents
         self.epfl_entities = {e.lower() for e in (epfl_entities or set())}
@@ -845,17 +857,130 @@ class GitHubCrawler:
                     except Exception as e:
                         logger.warning(f"Failed to crawl dependents for {repo_full_name}: {e}")
 
+                # Issue / PR activity (record only — does not queue new nodes).
+                if self.crawl_issues:
+                    self._fetch_repo_issues(repo_obj, repo)
+                if self.crawl_prs:
+                    self._fetch_repo_prs(repo_obj, repo)
+
                 # Add all items to queue in a single lock acquisition
                 with self.visited_lock:
                     for item_type, identifier in items_to_queue:
                         if identifier not in self.visited:
                             self.queue.append((item_type, identifier, self.current_round + 1))
                             self._track_discovered_node(item_type, identifier, repo_full_name, 'repo')
-            
+
             return repo
         except Exception as e:
             logger.error(f"Error processing repository {repo_full_name}: {e}")
             return None
+
+    def _fetch_repo_issues(self, repo_obj, repo: RepoModel):
+        """Populate repo.issue_authors and repo.commenters from the issues API.
+
+        Iterates up to self.issue_max true issues (excludes PRs via the
+        `pull_request` attribute). Per issue, also fetches conversation
+        comments and records commenter logins.
+        """
+        try:
+            issues = self.client._make_request(repo_obj.get_issues, state="all")
+        except Exception as e:
+            logger.warning(f"Failed to list issues for {repo.full_name}: {e}")
+            return
+        if issues is None:
+            return
+
+        authors_seen: Set[str] = set()
+        commenters_seen: Set[str] = set(repo.commenters)
+        count = 0
+        try:
+            for issue in issues:
+                if issue.pull_request is not None:
+                    continue
+                if count >= self.issue_max:
+                    break
+                count += 1
+
+                author = getattr(issue, "user", None)
+                if author is not None and author.login not in authors_seen:
+                    authors_seen.add(author.login)
+                    repo.issue_authors.append(author.login)
+
+                try:
+                    comments = self.client._make_request(issue.get_comments)
+                    if comments is None:
+                        continue
+                    for c in comments:
+                        cuser = getattr(c, "user", None)
+                        if cuser is None:
+                            continue
+                        if cuser.login in commenters_seen:
+                            continue
+                        commenters_seen.add(cuser.login)
+                        repo.commenters.append(cuser.login)
+                except Exception as e:
+                    logger.warning(f"Failed to get comments for issue in {repo.full_name}: {e}")
+        except Exception as e:
+            logger.warning(f"Issue iteration failed for {repo.full_name}: {e}")
+
+    def _fetch_repo_prs(self, repo_obj, repo: RepoModel):
+        """Populate repo.pr_authors, repo.pr_reviewers, repo.commenters from the PRs API.
+
+        Iterates up to self.pr_max PRs. Per PR also records conversation
+        comments (issue-comments) and review submitters.
+        """
+        try:
+            pulls = self.client._make_request(repo_obj.get_pulls, state="all")
+        except Exception as e:
+            logger.warning(f"Failed to list PRs for {repo.full_name}: {e}")
+            return
+        if pulls is None:
+            return
+
+        authors_seen: Set[str] = set()
+        reviewers_seen: Set[str] = set()
+        commenters_seen: Set[str] = set(repo.commenters)
+        count = 0
+        try:
+            for pr in pulls:
+                if count >= self.pr_max:
+                    break
+                count += 1
+
+                author = getattr(pr, "user", None)
+                if author is not None and author.login not in authors_seen:
+                    authors_seen.add(author.login)
+                    repo.pr_authors.append(author.login)
+
+                try:
+                    reviews = self.client._make_request(pr.get_reviews)
+                    if reviews is not None:
+                        for r in reviews:
+                            ruser = getattr(r, "user", None)
+                            if ruser is None:
+                                continue
+                            if ruser.login in reviewers_seen:
+                                continue
+                            reviewers_seen.add(ruser.login)
+                            repo.pr_reviewers.append(ruser.login)
+                except Exception as e:
+                    logger.warning(f"Failed to get reviews for PR in {repo.full_name}: {e}")
+
+                try:
+                    comments = self.client._make_request(pr.get_issue_comments)
+                    if comments is not None:
+                        for c in comments:
+                            cuser = getattr(c, "user", None)
+                            if cuser is None:
+                                continue
+                            if cuser.login in commenters_seen:
+                                continue
+                            commenters_seen.add(cuser.login)
+                            repo.commenters.append(cuser.login)
+                except Exception as e:
+                    logger.warning(f"Failed to get PR comments in {repo.full_name}: {e}")
+        except Exception as e:
+            logger.warning(f"PR iteration failed for {repo.full_name}: {e}")
     
     def _process_node(self, node_type: str, identifier: str) -> Optional[tuple]:
         """

@@ -152,6 +152,42 @@ def test_export_csv_star_and_watch_edges():
         temp_path.unlink()
 
 
+def test_export_csv_issue_pr_edges():
+    """Issue/PR activity should produce edges only between users in the graph and the repo."""
+    graph = GraphData()
+    graph.add_user(UserModel(login="alice", id=1))
+    graph.add_user(UserModel(login="bob", id=2))
+
+    repo = RepoModel(
+        full_name="org/repo",
+        id=10,
+        owner="org",
+        issue_authors=["alice", "ghost"],
+        pr_authors=["bob"],
+        commenters=["alice", "ghost"],
+        pr_reviewers=["alice"],
+    )
+    graph.add_repo(repo)
+
+    with tempfile.NamedTemporaryFile(suffix='.csv', delete=False) as f:
+        temp_path = Path(f.name)
+    try:
+        export_to_csv(graph, temp_path, set())
+        import csv
+        with open(temp_path) as fp:
+            rows = list(csv.DictReader(fp))
+        triples = {(r['source'], r['target'], r['property']) for r in rows}
+        assert ("alice", "org/repo", "issue_author") in triples
+        assert ("bob", "org/repo", "pr_author") in triples
+        assert ("alice", "org/repo", "commented_on") in triples
+        assert ("alice", "org/repo", "pr_reviewer") in triples
+        # Users not in the graph are dropped.
+        assert ("ghost", "org/repo", "issue_author") not in triples
+        assert ("ghost", "org/repo", "commented_on") not in triples
+    finally:
+        temp_path.unlink()
+
+
 def test_export_csv_team_edges():
     """Team relationships should produce has_team, has_access, and parent_of edges."""
     graph = GraphData()

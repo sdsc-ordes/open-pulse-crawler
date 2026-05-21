@@ -211,6 +211,24 @@ def export_to_csv(graph: GraphData, output_path: Path, seed_nodes: Set[str]):
                 'target_type': 'repo',
             })
 
+        # Issue / PR activity — only emit when the user is in the graph.
+        _activity_pairs = (
+            ('issue_author', repo.issue_authors),
+            ('pr_author', repo.pr_authors),
+            ('commented_on', repo.commenters),
+            ('pr_reviewer', repo.pr_reviewers),
+        )
+        for property_name, login_list in _activity_pairs:
+            for user_login in login_list:
+                if user_login in graph.users:
+                    edges.append({
+                        'source': user_login,
+                        'target': repo.full_name,
+                        'property': property_name,
+                        'source_type': 'user',
+                        'target_type': 'repo',
+                    })
+
     # Process teams
     for team in graph.teams.values():
         # Team is contained by an org.

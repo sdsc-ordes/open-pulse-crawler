@@ -45,6 +45,23 @@ def test_user_model_star_watch_lists():
     assert user.watched_repositories == ["org/a"]
 
 
+def test_repo_model_issue_pr_fields():
+    """Test issue/PR activity fields on RepoModel."""
+    repo = RepoModel(
+        full_name="org/repo",
+        id=1,
+        owner="org",
+        issue_authors=["alice"],
+        pr_authors=["bob"],
+        commenters=["alice", "carol"],
+        pr_reviewers=["dan"],
+    )
+    assert repo.issue_authors == ["alice"]
+    assert repo.pr_authors == ["bob"]
+    assert repo.commenters == ["alice", "carol"]
+    assert repo.pr_reviewers == ["dan"]
+
+
 def test_team_model_and_graph():
     """Test TeamModel and GraphData team operations."""
     team = TeamModel(

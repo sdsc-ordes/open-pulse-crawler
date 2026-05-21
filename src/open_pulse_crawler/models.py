@@ -76,6 +76,14 @@ class RepoModel(BaseEntityModel):
     dependents: List[str] = Field(default_factory=list)
     dependencies: List[str] = Field(default_factory=list)
 
+    # Issue and PR activity (opt-in via --crawl-issues / --crawl-prs)
+    issue_authors: List[str] = Field(default_factory=list)
+    pr_authors: List[str] = Field(default_factory=list)
+    # Conversation commenters across issues and PRs (both fetched via the issues API).
+    commenters: List[str] = Field(default_factory=list)
+    # Formal review submitters on PRs.
+    pr_reviewers: List[str] = Field(default_factory=list)
+
 
 class TeamModel(BaseEntityModel):
     """Model representing a GitHub organization team."""

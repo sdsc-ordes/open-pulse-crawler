@@ -162,6 +162,28 @@ def crawl(
         "--max-dependents",
         help="Maximum number of dependents to fetch (default: None = all)"
     ),
+    crawl_issues: bool = typer.Option(
+        False,
+        "--crawl-issues",
+        help="Fetch issue authors and conversation commenters per repo (opt-in, can be expensive on busy repos)"
+    ),
+    crawl_prs: bool = typer.Option(
+        False,
+        "--crawl-prs",
+        help="Fetch PR authors, conversation commenters, and reviewers per repo (opt-in, can be expensive on busy repos)"
+    ),
+    issue_max: int = typer.Option(
+        100,
+        "--issue-max",
+        help="Maximum number of issues to scan per repo when --crawl-issues is enabled (most recent first)",
+        min=1
+    ),
+    pr_max: int = typer.Option(
+        100,
+        "--pr-max",
+        help="Maximum number of PRs to scan per repo when --crawl-prs is enabled (most recent first)",
+        min=1
+    ),
     verbose: bool = typer.Option(
         False,
         "--verbose",
@@ -295,6 +317,10 @@ def crawl(
         batch_size=batch_size,
         crawl_dependencies=crawl_dependencies,
         crawl_dependents=crawl_dependents,
+        crawl_issues=crawl_issues,
+        crawl_prs=crawl_prs,
+        issue_max=issue_max,
+        pr_max=pr_max,
         min_stars=min_stars,
         max_dependents=max_dependents,
         epfl_entities=epfl_entities,

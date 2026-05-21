@@ -11,6 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Follow relationships: `UserModel` now carries `followers` and `following` login lists, populated from the GitHub API (and cached) per crawled user. CSV export includes `follows` edges (`source` follows `target`) between users that are both present in the graph. Follow lists do not expand the crawl — they are recorded as edges only.
 - Starred and watched repositories: `UserModel` gains `starred_repositories` and `watched_repositories` lists, sourced from `users/<login>/starred` and `users/<login>/subscriptions`. CSV export emits `starred` and `watching` edges between users and repos that are both present in the graph. Like follows, these do not expand the crawl.
+- Issue and PR activity edges, opt-in:
+  - `RepoModel` gains `issue_authors`, `pr_authors`, `commenters`, and `pr_reviewers` lists.
+  - New CLI flags `--crawl-issues` and `--crawl-prs` (off by default; matches the existing `--crawl-dependencies` / `--crawl-dependents` pattern).
+  - `--issue-max` / `--pr-max` caps (default 100) limit how many of the most-recent issues/PRs are scanned per repo, mirroring the existing 10-contributor cap.
+  - CSV export emits `issue_author`, `pr_author`, `commented_on`, and `pr_reviewer` edges between users present in the graph and the repo.
+  - `commenters` covers conversation comments on both issues and PRs (both come from the issues API); `pr_reviewers` covers formal PR reviews only.
+  - The same parameters are exposed on `POST /api/v1/crawl` (`crawl_issues`, `crawl_prs`, `issue_max`, `pr_max`).
 - `TeamModel` for GitHub organization teams (`org/slug` full-name, members, repos, parent team, privacy) and a new `teams` collection on `GraphData`. When the auth token has access to an org's teams, teams are fetched live and emit `has_team` (org → team), `has_access` (team → repo), and `parent_of` (team → team) edges. Team data is fetched on the live API path only; orgs served from existing cache will not be re-checked for teams until the cache is invalidated.
 
 ### Removed
