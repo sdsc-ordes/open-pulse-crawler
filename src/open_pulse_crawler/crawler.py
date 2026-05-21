@@ -256,7 +256,11 @@ class GitHubCrawler:
                 # Use cached organizations data if available
                 cached_orgs = user_obj.get('orgs', [])
                 orgs_to_queue = list(cached_orgs)
-                
+
+                # Record follow lists (no queueing — edges only).
+                user.followers.extend(user_obj.get('followers', []))
+                user.following.extend(user_obj.get('following', []))
+
                 # Add all items to queue in a single lock acquisition
                 with self.visited_lock:
                     for repo_name in repos_to_queue:
@@ -303,7 +307,20 @@ class GitHubCrawler:
                     orgs_to_queue = [org.login for org in orgs]
                 except Exception as e:
                     logger.warning(f"Failed to get organizations for user {username}: {e}")
-                
+
+                # Fetch follow lists from live API — record only, do not queue.
+                try:
+                    followers = self.client._make_request(user_obj.get_followers)
+                    user.followers.extend(f.login for f in followers)
+                except Exception as e:
+                    logger.warning(f"Failed to get followers for user {username}: {e}")
+
+                try:
+                    following = self.client._make_request(user_obj.get_following)
+                    user.following.extend(f.login for f in following)
+                except Exception as e:
+                    logger.warning(f"Failed to get following for user {username}: {e}")
+
                 # Add all items to queue in a single lock acquisition
                 with self.visited_lock:
                     for repo_name in repos_to_queue:

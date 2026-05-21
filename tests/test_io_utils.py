@@ -89,6 +89,40 @@ def test_export_csv():
         temp_path.unlink()
 
 
+def test_export_csv_follows_edges():
+    """Follow lists should produce `follows` edges only between users in the graph."""
+    graph = GraphData()
+
+    alice = UserModel(login="alice", id=1, following=["bob", "ghost"], followers=["bob"])
+    bob = UserModel(login="bob", id=2, following=["alice"], followers=["alice"])
+    graph.add_user(alice)
+    graph.add_user(bob)
+
+    with tempfile.NamedTemporaryFile(suffix='.csv', delete=False) as f:
+        temp_path = Path(f.name)
+
+    try:
+        export_to_csv(graph, temp_path, set())
+
+        import csv
+        with open(temp_path) as fp:
+            rows = list(csv.DictReader(fp))
+
+        follow_edges = {
+            (r['source'], r['target'])
+            for r in rows
+            if r['property'] == 'follows'
+        }
+        assert ("alice", "bob") in follow_edges
+        assert ("bob", "alice") in follow_edges
+        # "ghost" is not in the graph, so the edge must be dropped.
+        assert ("alice", "ghost") not in follow_edges
+        assert all(r['source_type'] == 'user' and r['target_type'] == 'user'
+                   for r in rows if r['property'] == 'follows')
+    finally:
+        temp_path.unlink()
+
+
 def test_export_nodes_csv():
     """Test nodes CSV export."""
     graph = GraphData()

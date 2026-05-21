@@ -17,6 +17,20 @@ def test_user_model():
     assert user.login == "testuser"
     assert user.name == "Test User"
     assert len(user.authored_repositories) == 0
+    assert user.followers == []
+    assert user.following == []
+
+
+def test_user_model_follow_lists():
+    """Test that follow lists round-trip through UserModel."""
+    user = UserModel(
+        login="alice",
+        id=1,
+        followers=["bob", "carol"],
+        following=["bob"],
+    )
+    assert user.followers == ["bob", "carol"]
+    assert user.following == ["bob"]
 
 
 def test_org_model():

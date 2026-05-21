@@ -358,8 +358,23 @@ class GitHubClient:
                     orgs_data = [org.login for org in orgs]
                 except Exception as e:
                     logger.warning(f"Failed to get organizations for caching user {username}: {e}")
-                
-                # Cache basic user info + repos + orgs
+
+                # Fetch and cache user's followers and following lists
+                followers_data = []
+                try:
+                    followers = self._make_request(user.get_followers)
+                    followers_data = [f.login for f in followers]
+                except Exception as e:
+                    logger.warning(f"Failed to get followers for caching user {username}: {e}")
+
+                following_data = []
+                try:
+                    following = self._make_request(user.get_following)
+                    following_data = [f.login for f in following]
+                except Exception as e:
+                    logger.warning(f"Failed to get following for caching user {username}: {e}")
+
+                # Cache basic user info + repos + orgs + follow lists
                 user_data = {
                     'login': user.login,
                     'name': user.name or '',
@@ -367,6 +382,8 @@ class GitHubClient:
                     'type': user.type,
                     'repos': repos_data,
                     'orgs': orgs_data,
+                    'followers': followers_data,
+                    'following': following_data,
                 }
                 self.cache.set(cache_key, '', user_data)
             return user

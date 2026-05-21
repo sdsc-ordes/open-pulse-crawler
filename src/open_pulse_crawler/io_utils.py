@@ -78,7 +78,7 @@ def export_to_csv(graph: GraphData, output_path: Path, seed_nodes: Set[str]):
                 'source_type': 'user',
                 'target_type': 'repo',
             })
-        
+
         # User -> forked repositories (fork_of - reverse direction)
         for repo_name in user.forked_repositories:
             # The user created a fork, so user -> repo "contributor_of"
@@ -90,6 +90,26 @@ def export_to_csv(graph: GraphData, output_path: Path, seed_nodes: Set[str]):
                 'source_type': 'user',
                 'target_type': 'repo',
             })
+
+        # Follow relationships — only emit edges between users both in the graph.
+        for followed_login in user.following:
+            if followed_login in graph.users:
+                edges.append({
+                    'source': user.login,
+                    'target': followed_login,
+                    'property': 'follows',
+                    'source_type': 'user',
+                    'target_type': 'user',
+                })
+        for follower_login in user.followers:
+            if follower_login in graph.users:
+                edges.append({
+                    'source': follower_login,
+                    'target': user.login,
+                    'property': 'follows',
+                    'source_type': 'user',
+                    'target_type': 'user',
+                })
     
     # Process organizations
     for org in graph.orgs.values():

@@ -33,6 +33,11 @@ class UserModel(BaseEntityModel):
     # Repos the user has forked
     forked_repositories: List[str] = Field(default_factory=list)
 
+    # Users who follow this user
+    followers: List[str] = Field(default_factory=list)
+    # Users this user follows
+    following: List[str] = Field(default_factory=list)
+
 
 class OrgModel(BaseEntityModel):
     """Model representing a GitHub organization."""
