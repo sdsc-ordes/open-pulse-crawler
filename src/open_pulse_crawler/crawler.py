@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 
 from .models import (
-    GraphData, UserModel, OrgModel, RepoModel,
+    GraphData, UserModel, OrgModel, RepoModel, TeamModel,
     GitHubItemType
 )
 from .github_client import GitHubClient
@@ -261,6 +261,10 @@ class GitHubCrawler:
                 user.followers.extend(user_obj.get('followers', []))
                 user.following.extend(user_obj.get('following', []))
 
+                # Record star/watch lists (no queueing — edges only).
+                user.starred_repositories.extend(user_obj.get('starred', []))
+                user.watched_repositories.extend(user_obj.get('watching', []))
+
                 # Add all items to queue in a single lock acquisition
                 with self.visited_lock:
                     for repo_name in repos_to_queue:
@@ -320,6 +324,19 @@ class GitHubCrawler:
                     user.following.extend(f.login for f in following)
                 except Exception as e:
                     logger.warning(f"Failed to get following for user {username}: {e}")
+
+                # Fetch starred and watched (subscriptions) — record only, do not queue.
+                try:
+                    starred = self.client._make_request(user_obj.get_starred)
+                    user.starred_repositories.extend(r.full_name for r in starred)
+                except Exception as e:
+                    logger.warning(f"Failed to get starred for user {username}: {e}")
+
+                try:
+                    subs = self.client._make_request(user_obj.get_subscriptions)
+                    user.watched_repositories.extend(r.full_name for r in subs)
+                except Exception as e:
+                    logger.warning(f"Failed to get subscriptions for user {username}: {e}")
 
                 # Add all items to queue in a single lock acquisition
                 with self.visited_lock:
@@ -415,7 +432,12 @@ class GitHubCrawler:
                         repos_to_queue.append(repo.full_name)
                 except Exception as e:
                     logger.warning(f"Failed to get repos for org {org_name}: {e}")
-                
+
+                # Get organization teams from live API. Requires the auth token
+                # to be an org member with team-read perms; 403/404 is expected
+                # for external orgs and is logged at debug level.
+                self._fetch_org_teams(org_obj, org_name)
+
                 # Add all items to queue in a single lock acquisition
                 with self.visited_lock:
                     for member_login in members_to_queue:
@@ -426,11 +448,66 @@ class GitHubCrawler:
                         if repo_name not in self.visited:
                             self.queue.append(('repo', repo_name, self.current_round + 1))
                             self._track_discovered_node('repo', repo_name, org_name, 'org')
-            
+
             return org
         except Exception as e:
             logger.error(f"Error processing organization {org_name}: {e}")
             return None
+
+    def _fetch_org_teams(self, org_obj, org_name: str):
+        """Fetch teams for an org from the live API and add them to the graph.
+
+        Teams require auth-token membership in the org. When access is denied
+        we log at debug level and move on — this is the common case for
+        externally-crawled orgs.
+        """
+        try:
+            teams = self.client._make_request(org_obj.get_teams)
+            if teams is None:
+                return
+            team_objs = list(teams)
+        except Exception as e:
+            logger.debug(f"Cannot list teams for org {org_name} (likely no access): {e}")
+            return
+
+        for team_obj in team_objs:
+            try:
+                slug = team_obj.slug
+                full_name = f"{org_name}/{slug}"
+                parent_full_name = None
+                if getattr(team_obj, "parent", None) is not None:
+                    parent_full_name = f"{org_name}/{team_obj.parent.slug}"
+
+                team = TeamModel(
+                    full_name=full_name,
+                    slug=slug,
+                    name=team_obj.name or "",
+                    id=team_obj.id,
+                    org=org_name,
+                    description=team_obj.description or "",
+                    privacy=getattr(team_obj, "privacy", "") or "",
+                    parent=parent_full_name,
+                    is_explored=True,
+                    exploration_timestamp=datetime.now().isoformat(),
+                    is_epfl=org_name.lower() in self.epfl_entities,
+                )
+
+                try:
+                    t_members = self.client._make_request(team_obj.get_members)
+                    team.members.extend(m.login for m in t_members)
+                except Exception as e:
+                    logger.warning(f"Failed to get members for team {full_name}: {e}")
+
+                try:
+                    t_repos = self.client._make_request(team_obj.get_repos)
+                    team.repositories.extend(r.full_name for r in t_repos)
+                except Exception as e:
+                    logger.warning(f"Failed to get repos for team {full_name}: {e}")
+
+                with self.graph_lock:
+                    self.graph.add_team(team)
+            except Exception as e:
+                logger.warning(f"Failed to process team in org {org_name}: {e}")
     
     def _process_repository(self, repo_full_name: str) -> Optional[RepoModel]:
         """Process a repository and return RepoModel."""

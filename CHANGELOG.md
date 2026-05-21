@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Follow relationships: `UserModel` now carries `followers` and `following` login lists, populated from the GitHub API (and cached) per crawled user. CSV export includes `follows` edges (`source` follows `target`) between users that are both present in the graph. Follow lists do not expand the crawl — they are recorded as edges only.
+- Starred and watched repositories: `UserModel` gains `starred_repositories` and `watched_repositories` lists, sourced from `users/<login>/starred` and `users/<login>/subscriptions`. CSV export emits `starred` and `watching` edges between users and repos that are both present in the graph. Like follows, these do not expand the crawl.
+- `TeamModel` for GitHub organization teams (`org/slug` full-name, members, repos, parent team, privacy) and a new `teams` collection on `GraphData`. When the auth token has access to an org's teams, teams are fetched live and emit `has_team` (org → team), `member_of` (user → team), `has_access` (team → repo), and `parent_of` (team → team) edges. Team data is fetched on the live API path only; orgs served from existing cache will not be re-checked for teams until the cache is invalidated.
 - Nginx reverse-proxy container (`infra/nginx/Dockerfile` + `infra/nginx/nginx.conf`): routes `/api/*` to FastAPI (port 8000) and `/` to Streamlit (port 8501) with WebSocket upgrade support.
 - Streamlit placeholder GUI (`src/open_pulse_crawler/gui.py`) with token input sidebar, crawl form (seeds + BFS rounds), and live job-status results area.
 - `streamlit` and `httpx` added to project dependencies.

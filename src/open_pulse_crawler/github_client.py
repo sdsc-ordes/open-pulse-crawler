@@ -374,7 +374,22 @@ class GitHubClient:
                 except Exception as e:
                     logger.warning(f"Failed to get following for caching user {username}: {e}")
 
-                # Cache basic user info + repos + orgs + follow lists
+                # Fetch and cache starred and watched (subscriptions) repo lists
+                starred_data = []
+                try:
+                    starred = self._make_request(user.get_starred)
+                    starred_data = [r.full_name for r in starred]
+                except Exception as e:
+                    logger.warning(f"Failed to get starred for caching user {username}: {e}")
+
+                watching_data = []
+                try:
+                    subs = self._make_request(user.get_subscriptions)
+                    watching_data = [r.full_name for r in subs]
+                except Exception as e:
+                    logger.warning(f"Failed to get subscriptions for caching user {username}: {e}")
+
+                # Cache basic user info + repos + orgs + follow lists + star/watch lists
                 user_data = {
                     'login': user.login,
                     'name': user.name or '',
@@ -384,6 +399,8 @@ class GitHubClient:
                     'orgs': orgs_data,
                     'followers': followers_data,
                     'following': following_data,
+                    'starred': starred_data,
+                    'watching': watching_data,
                 }
                 self.cache.set(cache_key, '', user_data)
             return user

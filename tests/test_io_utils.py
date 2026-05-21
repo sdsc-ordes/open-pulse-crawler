@@ -3,7 +3,7 @@
 import tempfile
 from pathlib import Path
 
-from open_pulse_crawler.models import GraphData, UserModel, OrgModel, RepoModel
+from open_pulse_crawler.models import GraphData, UserModel, OrgModel, RepoModel, TeamModel
 from open_pulse_crawler.io_utils import (
     parse_seed_file,
     export_to_json,
@@ -119,6 +119,102 @@ def test_export_csv_follows_edges():
         assert ("alice", "ghost") not in follow_edges
         assert all(r['source_type'] == 'user' and r['target_type'] == 'user'
                    for r in rows if r['property'] == 'follows')
+    finally:
+        temp_path.unlink()
+
+
+def test_export_csv_star_and_watch_edges():
+    """Starred and watched lists should produce edges only when repo is in graph."""
+    graph = GraphData()
+    alice = UserModel(
+        login="alice",
+        id=1,
+        starred_repositories=["org/a", "org/ghost"],
+        watched_repositories=["org/a"],
+    )
+    graph.add_user(alice)
+    graph.add_repo(RepoModel(full_name="org/a", id=10, owner="org"))
+
+    with tempfile.NamedTemporaryFile(suffix='.csv', delete=False) as f:
+        temp_path = Path(f.name)
+    try:
+        export_to_csv(graph, temp_path, set())
+        import csv
+        with open(temp_path) as fp:
+            rows = list(csv.DictReader(fp))
+
+        starred = {(r['source'], r['target']) for r in rows if r['property'] == 'starred'}
+        watching = {(r['source'], r['target']) for r in rows if r['property'] == 'watching'}
+        assert ("alice", "org/a") in starred
+        assert ("alice", "org/a") in watching
+        assert ("alice", "org/ghost") not in starred  # repo not in graph
+    finally:
+        temp_path.unlink()
+
+
+def test_export_csv_team_edges():
+    """Team relationships should produce has_team, member_of, has_access, parent_of edges."""
+    graph = GraphData()
+    graph.add_org(OrgModel(login="acme", id=1, name="Acme"))
+    graph.add_user(UserModel(login="alice", id=2))
+    graph.add_repo(RepoModel(full_name="acme/widget", id=3, owner="acme"))
+
+    parent_team = TeamModel(
+        full_name="acme/eng",
+        slug="eng",
+        name="Engineering",
+        id=100,
+        org="acme",
+    )
+    child_team = TeamModel(
+        full_name="acme/core",
+        slug="core",
+        name="Core",
+        id=101,
+        org="acme",
+        parent="acme/eng",
+        members=["alice", "ghost"],
+        repositories=["acme/widget", "acme/missing"],
+    )
+    graph.add_team(parent_team)
+    graph.add_team(child_team)
+
+    with tempfile.NamedTemporaryFile(suffix='.csv', delete=False) as f:
+        temp_path = Path(f.name)
+    try:
+        export_to_csv(graph, temp_path, set())
+        import csv
+        with open(temp_path) as fp:
+            rows = list(csv.DictReader(fp))
+
+        triples = {(r['source'], r['target'], r['property']) for r in rows}
+        assert ("acme", "acme/core", "has_team") in triples
+        assert ("acme", "acme/eng", "has_team") in triples
+        assert ("alice", "acme/core", "member_of") in triples
+        assert ("ghost", "acme/core", "member_of") not in triples  # user not in graph
+        assert ("acme/core", "acme/widget", "has_access") in triples
+        assert ("acme/core", "acme/missing", "has_access") not in triples  # repo not in graph
+        assert ("acme/eng", "acme/core", "parent_of") in triples
+    finally:
+        temp_path.unlink()
+
+
+def test_export_nodes_csv_includes_teams():
+    """Team nodes should appear in the nodes CSV."""
+    graph = GraphData()
+    graph.add_team(TeamModel(full_name="acme/core", slug="core", name="Core", id=1, org="acme"))
+
+    with tempfile.NamedTemporaryFile(suffix='.csv', delete=False) as f:
+        temp_path = Path(f.name)
+    try:
+        export_nodes_csv(graph, temp_path, set())
+        import csv
+        with open(temp_path) as fp:
+            rows = list(csv.DictReader(fp))
+        team_rows = [r for r in rows if r['type'] == 'team']
+        assert len(team_rows) == 1
+        assert team_rows[0]['id'] == 'acme/core'
+        assert team_rows[0]['name'] == 'Core'
     finally:
         temp_path.unlink()
 

@@ -10,6 +10,7 @@ class GitHubItemType(str, Enum):
     USER = "User"
     ORGANIZATION = "Organization"
     REPOSITORY = "Repository"
+    TEAM = "Team"
     BOT = "Bot"
     UNKNOWN = "Unknown"
 
@@ -37,6 +38,11 @@ class UserModel(BaseEntityModel):
     followers: List[str] = Field(default_factory=list)
     # Users this user follows
     following: List[str] = Field(default_factory=list)
+
+    # Repos the user has starred
+    starred_repositories: List[str] = Field(default_factory=list)
+    # Repos the user is subscribed to (watching for notifications)
+    watched_repositories: List[str] = Field(default_factory=list)
 
 
 class OrgModel(BaseEntityModel):
@@ -71,11 +77,31 @@ class RepoModel(BaseEntityModel):
     dependencies: List[str] = Field(default_factory=list)
 
 
+class TeamModel(BaseEntityModel):
+    """Model representing a GitHub organization team."""
+    # full_name is "org_login/team_slug"
+    full_name: str
+    slug: str
+    name: str = ""
+    id: int = 0
+    type: GitHubItemType = GitHubItemType.TEAM
+    org: str = ""
+    description: str = ""
+    privacy: str = ""
+
+    # Parent team's full_name when this is a child team
+    parent: Optional[str] = None
+
+    members: List[str] = Field(default_factory=list)
+    repositories: List[str] = Field(default_factory=list)
+
+
 class GraphData(BaseModel):
-    """Holds references to users, orgs, and repos discovered."""
+    """Holds references to users, orgs, repos, and teams discovered."""
     users: Dict[str, UserModel] = Field(default_factory=dict)
     orgs: Dict[str, OrgModel] = Field(default_factory=dict)
     repos: Dict[str, RepoModel] = Field(default_factory=dict)
+    teams: Dict[str, TeamModel] = Field(default_factory=dict)
 
     def add_user(self, user: UserModel):
         """Add a user to the graph."""
@@ -89,6 +115,10 @@ class GraphData(BaseModel):
         """Add a repository to the graph."""
         self.repos[repo.full_name] = repo
 
+    def add_team(self, team: TeamModel):
+        """Add a team to the graph."""
+        self.teams[team.full_name] = team
+
     def has_user(self, login: str) -> bool:
         """Check if user exists in graph."""
         return login in self.users
@@ -101,6 +131,10 @@ class GraphData(BaseModel):
         """Check if repo exists in graph."""
         return full_name in self.repos
 
+    def has_team(self, full_name: str) -> bool:
+        """Check if team exists in graph."""
+        return full_name in self.teams
+
     def get_user(self, login: str) -> Optional[UserModel]:
         """Get a user by login."""
         return self.users.get(login)
@@ -112,3 +146,7 @@ class GraphData(BaseModel):
     def get_repo(self, full_name: str) -> Optional[RepoModel]:
         """Get a repo by full name."""
         return self.repos.get(full_name)
+
+    def get_team(self, full_name: str) -> Optional[TeamModel]:
+        """Get a team by full name (org/slug)."""
+        return self.teams.get(full_name)

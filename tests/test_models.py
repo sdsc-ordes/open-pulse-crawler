@@ -2,7 +2,7 @@
 
 import pytest
 from open_pulse_crawler.models import (
-    GitHubItemType, UserModel, OrgModel, RepoModel, GraphData
+    GitHubItemType, UserModel, OrgModel, RepoModel, TeamModel, GraphData
 )
 
 
@@ -31,6 +31,41 @@ def test_user_model_follow_lists():
     )
     assert user.followers == ["bob", "carol"]
     assert user.following == ["bob"]
+
+
+def test_user_model_star_watch_lists():
+    """Test that starred/watched lists round-trip through UserModel."""
+    user = UserModel(
+        login="alice",
+        id=1,
+        starred_repositories=["org/a", "org/b"],
+        watched_repositories=["org/a"],
+    )
+    assert user.starred_repositories == ["org/a", "org/b"]
+    assert user.watched_repositories == ["org/a"]
+
+
+def test_team_model_and_graph():
+    """Test TeamModel and GraphData team operations."""
+    team = TeamModel(
+        full_name="acme/core",
+        slug="core",
+        name="Core",
+        id=42,
+        org="acme",
+        description="Core team",
+        privacy="closed",
+        members=["alice"],
+        repositories=["acme/widget"],
+    )
+    assert team.type == GitHubItemType.TEAM
+    assert team.full_name == "acme/core"
+    assert team.parent is None
+
+    graph = GraphData()
+    graph.add_team(team)
+    assert graph.has_team("acme/core")
+    assert graph.get_team("acme/core").slug == "core"
 
 
 def test_org_model():
