@@ -40,7 +40,10 @@ query User($login: String!) {
     databaseId
     followers(first: 100) { nodes { login } }
     following(first: 100) { nodes { login } }
-    starredRepositories(first: 100) { nodes { nameWithOwner } }
+    starredRepositories(first: 100) {
+      nodes { nameWithOwner }
+      pageInfo { hasNextPage endCursor }
+    }
     watching(first: 100) { nodes { nameWithOwner } }
     organizations(first: 100) { nodes { login } }
     repositories(
@@ -49,6 +52,66 @@ query User($login: String!) {
       orderBy: {field: UPDATED_AT, direction: DESC}
     ) {
       nodes { nameWithOwner isFork }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+}
+"""
+
+_USER_STARRED_PAGE = """
+query UserStarred($login: String!, $cursor: String!) {
+  rateLimit { cost remaining resetAt }
+  user(login: $login) {
+    starredRepositories(first: 100, after: $cursor) {
+      nodes { nameWithOwner }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+}
+"""
+
+_USER_REPOS_PAGE = """
+query UserRepos($login: String!, $cursor: String!) {
+  rateLimit { cost remaining resetAt }
+  user(login: $login) {
+    repositories(
+      first: 100,
+      ownerAffiliations: OWNER,
+      orderBy: {field: UPDATED_AT, direction: DESC},
+      after: $cursor
+    ) {
+      nodes { nameWithOwner isFork }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+}
+"""
+
+# Fallback used when a token lacks `read:org`: drops the `organizations`
+# connection (whose `Organization.login` is the scope-gated field that
+# otherwise causes GitHub to reject the entire query, leaving users with
+# `data: null`).
+_USER_QUERY_NO_ORGS = """
+query User($login: String!) {
+  rateLimit { cost remaining resetAt }
+  user(login: $login) {
+    login
+    name
+    databaseId
+    followers(first: 100) { nodes { login } }
+    following(first: 100) { nodes { login } }
+    starredRepositories(first: 100) {
+      nodes { nameWithOwner }
+      pageInfo { hasNextPage endCursor }
+    }
+    watching(first: 100) { nodes { nameWithOwner } }
+    repositories(
+      first: 100,
+      ownerAffiliations: OWNER,
+      orderBy: {field: UPDATED_AT, direction: DESC}
+    ) {
+      nodes { nameWithOwner isFork }
+      pageInfo { hasNextPage endCursor }
     }
   }
 }
@@ -161,6 +224,7 @@ class GitHubGraphQLClient:
         crawl_prs: bool = False,
         issue_max: int = 100,
         pr_max: int = 100,
+        max_per_list: int = 1000,
         max_concurrent_requests: int = 5,
     ):
         if not tokens:
@@ -172,6 +236,9 @@ class GitHubGraphQLClient:
         self.crawl_prs = crawl_prs
         self.issue_max = issue_max
         self.pr_max = pr_max
+        # Cap on how many items we'll paginate per connection (starred,
+        # repos). REST returns everything; GraphQL we cap to bound cost.
+        self.max_per_list = max_per_list
 
         # File cache: reuse the same APICache so subsequent runs can skip HTTP.
         from .github_client import APICache  # local import to avoid circular dep
@@ -234,15 +301,17 @@ class GitHubGraphQLClient:
             # org probe); INSUFFICIENT_SCOPES is a token-config problem the
             # user must fix; everything else is a query bug or transient
             # failure. Log accordingly so silent token-scope mismatches don't
-            # hide as "empty graph".
+            # hide as "empty graph". Annotate the body so callers can branch
+            # without re-parsing the errors list.
             kinds = {e.get("type") for e in body["errors"] if e}
             msgs = "; ".join(
                 str(e.get("message", "")) for e in body["errors"] if e
             )
+            body["_error_kinds"] = kinds
             if kinds == {"NOT_FOUND"}:
                 logger.debug(f"GraphQL not-found for {variables}: {msgs}")
             elif "INSUFFICIENT_SCOPES" in kinds:
-                logger.error(
+                logger.warning(
                     f"GraphQL token scope problem for {variables}: {msgs}"
                 )
             else:
@@ -292,6 +361,71 @@ class GitHubGraphQLClient:
             return []
         return [c.get("login") for c in (resp.json() or []) if c.get("login")][:limit]
 
+    def _paginate_user_connection(
+        self,
+        page_query: str,
+        username: str,
+        connection_key: str,
+        initial_cursor: str,
+        collected_so_far: int,
+    ) -> List[Dict[str, Any]]:
+        """Walk subsequent pages of a single user connection.
+
+        Caller has already consumed the first page (100 items) and provides
+        `initial_cursor` (the `endCursor` of that page) and how many items
+        it kept. We follow `pageInfo.endCursor` until either there are no
+        more pages or we've collected `self.max_per_list` items in total.
+        """
+        extra: List[Dict[str, Any]] = []
+        cursor = initial_cursor
+        total = collected_so_far
+        while cursor and total < self.max_per_list:
+            body = self._graphql(page_query, {"login": username, "cursor": cursor})
+            if body is None:
+                break
+            connection = ((body.get("data") or {}).get("user") or {}).get(connection_key)
+            if not connection:
+                break
+            nodes = connection.get("nodes") or []
+            extra.extend(nodes)
+            total += len(nodes)
+            page_info = connection.get("pageInfo") or {}
+            if not page_info.get("hasNextPage"):
+                break
+            cursor = page_info.get("endCursor")
+        if total >= self.max_per_list:
+            logger.info(
+                f"GraphQL pagination for {username}.{connection_key} hit "
+                f"max_per_list={self.max_per_list}; truncating."
+            )
+        return extra
+
+    def _rest_user_orgs(self, username: str) -> List[str]:
+        """Fetch a user's public organizations via REST.
+
+        GraphQL's `User.organizations` requires `read:org`; REST's
+        `/users/{login}/orgs` returns the same public memberships with no
+        scope, so we fall back to REST when the GraphQL path is denied.
+        """
+        try:
+            resp = self._http.get(
+                f"{REST_BASE}/users/{username}/orgs",
+                headers=self._headers_rest,
+                params={"per_page": 100},
+            )
+        except httpx.HTTPError as e:
+            logger.warning(f"REST user orgs error for {username}: {e}")
+            return []
+        with self._stats_lock:
+            self.stats["rest_calls"] += 1
+        if resp.status_code != 200:
+            logger.debug(
+                f"REST user orgs {username} HTTP {resp.status_code}: "
+                f"{resp.text[:120]}"
+            )
+            return []
+        return [o.get("login") for o in (resp.json() or []) if o.get("login")]
+
     # ── Public API: get_user / get_organization / get_repository ────────────
 
     def get_user(self, username: str) -> Optional[Dict[str, Any]]:
@@ -307,14 +441,46 @@ class GitHubGraphQLClient:
         if body is None:
             return None
         user = (body.get("data") or {}).get("user")
+        # Self-heal: tokens without `read:org` get a null `data` because the
+        # `organizations` field's nested `Organization.login` is scope-gated
+        # and GitHub rejects the whole query. Retry with a query that drops
+        # the organizations connection so basic user fields still come back;
+        # `orgs` then gets re-populated via REST (which doesn't need scope
+        # for public org memberships).
+        used_no_orgs_fallback = False
+        if user is None and "INSUFFICIENT_SCOPES" in (body.get("_error_kinds") or set()):
+            body = self._graphql(_USER_QUERY_NO_ORGS, {"login": username})
+            if body is None:
+                return None
+            user = (body.get("data") or {}).get("user")
+            used_no_orgs_fallback = True
         if not user:
             return None
 
+        # Repositories: paginate if the user has more than the first 100.
+        repos_conn = user.get("repositories") or {}
+        repo_nodes = list(repos_conn.get("nodes") or [])
+        repos_page_info = repos_conn.get("pageInfo") or {}
+        if repos_page_info.get("hasNextPage") and repos_page_info.get("endCursor"):
+            repo_nodes.extend(self._paginate_user_connection(
+                _USER_REPOS_PAGE, username, "repositories",
+                repos_page_info["endCursor"], len(repo_nodes),
+            ))
         repos = []
-        for r in (user.get("repositories") or {}).get("nodes", []) or []:
+        for r in repo_nodes:
             if not r:
                 continue
             repos.append({"full_name": r["nameWithOwner"], "fork": r.get("isFork", False)})
+
+        # Starred repositories: paginate similarly.
+        starred_conn = user.get("starredRepositories") or {}
+        starred_nodes = list(starred_conn.get("nodes") or [])
+        starred_page_info = starred_conn.get("pageInfo") or {}
+        if starred_page_info.get("hasNextPage") and starred_page_info.get("endCursor"):
+            starred_nodes.extend(self._paginate_user_connection(
+                _USER_STARRED_PAGE, username, "starredRepositories",
+                starred_page_info["endCursor"], len(starred_nodes),
+            ))
 
         out: Dict[str, Any] = {
             "login": user["login"],
@@ -322,9 +488,13 @@ class GitHubGraphQLClient:
             "id": user.get("databaseId") or 0,
             "type": "User",
             "repos": repos,
-            "orgs": _collect_logins(
-                (user.get("organizations") or {}).get("nodes", []),
-                key="login",
+            "orgs": (
+                self._rest_user_orgs(username)
+                if used_no_orgs_fallback
+                else _collect_logins(
+                    (user.get("organizations") or {}).get("nodes", []),
+                    key="login",
+                )
             ),
             "followers": _collect_logins(
                 (user.get("followers") or {}).get("nodes", []),
@@ -336,7 +506,7 @@ class GitHubGraphQLClient:
             ),
             "starred": [
                 n["nameWithOwner"]
-                for n in (user.get("starredRepositories") or {}).get("nodes", []) or []
+                for n in starred_nodes
                 if n and n.get("nameWithOwner")
             ],
             "watching": [

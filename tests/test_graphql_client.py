@@ -216,6 +216,168 @@ def test_get_repository_returns_none_for_missing_repo(gql_client):
         assert gql_client.get_repository("ghost/repo") is None
 
 
+def test_get_user_paginates_starred(gql_client):
+    """When starred has hasNextPage, follow-up queries collect additional pages."""
+    page1 = {
+        "user": {
+            "login": "alice",
+            "name": "",
+            "databaseId": 1,
+            "followers": {"nodes": []},
+            "following": {"nodes": []},
+            "starredRepositories": {
+                "nodes": [{"nameWithOwner": f"x/r{i}"} for i in range(5)],
+                "pageInfo": {"hasNextPage": True, "endCursor": "c1"},
+            },
+            "watching": {"nodes": []},
+            "organizations": {"nodes": []},
+            "repositories": {
+                "nodes": [],
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+            },
+        }
+    }
+    page2 = {
+        "user": {
+            "starredRepositories": {
+                "nodes": [{"nameWithOwner": "x/r5"}, {"nameWithOwner": "x/r6"}],
+                "pageInfo": {"hasNextPage": False, "endCursor": "c2"},
+            }
+        }
+    }
+
+    with patch.object(gql_client._http, "post", side_effect=[
+        _gql_response(page1),
+        _gql_response(page2),
+    ]):
+        out = gql_client.get_user("alice")
+
+    assert out["starred"] == [f"x/r{i}" for i in range(7)]
+
+
+def test_get_user_paginates_repos(gql_client):
+    """Repositories with hasNextPage follow up via _USER_REPOS_PAGE."""
+    page1 = {
+        "user": {
+            "login": "bob",
+            "name": "",
+            "databaseId": 2,
+            "followers": {"nodes": []},
+            "following": {"nodes": []},
+            "starredRepositories": {
+                "nodes": [],
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+            },
+            "watching": {"nodes": []},
+            "organizations": {"nodes": []},
+            "repositories": {
+                "nodes": [
+                    {"nameWithOwner": "bob/r1", "isFork": False},
+                    {"nameWithOwner": "bob/r2", "isFork": True},
+                ],
+                "pageInfo": {"hasNextPage": True, "endCursor": "rc1"},
+            },
+        }
+    }
+    page2 = {
+        "user": {
+            "repositories": {
+                "nodes": [{"nameWithOwner": "bob/r3", "isFork": False}],
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+            }
+        }
+    }
+
+    with patch.object(gql_client._http, "post", side_effect=[
+        _gql_response(page1),
+        _gql_response(page2),
+    ]):
+        out = gql_client.get_user("bob")
+
+    assert [r["full_name"] for r in out["repos"]] == ["bob/r1", "bob/r2", "bob/r3"]
+    assert out["repos"][1]["fork"] is True
+
+
+def test_get_user_falls_back_to_rest_for_orgs_when_scope_missing(gql_client):
+    """If the GraphQL query is rejected for INSUFFICIENT_SCOPES, retry the
+    no-orgs variant and re-fetch orgs via REST."""
+    # First call: scope error => data null
+    err_resp = MagicMock()
+    err_resp.status_code = 200
+    err_resp.text = ""
+    err_resp.json.return_value = {
+        "data": None,
+        "errors": [{"type": "INSUFFICIENT_SCOPES", "message": "needs read:org"}],
+    }
+
+    # Second call: no-orgs query succeeds
+    page2 = {
+        "user": {
+            "login": "carol",
+            "name": "Carol",
+            "databaseId": 3,
+            "followers": {"nodes": []},
+            "following": {"nodes": []},
+            "starredRepositories": {
+                "nodes": [],
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+            },
+            "watching": {"nodes": []},
+            "repositories": {
+                "nodes": [],
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+            },
+        }
+    }
+
+    rest_orgs = _rest_response([{"login": "wonderland"}, {"login": "looking-glass"}])
+
+    with patch.object(gql_client._http, "post", side_effect=[err_resp, _gql_response(page2)]), \
+         patch.object(gql_client._http, "get", return_value=rest_orgs):
+        out = gql_client.get_user("carol")
+
+    assert out["login"] == "carol"
+    assert out["orgs"] == ["wonderland", "looking-glass"]
+
+
+def test_get_user_pagination_respects_max_per_list():
+    """Cap on max_per_list stops pagination even when hasNextPage is True."""
+    client = GitHubGraphQLClient(tokens=["t"], max_per_list=3)
+    page1 = {
+        "user": {
+            "login": "x",
+            "name": "",
+            "databaseId": 1,
+            "followers": {"nodes": []},
+            "following": {"nodes": []},
+            "starredRepositories": {
+                "nodes": [{"nameWithOwner": "a/0"}, {"nameWithOwner": "a/1"}],
+                "pageInfo": {"hasNextPage": True, "endCursor": "c1"},
+            },
+            "watching": {"nodes": []},
+            "organizations": {"nodes": []},
+            "repositories": {
+                "nodes": [],
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+            },
+        }
+    }
+    page2 = {
+        "user": {
+            "starredRepositories": {
+                "nodes": [{"nameWithOwner": "a/2"}, {"nameWithOwner": "a/3"}],
+                "pageInfo": {"hasNextPage": True, "endCursor": "c2"},
+            }
+        }
+    }
+    # Should stop after page2 because count >= 3; page3 must NOT be called.
+    with patch.object(client._http, "post", side_effect=[_gql_response(page1), _gql_response(page2)]):
+        out = client.get_user("x")
+
+    assert out["starred"] == ["a/0", "a/1", "a/2", "a/3"]
+    # If we tried page 3 a StopIteration would fire — its absence is the assertion.
+
+
 def test_get_stats_reports_points(gql_client):
     gql_client.stats["graphql_calls"] = 3
     gql_client.stats["graphql_points"] = 7
