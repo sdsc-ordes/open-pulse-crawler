@@ -153,7 +153,7 @@ def test_export_csv_star_and_watch_edges():
 
 
 def test_export_csv_team_edges():
-    """Team relationships should produce has_team, member_of, has_access, parent_of edges."""
+    """Team relationships should produce has_team, has_access, and parent_of edges."""
     graph = GraphData()
     graph.add_org(OrgModel(login="acme", id=1, name="Acme"))
     graph.add_user(UserModel(login="alice", id=2))
@@ -190,8 +190,9 @@ def test_export_csv_team_edges():
         triples = {(r['source'], r['target'], r['property']) for r in rows}
         assert ("acme", "acme/core", "has_team") in triples
         assert ("acme", "acme/eng", "has_team") in triples
-        assert ("alice", "acme/core", "member_of") in triples
-        assert ("ghost", "acme/core", "member_of") not in triples  # user not in graph
+        # member_of edges are intentionally not emitted (org/team membership
+        # is too incomplete a signal — see CHANGELOG).
+        assert not any(p == "member_of" for _, _, p in triples)
         assert ("acme/core", "acme/widget", "has_access") in triples
         assert ("acme/core", "acme/missing", "has_access") not in triples  # repo not in graph
         assert ("acme/eng", "acme/core", "parent_of") in triples

@@ -133,16 +133,6 @@ def export_to_csv(graph: GraphData, output_path: Path, seed_nodes: Set[str]):
     
     # Process organizations
     for org in graph.orgs.values():
-        # Org members -> org (member_of)
-        for member_login in org.members:
-            edges.append({
-                'source': member_login,
-                'target': org.login,
-                'property': 'member_of',
-                'source_type': 'user',
-                'target_type': 'org',
-            })
-        
         # Org -> authored repositories (owner_of)
         for repo_name in org.authored_repositories:
             edges.append({
@@ -232,17 +222,6 @@ def export_to_csv(graph: GraphData, output_path: Path, seed_nodes: Set[str]):
                 'source_type': 'org',
                 'target_type': 'team',
             })
-
-        # Members of the team.
-        for member_login in team.members:
-            if member_login in graph.users:
-                edges.append({
-                    'source': member_login,
-                    'target': team.full_name,
-                    'property': 'member_of',
-                    'source_type': 'user',
-                    'target_type': 'team',
-                })
 
         # Team access to repositories.
         for repo_name in team.repositories:
