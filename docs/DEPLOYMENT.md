@@ -118,11 +118,17 @@ docker run -d \
   -p 8000:8000 \
   -e GITHUB_TOKEN="ghp_..." \
   -e API_TOKEN="my-secret-api-token" \
+  -e OPC_DATA_DIR="/var/lib/crawler/jobs" \
+  -v opc-jobs:/var/lib/crawler/jobs \
   open-pulse-crawler
 ```
 
 The API will be available at `http://localhost:8000`. Visit
 `http://localhost:8000/api/v1/health` to verify it is running.
+
+The `-v` volume above persists per-job graph snapshots and resumable state.
+Without it, a partial graph and the ability to resume a stopped/failed job are
+lost when the container restarts — see [API.md → Persistence](./API.md#persistence).
 
 ### Environment variables
 
@@ -130,6 +136,7 @@ The API will be available at `http://localhost:8000`. Visit
 | -------------- | -------- | ------------------------------------------------- |
 | `GITHUB_TOKEN` | Yes      | GitHub personal access token(s), comma-separated. |
 | `API_TOKEN`    | Yes      | Bearer token required for protected endpoints.    |
+| `OPC_DATA_DIR` | No       | Directory for per-job snapshots and resumable state (default `/tmp/open-pulse-crawler`). Mount it to a volume for durability. |
 
 You can pass an env file instead:
 
