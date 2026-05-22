@@ -162,7 +162,7 @@ lost when the container restarts — see [API.md → Persistence](./API.md#persi
 | Variable                       | Default                                | Description                                                                                                  |
 | ------------------------------ | -------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
 | `OPC_DATA_DIR`                 | `/tmp/open-pulse-crawler`              | Root directory for per-job artifacts (graph snapshots, resumable state, `<job_id>/jsonld/`). Mount a volume for persistence. |
-| `OPC_CACHE_DIR`                | `data/open-pulse-crawler/cache`        | Directory for the GitHub API response cache. Set to an empty value to disable caching.                       |
+| `OPC_CACHE_DIR`                | `${OPC_DATA_DIR}/cache`                | Directory for the GitHub API response cache. Defaults under `OPC_DATA_DIR` so it is writable in the container. An unwritable path disables caching with a warning instead of failing the crawl. Set to an empty value to disable caching.       |
 | `OPC_PORT`                     | `80`                                   | Host port the Nginx reverse proxy publishes.                                                                 |
 | `OPC_IMAGE`                    | `ghcr.io/sdsc-ordes/open-pulse-crawler:latest` | Image tag used by the Compose stack.                                                                  |
 
