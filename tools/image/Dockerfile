@@ -31,9 +31,15 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # Step 1b: copy source and install the project itself into the venv. The
 # --no-editable flag bakes the package files into site-packages so the
 # runtime image only needs /app/.venv (no src/ copy required).
+#
+# No uv cache mount here, deliberately: the project version is not bumped
+# per commit, so a persistent build cache could reuse a stale project wheel
+# and bake outdated source into the image. The project is a small
+# pure-Python package — building it fresh every time is cheap and always
+# reflects the COPYed source. (Step 1a keeps its cache: dependency downloads
+# are large and keyed by the lockfile, so they are safe to reuse.)
 COPY src/ src/
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-editable
+RUN uv sync --frozen --no-dev --no-editable
 
 # ----- stage 2: minimal runtime ---------------------------------------------
 FROM python:3.12-slim AS runtime

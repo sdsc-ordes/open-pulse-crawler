@@ -5,6 +5,11 @@ on:
     branches: [ "main", "develop" ]
   pull_request:
     branches: [ "main", "develop" ]
+  # Manual trigger: rebuild and republish an image on demand (e.g. to refresh
+  # a tag) without pushing a dummy commit. Run it from the Actions tab and
+  # pick the branch — `develop` republishes `:develop`, `main` republishes
+  # `:latest` + the version tag.
+  workflow_dispatch:
 
 jobs:
   build-and-publish:
