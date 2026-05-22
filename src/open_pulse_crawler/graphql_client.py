@@ -295,8 +295,16 @@ class GitHubGraphQLClient:
         self.max_per_list = max_per_list
 
         # File cache: reuse the same APICache so subsequent runs can skip HTTP.
-        from .github_client import APICache  # local import to avoid circular dep
-        self.cache = APICache(cache_dir) if cache_dir else None
+        # Entries expire per OPC_CACHE_TTL_DAYS (default 30).
+        from .github_client import (  # local import to avoid circular dep
+            APICache,
+            resolve_cache_ttl,
+        )
+        self.cache = (
+            APICache(cache_dir, ttl_seconds=resolve_cache_ttl())
+            if cache_dir
+            else None
+        )
 
         # Crawler reads .semaphore._value to derive default batch_size.
         self.semaphore = threading.Semaphore(max_concurrent_requests)

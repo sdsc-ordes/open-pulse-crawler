@@ -162,7 +162,8 @@ lost when the container restarts — see [API.md → Persistence](./API.md#persi
 | Variable                       | Default                                | Description                                                                                                  |
 | ------------------------------ | -------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
 | `OPC_DATA_DIR`                 | `/tmp/open-pulse-crawler`              | Root directory for per-job artifacts (graph snapshots, resumable state, `<job_id>/jsonld/`). Mount a volume for persistence. |
-| `OPC_CACHE_DIR`                | `${OPC_DATA_DIR}/cache`                | Directory for the GitHub API response cache. Defaults under `OPC_DATA_DIR` so it is writable in the container. An unwritable path disables caching with a warning instead of failing the crawl. Set to an empty value to disable caching.       |
+| `OPC_CACHE_DIR`                | `${OPC_DATA_DIR}/cache`                | Directory for the GitHub API response cache. Defaults under `OPC_DATA_DIR` so it is writable in the container. An unwritable path disables caching with a warning instead of failing the crawl. Set to an empty value to disable caching. See [Caching](#caching). |
+| `OPC_CACHE_TTL_DAYS`           | `30`                                   | Age (in days) past which a cached API response is considered stale and refetched. `0` (or negative) disables expiry — entries are kept indefinitely. See [Caching](#caching). |
 | `OPC_PORT`                     | `80`                                   | Host port the Nginx reverse proxy publishes.                                                                 |
 | `OPC_IMAGE`                    | `ghcr.io/sdsc-ordes/open-pulse-crawler:latest` | Image tag used by the Compose stack.                                                                  |
 
@@ -206,6 +207,56 @@ docker run -d \
 | Entrypoint   | `uvicorn open_pulse_crawler.api:app` |
 | Exposed port | `8000`                           |
 | Run user     | `app` (UID 1000, non-root)       |
+
+## Caching
+
+The crawler keeps a file-based cache of GitHub API responses so repeat crawls
+skip network calls for entities already seen.
+
+### What is cached
+
+Each `get_user` / `get_organization` / `get_repository` response is stored as
+one JSON file, keyed by a hash of the endpoint and parameters. On a cache
+**hit** the crawler returns the stored data and makes **no GitHub API call**
+for that entity — this is what keeps re-crawls fast and cheap on rate limits.
+Both the REST (`/api/v1/crawl`) and GraphQL (`/api/v1/crawl/graphql`) backends
+use the same cache.
+
+### Where it lives
+
+Resolution order: an explicit CLI `--cache-dir` → `OPC_CACHE_DIR` →
+a context default → the repo-relative `data/open-pulse-crawler/cache`. The
+REST/GraphQL **API** defaults to `${OPC_DATA_DIR}/cache` (writable inside the
+container); the **CLI** uses the repo-relative default.
+
+### Expiry (TTL)
+
+A cached entry older than **`OPC_CACHE_TTL_DAYS` (default 30)** is treated as a
+miss: the entity is refetched from GitHub and the stale file overwritten. This
+keeps the cache self-refreshing — without it a stale contributor list or repo
+metadata would be served forever. The age is measured from the cache file's
+modification time.
+
+Set `OPC_CACHE_TTL_DAYS=0` (or a negative value) to disable expiry entirely —
+entries are then kept indefinitely until the cache directory is cleared by
+hand.
+
+### Disabling the cache
+
+- CLI: the `--no-cache` flag (overrides `--cache-dir` and `OPC_CACHE_DIR`).
+- Environment: set `OPC_CACHE_DIR=""` (empty string).
+
+Either way every entity is fetched fresh from GitHub on every crawl.
+
+### Resilience
+
+Caching is only an optimization — it never fails a crawl. If the cache
+directory can't be created (e.g. an unwritable path), the cache disables
+itself with a warning and the crawl proceeds uncached.
+
+To force a full refresh ahead of the TTL, delete the cache directory
+(`OPC_CACHE_DIR`, default `${OPC_DATA_DIR}/cache`); it is rebuilt on the next
+crawl.
 
 ## Running Without Docker
 
