@@ -255,6 +255,65 @@ def test_get_user_paginates_starred(gql_client):
     assert out["starred"] == [f"x/r{i}" for i in range(7)]
 
 
+def test_get_user_paginates_followers_and_following(gql_client):
+    """followers and following follow their pageInfo cursors to the full list."""
+    page1 = {
+        "user": {
+            "login": "alice",
+            "name": "",
+            "databaseId": 1,
+            "followers": {
+                "nodes": [{"login": f"f{i}"} for i in range(3)],
+                "pageInfo": {"hasNextPage": True, "endCursor": "fc1"},
+            },
+            "following": {
+                "nodes": [{"login": "g0"}],
+                "pageInfo": {"hasNextPage": True, "endCursor": "gc1"},
+            },
+            "starredRepositories": {
+                "nodes": [],
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+            },
+            "watching": {
+                "nodes": [],
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+            },
+            "organizations": {"nodes": []},
+            "repositories": {
+                "nodes": [],
+                "pageInfo": {"hasNextPage": False, "endCursor": None},
+            },
+        }
+    }
+    followers_page2 = {
+        "user": {
+            "followers": {
+                "nodes": [{"login": "f3"}],
+                "pageInfo": {"hasNextPage": False, "endCursor": "fc2"},
+            }
+        }
+    }
+    following_page2 = {
+        "user": {
+            "following": {
+                "nodes": [{"login": "g1"}, {"login": "g2"}],
+                "pageInfo": {"hasNextPage": False, "endCursor": "gc2"},
+            }
+        }
+    }
+
+    # Order: main query, then followers follow-up, then following follow-up.
+    with patch.object(gql_client._http, "post", side_effect=[
+        _gql_response(page1),
+        _gql_response(followers_page2),
+        _gql_response(following_page2),
+    ]):
+        out = gql_client.get_user("alice")
+
+    assert out["followers"] == ["f0", "f1", "f2", "f3"]
+    assert out["following"] == ["g0", "g1", "g2"]
+
+
 def test_get_user_paginates_repos(gql_client):
     """Repositories with hasNextPage follow up via _USER_REPOS_PAGE."""
     page1 = {

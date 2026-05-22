@@ -38,13 +38,22 @@ query User($login: String!) {
     login
     name
     databaseId
-    followers(first: 100) { nodes { login } }
-    following(first: 100) { nodes { login } }
+    followers(first: 100) {
+      nodes { login }
+      pageInfo { hasNextPage endCursor }
+    }
+    following(first: 100) {
+      nodes { login }
+      pageInfo { hasNextPage endCursor }
+    }
     starredRepositories(first: 100) {
       nodes { nameWithOwner }
       pageInfo { hasNextPage endCursor }
     }
-    watching(first: 100) { nodes { nameWithOwner } }
+    watching(first: 100) {
+      nodes { nameWithOwner }
+      pageInfo { hasNextPage endCursor }
+    }
     organizations(first: 100) { nodes { login } }
     repositories(
       first: 100,
@@ -87,6 +96,42 @@ query UserRepos($login: String!, $cursor: String!) {
 }
 """
 
+_USER_FOLLOWERS_PAGE = """
+query UserFollowers($login: String!, $cursor: String!) {
+  rateLimit { cost remaining resetAt }
+  user(login: $login) {
+    followers(first: 100, after: $cursor) {
+      nodes { login }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+}
+"""
+
+_USER_FOLLOWING_PAGE = """
+query UserFollowing($login: String!, $cursor: String!) {
+  rateLimit { cost remaining resetAt }
+  user(login: $login) {
+    following(first: 100, after: $cursor) {
+      nodes { login }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+}
+"""
+
+_USER_WATCHING_PAGE = """
+query UserWatching($login: String!, $cursor: String!) {
+  rateLimit { cost remaining resetAt }
+  user(login: $login) {
+    watching(first: 100, after: $cursor) {
+      nodes { nameWithOwner }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+}
+"""
+
 # Fallback used when a token lacks `read:org`: drops the `organizations`
 # connection (whose `Organization.login` is the scope-gated field that
 # otherwise causes GitHub to reject the entire query, leaving users with
@@ -98,13 +143,22 @@ query User($login: String!) {
     login
     name
     databaseId
-    followers(first: 100) { nodes { login } }
-    following(first: 100) { nodes { login } }
+    followers(first: 100) {
+      nodes { login }
+      pageInfo { hasNextPage endCursor }
+    }
+    following(first: 100) {
+      nodes { login }
+      pageInfo { hasNextPage endCursor }
+    }
     starredRepositories(first: 100) {
       nodes { nameWithOwner }
       pageInfo { hasNextPage endCursor }
     }
-    watching(first: 100) { nodes { nameWithOwner } }
+    watching(first: 100) {
+      nodes { nameWithOwner }
+      pageInfo { hasNextPage endCursor }
+    }
     repositories(
       first: 100,
       ownerAffiliations: OWNER,
@@ -575,6 +629,35 @@ class GitHubGraphQLClient:
                 starred_page_info["endCursor"], len(starred_nodes),
             ))
 
+        # Followers / following / watching: paginate so GraphQL matches REST,
+        # which returns the full lists. Bounded by `max_per_list`.
+        followers_conn = user.get("followers") or {}
+        followers_nodes = list(followers_conn.get("nodes") or [])
+        followers_page_info = followers_conn.get("pageInfo") or {}
+        if followers_page_info.get("hasNextPage") and followers_page_info.get("endCursor"):
+            followers_nodes.extend(self._paginate_user_connection(
+                _USER_FOLLOWERS_PAGE, username, "followers",
+                followers_page_info["endCursor"], len(followers_nodes),
+            ))
+
+        following_conn = user.get("following") or {}
+        following_nodes = list(following_conn.get("nodes") or [])
+        following_page_info = following_conn.get("pageInfo") or {}
+        if following_page_info.get("hasNextPage") and following_page_info.get("endCursor"):
+            following_nodes.extend(self._paginate_user_connection(
+                _USER_FOLLOWING_PAGE, username, "following",
+                following_page_info["endCursor"], len(following_nodes),
+            ))
+
+        watching_conn = user.get("watching") or {}
+        watching_nodes = list(watching_conn.get("nodes") or [])
+        watching_page_info = watching_conn.get("pageInfo") or {}
+        if watching_page_info.get("hasNextPage") and watching_page_info.get("endCursor"):
+            watching_nodes.extend(self._paginate_user_connection(
+                _USER_WATCHING_PAGE, username, "watching",
+                watching_page_info["endCursor"], len(watching_nodes),
+            ))
+
         out: Dict[str, Any] = {
             "login": user["login"],
             "name": user.get("name") or "",
@@ -589,14 +672,8 @@ class GitHubGraphQLClient:
                     key="login",
                 )
             ),
-            "followers": _collect_logins(
-                (user.get("followers") or {}).get("nodes", []),
-                key="login",
-            ),
-            "following": _collect_logins(
-                (user.get("following") or {}).get("nodes", []),
-                key="login",
-            ),
+            "followers": _collect_logins(followers_nodes, key="login"),
+            "following": _collect_logins(following_nodes, key="login"),
             "starred": [
                 n["nameWithOwner"]
                 for n in starred_nodes
@@ -604,7 +681,7 @@ class GitHubGraphQLClient:
             ],
             "watching": [
                 n["nameWithOwner"]
-                for n in (user.get("watching") or {}).get("nodes", []) or []
+                for n in watching_nodes
                 if n and n.get("nameWithOwner")
             ],
         }
