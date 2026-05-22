@@ -32,6 +32,20 @@ def _rest_response(payload, status_code: int = 200):
     return resp
 
 
+def _rate_limited_response():
+    """A response from a hard-exhausted token: HTTP 200 with a RATE_LIMITED
+    GraphQL error and no `data` (hence no `rateLimit` block)."""
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.text = ""
+    resp.headers = {}
+    resp.json.return_value = {
+        "data": None,
+        "errors": [{"type": "RATE_LIMITED", "message": "API rate limit exceeded"}],
+    }
+    return resp
+
+
 @pytest.fixture()
 def gql_client():
     return GitHubGraphQLClient(tokens=["fake-token"])
@@ -513,3 +527,53 @@ def test_handle_rate_limit_healthy_response_clears_streak():
         slept.assert_not_called()
 
     assert client.current_token_idx == 0
+
+
+def test_graphql_rotates_and_retries_on_rate_limited_rejection():
+    """An already-exhausted token rejects the query (RATE_LIMITED, no
+    rateLimit block) — the client rotates to a fresh token and retries."""
+    client = GitHubGraphQLClient(tokens=["spent", "fresh"])
+
+    healthy = _gql_response({"user": None})
+    with patch.object(
+        client._http, "post", side_effect=[_rate_limited_response(), healthy]
+    ) as post:
+        body = client._graphql("query", {})
+
+    assert body is not None  # retried on the fresh token and got a real body
+    assert post.call_count == 2  # rejected once, retried once
+    assert client.current_token_idx == 1  # rotated past the spent token
+    assert client.stats["token_switches"] == 1
+
+
+def test_graphql_sleeps_after_sweeping_all_rate_limited_tokens():
+    """When every token rejects the query, sleep once then sweep again."""
+    client = GitHubGraphQLClient(tokens=["a", "b"])
+
+    healthy = _gql_response({"user": None})
+    with patch("open_pulse_crawler.graphql_client.time.sleep") as slept, patch.object(
+        client._http,
+        "post",
+        side_effect=[_rate_limited_response(), _rate_limited_response(), healthy],
+    ):
+        body = client._graphql("query", {})
+
+    slept.assert_called_once()  # one wait, after both tokens were tried
+    assert body is not None  # the post-reset sweep succeeded
+    assert client.stats["rate_limit_waits"] == 1
+
+
+def test_graphql_gives_up_when_all_tokens_stay_rate_limited():
+    """If every token is still rate-limited after the reset wait, give up
+    (return None) rather than looping forever."""
+    client = GitHubGraphQLClient(tokens=["a", "b"])
+
+    # 2 * ntok attempts, all rate-limited.
+    responses = [_rate_limited_response() for _ in range(4)]
+    with patch("open_pulse_crawler.graphql_client.time.sleep"), patch.object(
+        client._http, "post", side_effect=responses
+    ) as post:
+        body = client._graphql("query", {})
+
+    assert body is None
+    assert post.call_count == 4  # bounded at 2 * len(tokens)

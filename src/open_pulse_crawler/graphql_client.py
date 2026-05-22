@@ -437,63 +437,132 @@ class GitHubGraphQLClient:
 
     # ── HTTP helpers ────────────────────────────────────────────────────────
 
-    def _graphql(self, query: str, variables: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        # Capture the active token with its headers so the rate-limit handler
-        # acts on the token the request was actually issued under, even if a
-        # concurrent worker rotates in the meantime.
-        with self._token_lock:
-            headers = self._headers_graphql
-            token_idx = self.current_token_idx
-        try:
-            resp = self._http.post(
-                GRAPHQL_URL,
-                headers=headers,
-                json={"query": query, "variables": variables},
-            )
-        except httpx.HTTPError as e:
-            logger.warning(f"GraphQL transport error: {e}")
-            with self._stats_lock:
-                self.stats["errors"] += 1
-            return None
+    @staticmethod
+    def _is_rate_limited(status_code: int, body: Optional[Dict[str, Any]]) -> bool:
+        """True when a response means the active token is rate-limited.
 
-        with self._stats_lock:
-            self.stats["graphql_calls"] += 1
-
-        if resp.status_code != 200:
-            logger.warning(f"GraphQL HTTP {resp.status_code}: {resp.text[:200]}")
-            with self._stats_lock:
-                self.stats["errors"] += 1
-            return None
-
-        body = resp.json()
-        if body.get("errors"):
-            # Classify errors: NOT_FOUND is expected (entity may be a user vs
-            # org probe); INSUFFICIENT_SCOPES is a token-config problem the
-            # user must fix; everything else is a query bug or transient
-            # failure. Log accordingly so silent token-scope mismatches don't
-            # hide as "empty graph". Annotate the body so callers can branch
-            # without re-parsing the errors list.
+        An exhausted token has its query rejected before it runs: GitHub
+        returns HTTP 403/429, or HTTP 200 carrying a ``RATE_LIMITED`` GraphQL
+        error (with no ``rateLimit`` block). This is distinct from the
+        graceful case where a query succeeds and reports ``remaining: 0``.
+        """
+        if status_code in (403, 429):
+            return True
+        if body and body.get("errors"):
             kinds = {e.get("type") for e in body["errors"] if e}
-            msgs = "; ".join(
-                str(e.get("message", "")) for e in body["errors"] if e
-            )
-            body["_error_kinds"] = kinds
-            if kinds == {"NOT_FOUND"}:
-                logger.debug(f"GraphQL not-found for {variables}: {msgs}")
-            elif "INSUFFICIENT_SCOPES" in kinds:
-                logger.warning(
-                    f"GraphQL token scope problem for {variables}: {msgs}"
+            if "RATE_LIMITED" in kinds:
+                return True
+        return False
+
+    @staticmethod
+    def _reset_hint(resp: "httpx.Response") -> Optional[str]:
+        """Best-effort ISO-8601 reset time from rate-limit response headers."""
+        reset = resp.headers.get("x-ratelimit-reset")
+        if reset:
+            try:
+                import datetime as _dt
+
+                return _dt.datetime.fromtimestamp(
+                    int(reset), _dt.timezone.utc
+                ).isoformat()
+            except Exception:
+                pass
+        return None
+
+    def _graphql(self, query: str, variables: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """POST a GraphQL query, rotating tokens to survive rate limits.
+
+        An already-exhausted token rejects a query outright (see
+        ``_is_rate_limited``). On that, rotate to the next token and retry;
+        once every token has been tried, sleep until the window resets and
+        sweep once more before giving up. (``_handle_rate_limit`` is the
+        complementary *proactive* path: it rotates after a successful query
+        whose ``remaining`` hit 0, so the next query starts on a fresh token.)
+        """
+        ntok = len(self.tokens)
+        for attempt in range(2 * ntok):
+            # Capture the active token so the rate-limit handling acts on the
+            # token the request actually used, even if a peer worker rotates.
+            with self._token_lock:
+                headers = self._headers_graphql
+                token_idx = self.current_token_idx
+            try:
+                resp = self._http.post(
+                    GRAPHQL_URL,
+                    headers=headers,
+                    json={"query": query, "variables": variables},
                 )
-            else:
-                logger.warning(f"GraphQL errors for {variables}: {msgs}")
-        rl = (body.get("data") or {}).get("rateLimit") or {}
-        cost = rl.get("cost", 0) or 0
+            except httpx.HTTPError as e:
+                logger.warning(f"GraphQL transport error: {e}")
+                with self._stats_lock:
+                    self.stats["errors"] += 1
+                return None
+
+            with self._stats_lock:
+                self.stats["graphql_calls"] += 1
+
+            body = resp.json() if resp.status_code == 200 else None
+
+            if self._is_rate_limited(resp.status_code, body):
+                # The active token is exhausted — it rejected the query before
+                # running it. After sweeping every token once, wait for the
+                # window to reset, then sweep one more time.
+                logger.warning(
+                    "GraphQL: token %d/%d rate-limited (attempt %d/%d)",
+                    token_idx + 1, ntok, attempt + 1, 2 * ntok,
+                )
+                if attempt == ntok - 1:
+                    self._sleep_until_reset(self._reset_hint(resp))
+                with self._token_lock:
+                    if token_idx == self.current_token_idx:
+                        self._rotate_token()
+                continue
+
+            if resp.status_code != 200:
+                logger.warning(f"GraphQL HTTP {resp.status_code}: {resp.text[:200]}")
+                with self._stats_lock:
+                    self.stats["errors"] += 1
+                return None
+
+            if body.get("errors"):
+                # Classify errors: NOT_FOUND is expected (entity may be a user
+                # vs org probe); INSUFFICIENT_SCOPES is a token-config problem
+                # the user must fix; everything else is a query bug or
+                # transient failure. Log accordingly so silent token-scope
+                # mismatches don't hide as "empty graph". Annotate the body so
+                # callers can branch without re-parsing the errors list.
+                kinds = {e.get("type") for e in body["errors"] if e}
+                msgs = "; ".join(
+                    str(e.get("message", "")) for e in body["errors"] if e
+                )
+                body["_error_kinds"] = kinds
+                if kinds == {"NOT_FOUND"}:
+                    logger.debug(f"GraphQL not-found for {variables}: {msgs}")
+                elif "INSUFFICIENT_SCOPES" in kinds:
+                    logger.warning(
+                        f"GraphQL token scope problem for {variables}: {msgs}"
+                    )
+                else:
+                    logger.warning(f"GraphQL errors for {variables}: {msgs}")
+
+            rl = (body.get("data") or {}).get("rateLimit") or {}
+            cost = rl.get("cost", 0) or 0
+            with self._stats_lock:
+                self.stats["graphql_points"] += cost
+            # Proactive: rotate before the next query if this token hit 0.
+            self._handle_rate_limit(
+                token_idx, rl.get("remaining"), cost, rl.get("resetAt")
+            )
+            return body
+
+        logger.warning(
+            "GraphQL: every token rate-limited even after waiting for reset; "
+            "giving up on %s",
+            variables,
+        )
         with self._stats_lock:
-            self.stats["graphql_points"] += cost
-        # Rotate to the next token when this one's budget is spent; only sleep
-        # once every token has been tried and exhausted.
-        self._handle_rate_limit(token_idx, rl.get("remaining"), cost, rl.get("resetAt"))
-        return body
+            self.stats["errors"] += 1
+        return None
 
     def _rest_contributors(self, owner: str, name: str, limit: int = 10) -> List[str]:
         """Fetch up to `limit` top contributors via REST. Mirrors REST crawler behavior."""
