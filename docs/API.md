@@ -105,7 +105,7 @@ Starts a background BFS crawl and returns immediately with a job ID.
 | `crawl_dependents`   | `bool`        | no       | `false` | Crawl upstream dependents ("Used by")      |
 | `min_stars`          | `int`         | no       | `0`     | Min stars for dep/dependent filtering      |
 | `max_dependents`     | `int \| null` | no       | `null`  | Max dependents to fetch per repo (≥1)      |
-| `max_contributors`   | `int \| null` | no       | `null`  | Skip contributor expansion above N (≥1) — see below |
+| `max_contributors`   | `int \| null` | no       | `null`  | Optional per-repo contributor cap — take up to N (≥1), never skip; `null` = no cap — see below |
 | `batch_size`         | `int \| null` | no       | `null`  | Concurrent nodes per round (≥1)            |
 
 ```json
@@ -121,18 +121,18 @@ Starts a background BFS crawl and returns immediately with a job ID.
 
 #### `max_contributors`
 
-When set, repos with strictly more contributors than the threshold stay in the
-graph but **their contributor users are not queued for further BFS exploration**.
-Owner / fork / dependency / dependent edges are unaffected. The repo's
-`contributor_count` and a `skipped_high_contributors: true` flag are recorded on
-the node so downstream consumers can see why no contributors were expanded.
+An **optional** per-repo contributor limit. When set, at most N contributors
+are recorded and queued per repo, and a repo with more is **truncated to its
+top N — it still contributes, it is never skipped**. Owner / fork / dependency
+/ dependent edges are unaffected.
 
-The total count is read from cache when available (captured the first time a repo
-is fetched). On a cache miss the crawler issues a single `per_page=1` request to
-`/contributors` — one cheap call regardless of repo size — and writes the result
-through to the cache. Net cost is usually **negative** because skipping a
-mega-project saves the contributor pagination + the dozens of follow-up
-`get_user` calls those contributors would have triggered in the next round.
+Omitting the field (the default) means **no cap**: every contributor the GitHub
+API returns is recorded as a `CONTRIBUTES_TO` edge and queued for crawling.
+GitHub itself caps the contributors endpoint at ~500 for very large repos. The
+repo's total `contributor_count` is always recorded as metadata.
+
+Like every cap in this API, `max_contributors` means *take up to N* — never
+*skip to 0*.
 
 **Response** `202 Accepted`
 

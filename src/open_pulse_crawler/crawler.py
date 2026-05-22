@@ -60,11 +60,11 @@ class GitHubCrawler:
             issue_max: Maximum number of issues to scan per repo (most recent)
             pr_max: Maximum number of PRs to scan per repo (most recent)
             min_stars: Minimum stars for dependents/dependencies filtering
-            max_contributors: When set, repos with strictly more contributors are
-                kept in the graph but their contributor edges are NOT expanded
-                (no users queued from this repo). Useful for avoiding mega-projects
-                like the linux kernel that would dominate the BFS frontier.
-                Default ``None`` = unlimited.
+            max_contributors: Optional per-repo contributor limit. When set,
+                at most this many contributors are recorded and queued per
+                repo — a repo with more is truncated to the top N, never
+                skipped. ``None`` (the default) means no cap: every
+                contributor the GitHub API returns is recorded and queued.
             gimie_repos: When true, populate repository nodes from gimie JSON-LD.
             gimie_api_base: Base URL for the gimie JSON-LD API.
             gimie_store_jsonld_dir: Optional directory to store gimie JSON-LD payloads.
@@ -126,7 +126,20 @@ class GitHubCrawler:
         self.incremental_export_callback: Optional[Callable[[int], None]] = None
 
         logger.info(f"Crawler initialized with batch_size={self.batch_size}")
-    
+
+    def _contributor_limit(self) -> Optional[int]:
+        """How many contributors to take per repo, or None for no limit.
+
+        `max_contributors`, when set, is a take-up-to-N limit: a repo with
+        more contributors is truncated to the top N — never skipped. When
+        unset (the default), there is no cap — every contributor the GitHub
+        API returns is recorded and queued. (GitHub itself caps the
+        contributors endpoint at ~500 for very large repos.)
+
+        Returns an int usable as a slice bound; `None` slices the whole list.
+        """
+        return self.max_contributors
+
     def _track_discovered_node(self, node_type: str, identifier: str, parent_id: str = None, parent_type: str = None):
         """
         Track a discovered but not-yet-explored node for visualization purposes.
@@ -582,7 +595,11 @@ class GitHubCrawler:
                             exploration_timestamp=datetime.now().isoformat(),
                         )
 
-                        repo.contributors.extend(parsed.contributor_logins)
+                        # All contributors, or the top N if max_contributors is set.
+                        gimie_contributors = parsed.contributor_logins[
+                            : self._contributor_limit()
+                        ]
+                        repo.contributors.extend(gimie_contributors)
 
                         items_to_queue: List[tuple] = []
 
@@ -597,8 +614,8 @@ class GitHubCrawler:
                         )
                         items_to_queue.append((owner_node_type, parsed.owner_login))
 
-                        # Add contributors.
-                        for contributor_login in parsed.contributor_logins:
+                        # Add contributors (same take-up-to-N limit).
+                        for contributor_login in gimie_contributors:
                             kind = parsed.login_type_map.get(contributor_login)
                             node_type = (
                                 "org"
@@ -721,37 +738,19 @@ class GitHubCrawler:
                     owner_type = 'org' if owner_type_str == 'Organization' else 'user'
                     items_to_queue.append((owner_type, owner_login))
                 
-                # Apply the --max-contributors skip rule. The cached entry
-                # already carries ``contributor_count`` (captured the first
-                # time this repo was fetched) so this branch costs zero API
-                # calls. If the count is missing from the cache (older entry)
-                # we fall back to the live fetcher, which makes one cheap
-                # ``per_page=1`` request and writes through.
+                # Total contributor count (metadata) — captured in the cache
+                # the first time the repo was fetched.
                 cached_count = repo_obj.get('contributor_count')
                 if isinstance(cached_count, int):
                     repo.contributor_count = cached_count
-                elif self.max_contributors is not None:
-                    fetched = self.client.get_contributor_count(repo_full_name)
-                    if fetched is not None:
-                        repo.contributor_count = fetched
 
-                if (
-                    self.max_contributors is not None
-                    and repo.contributor_count is not None
-                    and repo.contributor_count > self.max_contributors
-                ):
-                    repo.skipped_high_contributors = True
-                    logger.info(
-                        f"Skipping contributor expansion for {repo_full_name} "
-                        f"({repo.contributor_count} contributors > "
-                        f"max_contributors={self.max_contributors})"
-                    )
-                else:
-                    # Use cached contributors data if available
-                    cached_contributors = repo_obj.get('contributors', [])
-                    repo.contributors.extend(cached_contributors)
-                    for contributor_login in cached_contributors:
-                        items_to_queue.append(('user', contributor_login))
+                # Record and queue every contributor. With an explicit
+                # `max_contributors`, truncate to the top N (a `None` slice
+                # bound keeps the whole list when there is no cap).
+                cached_contributors = repo_obj.get('contributors', [])
+                for contributor_login in cached_contributors[:self._contributor_limit()]:
+                    repo.contributors.append(contributor_login)
+                    items_to_queue.append(('user', contributor_login))
 
                 # Cached issue/PR activity (populated by the GraphQL client when
                 # crawl_issues/crawl_prs are set; REST cache omits these).
@@ -850,10 +849,10 @@ class GitHubCrawler:
                 owner_type = 'org' if repo_obj.owner.type == 'Organization' else 'user'
                 items_to_queue.append((owner_type, repo_obj.owner.login))
                 
-                # Get contributors from live API (limited to avoid too many API calls).
-                # ``totalCount`` is one cheap ``per_page=1`` request; we read it
-                # before iterating so the --max-contributors skip rule can
-                # kick in without paginating the full list of a megaproject.
+                # Get contributors from the live API. ``totalCount`` is one
+                # cheap ``per_page=1`` request kept as metadata. Every
+                # contributor is recorded and queued; an explicit
+                # `max_contributors` truncates to the top N (never skips).
                 try:
                     contributors = self.client._make_request(repo_obj.get_contributors)
                     try:
@@ -863,23 +862,12 @@ class GitHubCrawler:
                             f"Failed to read contributor totalCount for {repo_full_name}: {e}"
                         )
 
-                    if (
-                        self.max_contributors is not None
-                        and repo.contributor_count is not None
-                        and repo.contributor_count > self.max_contributors
-                    ):
-                        repo.skipped_high_contributors = True
-                        logger.info(
-                            f"Skipping contributor expansion for {repo_full_name} "
-                            f"({repo.contributor_count} contributors > "
-                            f"max_contributors={self.max_contributors})"
-                        )
-                    else:
-                        for i, contributor in enumerate(contributors):
-                            if i >= 10:  # Limit to top 10 contributors
-                                break
-                            repo.contributors.append(contributor.login)
-                            items_to_queue.append(('user', contributor.login))
+                    limit = self._contributor_limit()
+                    for i, contributor in enumerate(contributors):
+                        if limit is not None and i >= limit:
+                            break
+                        repo.contributors.append(contributor.login)
+                        items_to_queue.append(('user', contributor.login))
                 except Exception as e:
                     logger.warning(f"Failed to get contributors for repo {repo_full_name}: {e}")
                 

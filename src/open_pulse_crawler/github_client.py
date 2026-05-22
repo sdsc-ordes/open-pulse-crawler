@@ -490,11 +490,11 @@ class GitHubClient:
             repo = self._make_request(self.current_client.get_repo, repo_full_name)
             if repo and self.cache:
                 # Fetch and cache contributors along with basic repo info.
-                # ``totalCount`` triggers a single ``per_page=1`` request whose
-                # ``Link: rel="last"`` header carries the page count — that page
-                # number IS the total, in one cheap call regardless of repo size.
-                # We persist it so future crawls (or the ``--max-contributors``
-                # skip rule) can read it from cache without round-tripping.
+                # ``totalCount`` is kept as metadata. Every contributor login
+                # is cached — the crawler decides how many to use (all by
+                # default, or the top N when ``max_contributors`` is set).
+                # GitHub itself caps the contributors endpoint at ~500 for
+                # very large repos, so this list is naturally bounded.
                 contributors_data = []
                 contributors_total: Optional[int] = None
                 try:
@@ -505,8 +505,7 @@ class GitHubClient:
                         logger.debug(
                             f"Failed to read contributor totalCount for {repo_full_name}: {e}"
                         )
-                    # Limit to top 10 contributors for caching
-                    contributors_data = [c.login for i, c in enumerate(contributors) if i < 10]
+                    contributors_data = [c.login for c in contributors]
                 except Exception as e:
                     logger.warning(f"Failed to get contributors for caching repo {repo_full_name}: {e}")
 

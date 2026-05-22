@@ -161,14 +161,14 @@ def _crawl_form() -> None:
         with st.expander("Performance & filtering", expanded=False):
             col_c, col_d = st.columns(2)
             max_contributors = col_c.number_input(
-                "Max contributors (0 = unlimited)",
+                "Max contributors per repo (0 = no cap)",
                 min_value=0,
                 value=0,
                 step=50,
                 help=(
-                    "Skip contributor expansion for repos above this threshold. "
-                    "The repo node still lands in the graph; only its contributors "
-                    "are not queued. Useful for avoiding mega-projects."
+                    "Optional limit: take up to this many contributors per "
+                    "repo (a repo with more is truncated to the top N, never "
+                    "skipped). Leave 0 for no cap — every contributor is taken."
                 ),
             )
             batch_size = col_d.number_input(

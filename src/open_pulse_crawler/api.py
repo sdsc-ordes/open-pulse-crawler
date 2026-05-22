@@ -12,7 +12,16 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import BackgroundTasks, Body, Depends, FastAPI, HTTPException, status
+from fastapi import (
+    BackgroundTasks,
+    Body,
+    Depends,
+    FastAPI,
+    HTTPException,
+    Query,
+    status,
+)
+from fastapi import Path as PathParam  # aliased: `Path` is pathlib.Path here
 from pydantic import BaseModel, Field
 
 from . import __version__
@@ -61,9 +70,10 @@ class CrawlRequest(BaseModel):
         default=None,
         ge=1,
         description=(
-            "Skip contributor expansion for repos with more than N contributors. "
-            "The repo node stays in the graph; only its contributor users are "
-            "not queued. Useful for avoiding mega-projects."
+            "Optional per-repo contributor limit. When set, at most N "
+            "contributors are recorded and queued per repo — a repo with more "
+            "is truncated to the top N, never skipped. Omit (the default) for "
+            "no cap: every contributor is recorded and queued."
         ),
     )
     crawl_issues: bool = Field(
@@ -129,16 +139,14 @@ _CRAWL_REQUEST_EXAMPLES = {
             "max_dependents": 50,
         },
     },
-    "epfl_with_megaproject_skip": {
-        "summary": "Skip mega-projects by contributor count",
+    "epfl_with_contributor_cap": {
+        "summary": "Cap contributors per repo",
         "description": (
-            "Crawl from an EPFL-flavoured seed list and skip contributor "
-            "expansion for any repo with more than 200 contributors. The repo "
-            "node still lands in the graph (with owner / fork / dependency "
-            "edges if those are enabled), but its contributors are not queued "
-            "as new BFS frontier nodes. The first time a repo is fetched the "
-            "count is captured and cached, so subsequent crawls re-apply the "
-            "rule without further API calls."
+            "Crawl from an EPFL-flavoured seed list, taking up to 200 "
+            "contributors per repo. A repo with more contributors than the "
+            "cap is truncated to its top 200 — it still contributes, it is "
+            "never skipped. Raise or lower the number to trade BFS breadth "
+            "against crawl size."
         ),
         "value": {
             "seeds": ["epfl", "dslab-epfl", "sdsc-ordes/gimie"],
@@ -150,59 +158,184 @@ _CRAWL_REQUEST_EXAMPLES = {
 
 
 class CrawlJobResponse(BaseModel):
-    job_id: str
-    status: JobStatus
-    detail: Optional[str] = None
+    """Acknowledgement returned when a crawl job is accepted."""
+
+    job_id: str = Field(
+        description="Unique job identifier — pass it to every follow-up call.",
+        examples=["d290f1ee-6c54-4b01-90e6-d701748f0851"],
+    )
+    status: JobStatus = Field(
+        description="Job status at submission time (always `pending`).",
+        examples=["pending"],
+    )
+    detail: Optional[str] = Field(
+        default=None, description="Human-readable note, when relevant."
+    )
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "job_id": "d290f1ee-6c54-4b01-90e6-d701748f0851",
+                    "status": "pending",
+                    "detail": None,
+                }
+            ]
+        }
+    }
 
 
 class CrawlResultResponse(BaseModel):
-    job_id: str
-    status: JobStatus
-    detail: Optional[str] = None
-    users: int = 0
-    orgs: int = 0
-    repos: int = 0
-    # Progress + timing — populated for running and completed jobs alike.
-    started_at: Optional[datetime] = None
-    completed_at: Optional[datetime] = None
-    current_round: Optional[int] = None
-    nodes_processed: int = 0
-    nodes_in_queue: int = 0
-    # Best-effort ETA based on the current processing rate. Drifts a lot mid-BFS
-    # because the queue grows as the crawl expands; useful as a rough hint, not
-    # a guarantee.
-    estimated_completion_at: Optional[datetime] = None
+    """Job status, summary counts, and — while running — live progress + ETA."""
+
+    job_id: str = Field(description="Job identifier.")
+    status: JobStatus = Field(description="Current job status.")
+    detail: Optional[str] = Field(
+        default=None, description="Error message (failed jobs) or a status note."
+    )
+    users: int = Field(default=0, description="Users discovered so far.")
+    orgs: int = Field(default=0, description="Organizations discovered so far.")
+    repos: int = Field(default=0, description="Repositories discovered so far.")
+    started_at: Optional[datetime] = Field(
+        default=None, description="UTC timestamp when the crawl began."
+    )
+    completed_at: Optional[datetime] = Field(
+        default=None, description="UTC timestamp when the crawl reached a terminal state."
+    )
+    current_round: Optional[int] = Field(
+        default=None, description="BFS round currently in progress (running jobs only)."
+    )
+    nodes_processed: int = Field(
+        default=0, description="Nodes visited so far across all rounds."
+    )
+    nodes_in_queue: int = Field(
+        default=0, description="Nodes still queued for exploration."
+    )
+    estimated_completion_at: Optional[datetime] = Field(
+        default=None,
+        description=(
+            "Best-effort ETA from the current processing rate. The queue grows "
+            "as the crawl expands, so this drifts — treat it as a rough hint."
+        ),
+    )
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "summary": "Running job with live progress",
+                    "value": {
+                        "job_id": "d290f1ee-6c54-4b01-90e6-d701748f0851",
+                        "status": "running",
+                        "detail": None,
+                        "users": 38,
+                        "orgs": 4,
+                        "repos": 121,
+                        "started_at": "2026-05-22T10:00:00Z",
+                        "completed_at": None,
+                        "current_round": 2,
+                        "nodes_processed": 163,
+                        "nodes_in_queue": 540,
+                        "estimated_completion_at": "2026-05-22T10:04:30Z",
+                    },
+                },
+                {
+                    "summary": "Completed job",
+                    "value": {
+                        "job_id": "d290f1ee-6c54-4b01-90e6-d701748f0851",
+                        "status": "completed",
+                        "detail": None,
+                        "users": 96,
+                        "orgs": 7,
+                        "repos": 412,
+                        "started_at": "2026-05-22T10:00:00Z",
+                        "completed_at": "2026-05-22T10:05:12Z",
+                        "current_round": None,
+                        "nodes_processed": 515,
+                        "nodes_in_queue": 0,
+                        "estimated_completion_at": None,
+                    },
+                },
+            ]
+        }
+    }
 
 
 class JobSummary(BaseModel):
-    job_id: str
-    status: JobStatus
-    started_at: Optional[datetime] = None
-    completed_at: Optional[datetime] = None
-    users: int = 0
-    orgs: int = 0
-    repos: int = 0
-    detail: Optional[str] = None
+    """One row in the `GET /api/v1/jobs` listing."""
+
+    job_id: str = Field(description="Job identifier.")
+    status: JobStatus = Field(description="Current job status.")
+    started_at: Optional[datetime] = Field(
+        default=None, description="UTC timestamp when the crawl began."
+    )
+    completed_at: Optional[datetime] = Field(
+        default=None, description="UTC timestamp when the crawl finished."
+    )
+    users: int = Field(default=0, description="Users discovered.")
+    orgs: int = Field(default=0, description="Organizations discovered.")
+    repos: int = Field(default=0, description="Repositories discovered.")
+    detail: Optional[str] = Field(default=None, description="Status note, when relevant.")
 
 
 class JobsListResponse(BaseModel):
-    jobs: List[JobSummary]
-    total: int
+    """All jobs in the in-memory registry, newest first."""
+
+    jobs: List[JobSummary] = Field(description="Job summaries, ordered newest-first.")
+    total: int = Field(description="Number of jobs returned.", examples=[3])
 
 
 class GraphResponse(BaseModel):
-    job_id: str
-    graph: dict
-    # True when the graph is a partial snapshot (job not COMPLETED, or the
-    # in-memory record was lost and only an on-disk snapshot remains).
-    partial: bool = False
-    status: Optional[JobStatus] = None
-    rounds_completed: Optional[int] = None
+    """The discovered graph plus metadata about how complete it is."""
+
+    job_id: str = Field(description="Job identifier.")
+    graph: dict = Field(
+        description=(
+            "The crawl graph: `users`, `orgs`, `repos`, and `teams` keyed by "
+            "identifier. See the GraphData model for the per-entity shape."
+        )
+    )
+    partial: bool = Field(
+        default=False,
+        description=(
+            "True when this graph is not a final completed result — a running, "
+            "cancelled, or failed job, or a snapshot recovered after restart."
+        ),
+    )
+    status: Optional[JobStatus] = Field(
+        default=None, description="Status the graph reflects."
+    )
+    rounds_completed: Optional[int] = Field(
+        default=None, description="BFS rounds reflected in this graph."
+    )
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "job_id": "d290f1ee-6c54-4b01-90e6-d701748f0851",
+                    "graph": {
+                        "users": {
+                            "torvalds": {"login": "torvalds", "name": "Linus Torvalds"}
+                        },
+                        "orgs": {},
+                        "repos": {},
+                        "teams": {},
+                    },
+                    "partial": False,
+                    "status": "completed",
+                    "rounds_completed": 2,
+                }
+            ]
+        }
+    }
 
 
 class HealthResponse(BaseModel):
-    status: str = "ok"
-    version: str
+    """Liveness probe payload."""
+
+    status: str = Field(default="ok", description="Always `ok` when reachable.")
+    version: str = Field(description="Running package version.", examples=["0.1.0"])
 
 
 # ---------------------------------------------------------------------------
@@ -571,17 +704,92 @@ def _run_crawl_graphql(
 # FastAPI application
 # ---------------------------------------------------------------------------
 
+_API_DESCRIPTION = """
+A breadth-first crawler that maps relationships between GitHub **users**,
+**organizations**, and **repositories**.
+
+### Typical flow
+
+1. `POST /api/v1/crawl` — submit seeds, get a `job_id` back immediately.
+   (`POST /api/v1/crawl/graphql` is the GraphQL-backed variant — same body,
+   far fewer API calls.)
+2. `GET /api/v1/crawl/{job_id}` — poll for live progress: current round,
+   nodes processed, queue size, and a best-effort ETA.
+3. `GET /api/v1/graph/{job_id}` — fetch the discovered graph once the job is
+   `completed`. Add `?partial=true` to read a partial graph from a running,
+   cancelled, or failed job.
+
+Long-running jobs can be **paused**, **cancelled**, and **resumed** — see the
+*Job lifecycle* endpoints. A cancelled or failed job can be resumed from its
+last persisted state instead of re-crawling from scratch.
+
+### Authentication
+
+Every endpoint except `GET /api/v1/health` requires a Bearer token, validated
+against the `API_TOKEN` environment variable:
+
+```
+Authorization: Bearer <token>
+```
+"""
+
+_OPENAPI_TAGS = [
+    {"name": "Health", "description": "Unauthenticated liveness check."},
+    {
+        "name": "Crawl",
+        "description": "Submit crawl jobs and read their status, progress, and results.",
+    },
+    {
+        "name": "Job lifecycle",
+        "description": (
+            "Pause, resume, cancel, and delete jobs. Pause/cancel are "
+            "cooperative — they take effect at the next BFS round boundary."
+        ),
+    },
+    {
+        "name": "Graph",
+        "description": "Fetch the discovered graph — full (completed jobs) or partial.",
+    },
+]
+
 app = FastAPI(
     title="Open Pulse Crawler API",
     version=__version__,
+    description=_API_DESCRIPTION,
+    openapi_tags=_OPENAPI_TAGS,
+    contact={
+        "name": "Open Pulse Crawler",
+        "url": "https://github.com/sdsc-ordes/open-pulse-crawler",
+    },
+    license_info={"name": "See repository LICENSE"},
     docs_url="/api/v1/docs",
     openapi_url="/api/v1/openapi.json",
 )
 
 
-@app.get("/api/v1/health", response_model=HealthResponse)
+# Reusable error-response documentation for the OpenAPI schema. Spread into a
+# route's `responses=` so Swagger shows the failure cases, not just 200/202.
+_RESP_AUTH = {
+    401: {"description": "Missing or invalid Bearer token"},
+    403: {"description": "Authorization header missing or not a Bearer token"},
+}
+_RESP_JOB_NOT_FOUND = {404: {"description": "No job exists with that `job_id`"}}
+_RESP_JOB_CONFLICT = {
+    409: {"description": "The job's current status does not allow this action"}
+}
+
+
+@app.get(
+    "/api/v1/health",
+    response_model=HealthResponse,
+    tags=["Health"],
+    summary="Liveness check",
+)
 def health() -> HealthResponse:
-    """Public health-check endpoint."""
+    """Unauthenticated health check — returns `ok` and the running version.
+
+    Use this for container/orchestrator probes. It needs no Bearer token.
+    """
     return HealthResponse(status="ok", version=__version__)
 
 
@@ -589,13 +797,23 @@ def health() -> HealthResponse:
     "/api/v1/crawl",
     response_model=CrawlJobResponse,
     status_code=status.HTTP_202_ACCEPTED,
+    tags=["Crawl"],
+    summary="Start a crawl (REST)",
+    responses={**_RESP_AUTH},
 )
 def start_crawl(
     background_tasks: BackgroundTasks,
     body: CrawlRequest = Body(..., openapi_examples=_CRAWL_REQUEST_EXAMPLES),
     _token: str = Depends(verify_token),
 ) -> CrawlJobResponse:
-    """Start a new crawl job (runs in the background)."""
+    """Start a new crawl job. It runs in the background and returns a
+    `job_id` straight away — poll `GET /api/v1/crawl/{job_id}` for progress
+    and fetch the result from `GET /api/v1/graph/{job_id}` once `completed`.
+
+    **Tip:** in *Try it out*, open the **Examples** dropdown on the request
+    body to prefill a ready-to-send payload (single repo, org crawl, repo
+    with dependents, or a mega-project-skip crawl).
+    """
     job_id = str(uuid.uuid4())
     _jobs[job_id] = _JobRecord()
     _persist_request(job_id, body, mode="rest")
@@ -622,18 +840,27 @@ def start_crawl(
     "/api/v1/crawl/graphql",
     response_model=CrawlJobResponse,
     status_code=status.HTTP_202_ACCEPTED,
+    tags=["Crawl"],
+    summary="Start a crawl (GraphQL)",
+    responses={**_RESP_AUTH},
 )
 def start_crawl_graphql(
     background_tasks: BackgroundTasks,
     body: CrawlRequest = Body(..., openapi_examples=_CRAWL_REQUEST_EXAMPLES),
     _token: str = Depends(verify_token),
 ) -> CrawlJobResponse:
-    """Start a crawl using the GraphQL-backed client.
+    """Start a crawl using the **GraphQL-backed** client.
 
-    Same request body as ``POST /api/v1/crawl``. GraphQL covers user / org /
-    repo metadata, follows / stars / watching, teams, and issue/PR activity;
-    contributors, SBOM dependencies, and the "Used by" dependents graph fall
-    back to REST. Gimie hybrid mode is not available on this endpoint.
+    Same request body and response as `POST /api/v1/crawl`, but fetches user
+    / org / repo metadata in one GraphQL query per entity instead of dozens
+    of REST calls — far cheaper on rate limits, especially with
+    `crawl_issues` / `crawl_prs` enabled.
+
+    GraphQL covers metadata, follows / stars / watching, teams, and issue/PR
+    activity. Contributors, SBOM dependencies, and the "Used by" dependents
+    graph still fall back to REST. Gimie hybrid mode is **not** available on
+    this endpoint — use `POST /api/v1/crawl` for that. Org-level fields
+    require a token with the `read:org` scope.
     """
     job_id = str(uuid.uuid4())
     _jobs[job_id] = _JobRecord()
@@ -702,12 +929,26 @@ def _estimate_completion(
     return datetime.now(timezone.utc) + timedelta(seconds=remaining_seconds)
 
 
-@app.get("/api/v1/crawl/{job_id}", response_model=CrawlResultResponse)
+@app.get(
+    "/api/v1/crawl/{job_id}",
+    response_model=CrawlResultResponse,
+    tags=["Crawl"],
+    summary="Get job status & progress",
+    responses={**_RESP_AUTH, **_RESP_JOB_NOT_FOUND},
+)
 def get_crawl_status(
-    job_id: str,
+    job_id: str = PathParam(
+        description="Job identifier returned by `POST /api/v1/crawl`.",
+        examples=["d290f1ee-6c54-4b01-90e6-d701748f0851"],
+    ),
     _token: str = Depends(verify_token),
 ) -> CrawlResultResponse:
-    """Get status, progress, and summary of a crawl job."""
+    """Status, summary counts, and — for running jobs — live BFS progress:
+    current round, nodes processed, queue size, and a best-effort ETA.
+
+    Poll this while a crawl runs; switch to `GET /api/v1/graph/{job_id}` once
+    the status is `completed`.
+    """
     record = _jobs.get(job_id)
     if record is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
@@ -738,15 +979,25 @@ def get_crawl_status(
     return resp
 
 
-@app.get("/api/v1/jobs", response_model=JobsListResponse)
+@app.get(
+    "/api/v1/jobs",
+    response_model=JobsListResponse,
+    tags=["Crawl"],
+    summary="List all jobs",
+    responses={**_RESP_AUTH},
+)
 def list_jobs(
-    status_filter: Optional[JobStatus] = None,
+    status_filter: Optional[JobStatus] = Query(
+        default=None,
+        description="Return only jobs in this status (e.g. `completed`).",
+        examples=["completed"],
+    ),
     _token: str = Depends(verify_token),
 ) -> JobsListResponse:
-    """List all known jobs with status + counts.
+    """List every job in the in-memory registry, newest first.
 
-    Optional ``status_filter`` query param narrows to one ``JobStatus``
-    (e.g. ``?status_filter=completed`` for jobs ready to download).
+    Pass `?status_filter=` to narrow to one status — for example
+    `?status_filter=completed` to find jobs whose graph is ready to fetch.
     """
     summaries: List[JobSummary] = []
     for jid, rec in _jobs.items():
@@ -779,18 +1030,38 @@ def list_jobs(
     return JobsListResponse(jobs=summaries, total=len(summaries))
 
 
-@app.get("/api/v1/graph/{job_id}", response_model=GraphResponse)
+@app.get(
+    "/api/v1/graph/{job_id}",
+    response_model=GraphResponse,
+    tags=["Graph"],
+    summary="Fetch the graph",
+    responses={**_RESP_AUTH, **_RESP_JOB_NOT_FOUND, **_RESP_JOB_CONFLICT},
+)
 def get_graph(
-    job_id: str,
-    partial: bool = False,
+    job_id: str = PathParam(
+        description="Job identifier returned by `POST /api/v1/crawl`.",
+        examples=["d290f1ee-6c54-4b01-90e6-d701748f0851"],
+    ),
+    partial: bool = Query(
+        default=False,
+        description=(
+            "When false (default), only a `completed` job is served — "
+            "otherwise `409`. When true, a partial graph is returned from a "
+            "running / cancelled / failed job, or recovered from the last "
+            "on-disk snapshot if the in-memory record was lost."
+        ),
+    ),
     _token: str = Depends(verify_token),
 ) -> GraphResponse:
     """Return graph data for a crawl job.
 
-    Default (strict): only a COMPLETED job held in memory is served. Pass
-    ``?partial=true`` to also read a partial graph — from a running /
+    **Strict (default):** only a `completed` job held in memory is served;
+    anything else returns `409`.
+
+    **`?partial=true`:** also serves a partial graph — from a running /
     cancelled / failed job, or, if the in-memory record is gone (container
-    restart), from the last per-round disk snapshot keyed by ``job_id``.
+    restart), from the last per-round disk snapshot keyed by `job_id`. The
+    `partial` field in the response flags non-final output.
     """
     record = _jobs.get(job_id)
 
@@ -863,9 +1134,27 @@ def get_graph(
 # graph in a consistent state (partial but not torn).
 
 class JobActionResponse(BaseModel):
-    job_id: str
-    status: JobStatus
-    detail: Optional[str] = None
+    """Result of a lifecycle action (pause / resume / cancel / delete)."""
+
+    job_id: str = Field(description="Job identifier.")
+    status: JobStatus = Field(
+        description="Job status after the action was applied or requested."
+    )
+    detail: Optional[str] = Field(
+        default=None, description="What the action did, in human-readable form."
+    )
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "job_id": "d290f1ee-6c54-4b01-90e6-d701748f0851",
+                    "status": "paused",
+                    "detail": "paused",
+                }
+            ]
+        }
+    }
 
 
 def _job_or_404(job_id: str) -> _JobRecord:
@@ -875,9 +1164,18 @@ def _job_or_404(job_id: str) -> _JobRecord:
     return record
 
 
-@app.post("/api/v1/crawl/{job_id}/pause", response_model=JobActionResponse)
+@app.post(
+    "/api/v1/crawl/{job_id}/pause",
+    response_model=JobActionResponse,
+    tags=["Job lifecycle"],
+    summary="Pause a running job",
+    responses={**_RESP_AUTH, **_RESP_JOB_NOT_FOUND, **_RESP_JOB_CONFLICT},
+)
 def pause_crawl(
-    job_id: str,
+    job_id: str = PathParam(
+        description="Job identifier of a `running` job.",
+        examples=["d290f1ee-6c54-4b01-90e6-d701748f0851"],
+    ),
     _token: str = Depends(verify_token),
 ) -> JobActionResponse:
     """Request the BFS loop to pause between rounds.
@@ -899,10 +1197,19 @@ def pause_crawl(
     return JobActionResponse(job_id=job_id, status=record.status, detail=record.detail)
 
 
-@app.post("/api/v1/crawl/{job_id}/resume", response_model=JobActionResponse)
+@app.post(
+    "/api/v1/crawl/{job_id}/resume",
+    response_model=JobActionResponse,
+    tags=["Job lifecycle"],
+    summary="Resume a paused, cancelled, or failed job",
+    responses={**_RESP_AUTH, **_RESP_JOB_NOT_FOUND, **_RESP_JOB_CONFLICT},
+)
 def resume_crawl(
-    job_id: str,
     background_tasks: BackgroundTasks,
+    job_id: str = PathParam(
+        description="Job identifier of a `paused`, `cancelled`, or `failed` job.",
+        examples=["d290f1ee-6c54-4b01-90e6-d701748f0851"],
+    ),
     _token: str = Depends(verify_token),
 ) -> JobActionResponse:
     """Resume a job.
@@ -976,9 +1283,18 @@ def resume_crawl(
     )
 
 
-@app.post("/api/v1/crawl/{job_id}/cancel", response_model=JobActionResponse)
+@app.post(
+    "/api/v1/crawl/{job_id}/cancel",
+    response_model=JobActionResponse,
+    tags=["Job lifecycle"],
+    summary="Cancel a job",
+    responses={**_RESP_AUTH, **_RESP_JOB_NOT_FOUND, **_RESP_JOB_CONFLICT},
+)
 def cancel_crawl(
-    job_id: str,
+    job_id: str = PathParam(
+        description="Job identifier of a `pending`, `running`, or `paused` job.",
+        examples=["d290f1ee-6c54-4b01-90e6-d701748f0851"],
+    ),
     _token: str = Depends(verify_token),
 ) -> JobActionResponse:
     """Ask the BFS loop to stop at the next round boundary.
@@ -1004,14 +1320,24 @@ def cancel_crawl(
     return JobActionResponse(job_id=job_id, status=record.status, detail=record.detail)
 
 
-@app.delete("/api/v1/crawl/{job_id}", response_model=JobActionResponse)
+@app.delete(
+    "/api/v1/crawl/{job_id}",
+    response_model=JobActionResponse,
+    tags=["Job lifecycle"],
+    summary="Delete a terminal job",
+    responses={**_RESP_AUTH, **_RESP_JOB_NOT_FOUND, **_RESP_JOB_CONFLICT},
+)
 def delete_crawl(
-    job_id: str,
+    job_id: str = PathParam(
+        description="Job identifier of a terminal job (completed / failed / "
+        "cancelled / pending).",
+        examples=["d290f1ee-6c54-4b01-90e6-d701748f0851"],
+    ),
     _token: str = Depends(verify_token),
 ) -> JobActionResponse:
     """Drop a terminal job from the in-memory registry.
 
-    Refuses to delete a still-active job (RUNNING / PAUSED) — cancel it
+    Refuses to delete a still-active job (`running` / `paused`) — cancel it
     first. Useful for clearing the listing in long-lived deployments.
     """
     record = _job_or_404(job_id)
