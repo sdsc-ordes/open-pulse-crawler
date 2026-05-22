@@ -194,11 +194,9 @@ def crawl(
         None,
         "--max-contributors",
         help=(
-            "Skip contributor expansion for repos with more than N contributors. "
-            "The repo node stays in the graph (with owner / fork / deps); only "
-            "contributor users are not queued. Useful for avoiding mega-projects "
-            "(e.g. linux kernel) that would dominate the BFS frontier. "
-            "Default: None = unlimited."
+            "Per-repo contributor limit: take up to N contributors per repo. "
+            "A repo with more is truncated to the top N — never skipped. "
+            "Default: built-in cap (10)."
         ),
     ),
     verbose: bool = typer.Option(

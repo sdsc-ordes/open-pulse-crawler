@@ -70,9 +70,9 @@ class CrawlRequest(BaseModel):
         default=None,
         ge=1,
         description=(
-            "Skip contributor expansion for repos with more than N contributors. "
-            "The repo node stays in the graph; only its contributor users are "
-            "not queued. Useful for avoiding mega-projects."
+            "Per-repo contributor limit. At most N contributors are recorded "
+            "and queued per repo — a repo with more is truncated to the top N, "
+            "never skipped. Omit to use the built-in default cap."
         ),
     )
     crawl_issues: bool = Field(
@@ -138,16 +138,14 @@ _CRAWL_REQUEST_EXAMPLES = {
             "max_dependents": 50,
         },
     },
-    "epfl_with_megaproject_skip": {
-        "summary": "Skip mega-projects by contributor count",
+    "epfl_with_contributor_cap": {
+        "summary": "Cap contributors per repo",
         "description": (
-            "Crawl from an EPFL-flavoured seed list and skip contributor "
-            "expansion for any repo with more than 200 contributors. The repo "
-            "node still lands in the graph (with owner / fork / dependency "
-            "edges if those are enabled), but its contributors are not queued "
-            "as new BFS frontier nodes. The first time a repo is fetched the "
-            "count is captured and cached, so subsequent crawls re-apply the "
-            "rule without further API calls."
+            "Crawl from an EPFL-flavoured seed list, taking up to 200 "
+            "contributors per repo. A repo with more contributors than the "
+            "cap is truncated to its top 200 — it still contributes, it is "
+            "never skipped. Raise or lower the number to trade BFS breadth "
+            "against crawl size."
         ),
         "value": {
             "seeds": ["epfl", "dslab-epfl", "sdsc-ordes/gimie"],

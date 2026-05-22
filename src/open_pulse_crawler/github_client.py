@@ -22,6 +22,12 @@ logger = logging.getLogger(__name__)
 CACHE_DIR_ENV = "OPC_CACHE_DIR"
 DEFAULT_CACHE_DIR = "data/open-pulse-crawler/cache"
 
+# How many contributor logins to store per repo in the cache. One GitHub
+# contributors page holds up to 100, so this stays a single extra request.
+# A crawl with `max_contributors` above this still works — it just truncates
+# to whatever the cache holds on a cache hit.
+CONTRIBUTOR_CACHE_LIMIT = 100
+
 
 def resolve_cache_dir(explicit: Optional[Path] = None) -> Optional[Path]:
     """Resolve the API response cache directory.
@@ -493,8 +499,9 @@ class GitHubClient:
                 # ``totalCount`` triggers a single ``per_page=1`` request whose
                 # ``Link: rel="last"`` header carries the page count — that page
                 # number IS the total, in one cheap call regardless of repo size.
-                # We persist it so future crawls (or the ``--max-contributors``
-                # skip rule) can read it from cache without round-tripping.
+                # We persist it as metadata. The contributor logins are cached
+                # up to CONTRIBUTOR_CACHE_LIMIT so a crawl with a larger
+                # ``max_contributors`` has data to take from on a cache hit.
                 contributors_data = []
                 contributors_total: Optional[int] = None
                 try:
@@ -505,8 +512,11 @@ class GitHubClient:
                         logger.debug(
                             f"Failed to read contributor totalCount for {repo_full_name}: {e}"
                         )
-                    # Limit to top 10 contributors for caching
-                    contributors_data = [c.login for i, c in enumerate(contributors) if i < 10]
+                    contributors_data = [
+                        c.login
+                        for i, c in enumerate(contributors)
+                        if i < CONTRIBUTOR_CACHE_LIMIT
+                    ]
                 except Exception as e:
                     logger.warning(f"Failed to get contributors for caching repo {repo_full_name}: {e}")
 
