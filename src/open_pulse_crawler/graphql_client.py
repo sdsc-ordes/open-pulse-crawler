@@ -441,16 +441,25 @@ class GitHubGraphQLClient:
     def _is_rate_limited(status_code: int, body: Optional[Dict[str, Any]]) -> bool:
         """True when a response means the active token is rate-limited.
 
-        An exhausted token has its query rejected before it runs: GitHub
-        returns HTTP 403/429, or HTTP 200 carrying a ``RATE_LIMITED`` GraphQL
-        error (with no ``rateLimit`` block). This is distinct from the
-        graceful case where a query succeeds and reports ``remaining: 0``.
+        An exhausted token has its query rejected before it runs. Detected by:
+          * HTTP 403 / 429, or
+          * a GraphQL error whose ``type`` is a rate-limit type, or
+          * a GraphQL error whose ``message`` mentions "rate limit".
+
+        The message check is the reliable signal — GitHub's wording varies
+        ("RATE_LIMITED" vs "RATE_LIMIT", and some rate-limit errors carry no
+        ``type`` at all), but the message always says "rate limit exceeded".
+        This is distinct from the graceful case where a query succeeds and
+        reports ``remaining: 0``.
         """
         if status_code in (403, 429):
             return True
-        if body and body.get("errors"):
-            kinds = {e.get("type") for e in body["errors"] if e}
-            if "RATE_LIMITED" in kinds:
+        for err in (body or {}).get("errors") or []:
+            if not err:
+                continue
+            if str(err.get("type") or "").upper() in ("RATE_LIMITED", "RATE_LIMIT"):
+                return True
+            if "rate limit" in str(err.get("message") or "").lower():
                 return True
         return False
 
