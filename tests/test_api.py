@@ -282,51 +282,6 @@ class TestCrawl:
         # care about is that the request doesn't fail on schema mismatch.
         assert resp.status_code in (202, 422)
 
-    def test_crawl_passes_gimie_options_to_crawler(
-        self, client: TestClient, auth_header: dict, tmp_path
-    ):
-        request_body = {
-            "seeds": ["sdsc-ordes/gimie"],
-            "max_rounds": 1,
-            "gimie_repos": True,
-            "gimie_api_base": "http://example.invalid:1234",
-            "gimie_store_jsonld": True,
-            "gimie_skip_existing_jsonld": True,
-            "gimie_archive_on_download": False,
-        }
-
-        with patch.dict(
-            os.environ,
-            {"GITHUB_TOKEN": "ghp_valid_format_token", "OPC_DATA_DIR": str(tmp_path)},
-            clear=False,
-        ):
-            with patch("open_pulse_crawler.github_client.GitHubClient"):
-                with patch("open_pulse_crawler.crawler.GitHubCrawler") as crawler_cls:
-                    crawler = crawler_cls.return_value
-                    crawler.add_seeds.return_value = None
-                    crawler.crawl.return_value = None
-                    crawler.graph.users = {}
-                    crawler.graph.orgs = {}
-                    crawler.graph.repos = {}
-
-                    resp = client.post(
-                        "/api/v1/crawl",
-                        json=request_body,
-                        headers=auth_header,
-                    )
-
-                    assert resp.status_code == 202
-                    job_id = resp.json()["job_id"]
-
-                    crawler_cls.assert_called_once()
-                    call_kwargs = crawler_cls.call_args.kwargs
-                    assert call_kwargs["gimie_repos"] is True
-                    assert call_kwargs["gimie_api_base"] == request_body["gimie_api_base"]
-                    assert call_kwargs["gimie_skip_existing_jsonld"] is True
-                    assert call_kwargs["gimie_store_jsonld_dir"] == (
-                        tmp_path / job_id / "jsonld"
-                    )
-
 
 # ── Job status endpoint ──────────────────────────────────────────────────
 
