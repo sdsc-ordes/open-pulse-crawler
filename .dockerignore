@@ -1,0 +1,30 @@
+# Build context allowlist: keep only what the multi-stage build needs.
+# Anything not under src/, plus pyproject.toml/uv.lock/README.md, is skipped.
+
+**/.git
+**/.gitignore
+**/.gitattributes
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/.venv/
+**/.env
+**/.env.*
+!**/.env.dist
+.devcontainer/
+.github/
+.idea/
+.vscode/
+docs/
+tests/
+infra/
+tools/scripts/
+*.md
+!README.md
+*.log
+*.sh
+test_incremental.sh
+Dockerfile.local

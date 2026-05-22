@@ -489,15 +489,27 @@ class GitHubClient:
         try:
             repo = self._make_request(self.current_client.get_repo, repo_full_name)
             if repo and self.cache:
-                # Fetch and cache contributors along with basic repo info
+                # Fetch and cache contributors along with basic repo info.
+                # ``totalCount`` triggers a single ``per_page=1`` request whose
+                # ``Link: rel="last"`` header carries the page count — that page
+                # number IS the total, in one cheap call regardless of repo size.
+                # We persist it so future crawls (or the ``--max-contributors``
+                # skip rule) can read it from cache without round-tripping.
                 contributors_data = []
+                contributors_total: Optional[int] = None
                 try:
                     contributors = self._make_request(repo.get_contributors)
+                    try:
+                        contributors_total = contributors.totalCount
+                    except Exception as e:
+                        logger.debug(
+                            f"Failed to read contributor totalCount for {repo_full_name}: {e}"
+                        )
                     # Limit to top 10 contributors for caching
                     contributors_data = [c.login for i, c in enumerate(contributors) if i < 10]
                 except Exception as e:
                     logger.warning(f"Failed to get contributors for caching repo {repo_full_name}: {e}")
-                
+
                 repo_data = {
                     'full_name': repo.full_name,
                     'name': repo.name,
@@ -507,11 +519,50 @@ class GitHubClient:
                     'is_fork': repo.fork,
                     'parent': repo.parent.full_name if repo.parent else None,
                     'contributors': contributors_data,
+                    'contributor_count': contributors_total,
                 }
                 self.cache.set(cache_key, '', repo_data)
             return repo
         except Exception as e:
             logger.error(f"Failed to get repository {repo_full_name}: {e}")
+            return None
+
+    def get_contributor_count(self, repo_full_name: str) -> Optional[int]:
+        """Return the total contributor count for a repo.
+
+        Reads from the existing ``repo:{full_name}`` cache entry first. Falls
+        back to a fresh ``get_contributors().totalCount`` lookup (one cheap
+        ``per_page=1`` request) only on cache miss or when the cached entry
+        predates this field. Returns ``None`` if both paths fail; callers
+        should treat ``None`` as "unknown" and not skip the repo.
+        """
+        cache_key = f"repo:{repo_full_name}"
+
+        if self.cache:
+            cached = self.cache.get(cache_key)
+            if isinstance(cached, dict):
+                count = cached.get('contributor_count')
+                if isinstance(count, int):
+                    self.stats['cache_hits'] += 1
+                    return count
+
+        try:
+            repo = self._make_request(self.current_client.get_repo, repo_full_name)
+            if repo is None:
+                return None
+            contributors = self._make_request(repo.get_contributors)
+            count = int(contributors.totalCount)
+            # Best-effort write-through so the next call hits cache. We only
+            # write when there's no existing entry, to avoid clobbering richer
+            # data populated by ``get_repository``.
+            if self.cache and self.cache.get(cache_key) is None:
+                self.cache.set(cache_key, '', {
+                    'full_name': repo_full_name,
+                    'contributor_count': count,
+                })
+            return count
+        except Exception as e:
+            logger.warning(f"Failed to get contributor count for {repo_full_name}: {e}")
             return None
     
     def get_stats(self) -> Dict[str, Any]:

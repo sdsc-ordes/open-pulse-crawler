@@ -1,38 +1,88 @@
 # Open Pulse Crawler — REST API
 
-Base path: `/api/v1`
+Base path: `/api/v1`.
 
-Interactive Swagger docs are available at `/api/v1/docs` when the server is running.
-When using Docker Compose with Nginx, the same API is reachable at
-`http://localhost/api/v1` (or `http://localhost:${OPC_PORT}/api/v1` if overridden).
+Interactive Swagger docs at `/api/v1/docs` and the raw OpenAPI document at
+`/api/v1/openapi.json` when the server is running. Behind Nginx the API is reachable
+at `http://localhost/api/v1` (or `http://localhost:${OPC_PORT}/api/v1` if overridden);
+running uvicorn directly puts it on `http://localhost:8000/api/v1`.
 
 ## Authentication
 
-All endpoints except `/api/v1/health` require a Bearer token:
+Every endpoint except `GET /api/v1/health` requires a Bearer token:
 
 ```
 Authorization: Bearer <token>
 ```
 
-The token is validated against the `API_TOKEN` environment variable on the server
-using a constant-time comparison (`secrets.compare_digest`).
+The token is validated against the `API_TOKEN` environment variable on the server using
+a constant-time comparison (`secrets.compare_digest`). The auth dependency lives in
+`src/open_pulse_crawler/auth.py`.
 
 | Scenario                       | Status    | Detail                                    |
 | ------------------------------ | --------- | ----------------------------------------- |
 | Missing / non-Bearer header    | `401/403` | Not authenticated                         |
 | Invalid token                  | `401`     | Invalid or missing API token              |
-| `API_TOKEN` env var not set    | `503`     | API_TOKEN is not configured on the server |
+| `API_TOKEN` env var not set    | `503`     | `API_TOKEN` is not configured on the server |
 
-The authentication logic lives in `src/open_pulse_crawler/auth.py` and is applied
-as a FastAPI dependency on every protected endpoint.
+## Job lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> pending: POST /crawl
+    pending --> running: background task picks up
+    running --> paused: POST /crawl/{id}/pause
+    paused --> running: POST /crawl/{id}/resume
+    running --> cancelled: POST /crawl/{id}/cancel<br/>(loop boundary)
+    paused --> cancelled: POST /crawl/{id}/cancel<br/>(pause lifted)
+    running --> completed: BFS finishes
+    running --> failed: exception
+    completed --> [*]: DELETE /crawl/{id}
+    cancelled --> [*]: DELETE /crawl/{id}
+    failed --> [*]: DELETE /crawl/{id}
+```
+
+`pending` flips to `running` as soon as the background task picks up the job. Cancellation
+is cooperative — the BFS loop checks the cancel flag at round boundaries, so the partial
+graph collected so far is preserved.
+
+## Request flow
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor C as Client
+    participant API as FastAPI
+    participant BG as Background task
+    participant GH as GitHub API
+    participant G as git-metadata-extractor<br/>(optional)
+
+    C->>API: POST /api/v1/crawl<br/>(Bearer + body)
+    API->>BG: schedule _run_crawl(seeds, …)
+    API-->>C: 202 {job_id, "pending"}
+
+    BG->>BG: status = running
+
+    loop For each BFS round
+        BG->>GH: fetch users / orgs / repos
+        GH-->>BG: graph data
+        opt GIMIE_ENABLED=true
+            BG->>G: POST /v1/extract per repo
+            G-->>BG: JSON-LD
+        end
+        C->>API: GET /crawl/{job_id}
+        API->>BG: read live progress
+        API-->>C: progress + ETA
+    end
+
+    BG->>BG: status = completed
+    C->>API: GET /graph/{job_id}
+    API-->>C: 200 {graph}
+```
 
 ## Endpoints
 
-### `GET /api/v1/health`
-
-Public health check.
-
-**Response** `200`
+### `GET /api/v1/health` — public
 
 ```json
 {
@@ -41,33 +91,22 @@ Public health check.
 }
 ```
 
----
+### `POST /api/v1/crawl` — start a crawl
 
-### `POST /api/v1/crawl`
-
-Start a new crawl job. The crawl runs asynchronously in the background.
+Starts a background BFS crawl and returns immediately with a job ID.
 
 **Request body**
 
-| Field        | Type       | Required | Default | Description                           |
-| ------------ | ---------- | -------- | ------- | ------------------------------------- |
-| `seeds`      | `string[]` | yes      | —       | Seed nodes (users, orgs, or repos)    |
-| `max_rounds` | `int`      | no       | `2`     | BFS rounds (1–10)                     |
-| `crawl_dependencies` | `bool` | no | `false` | Crawl repository dependencies (downstream) |
-| `crawl_dependents` | `bool` | no | `false` | Crawl repository dependents (upstream) |
-| `min_stars` | `int` | no | `0` | Minimum stars for dependency/dependent filtering |
-| `max_dependents` | `int \| null` | no | `null` | Maximum number of dependents to fetch (>=1) |
-| `batch_size` | `int \| null` | no | `null` | Number of nodes processed concurrently (>=1) |
-| `epfl_entities` | `string[]` | no | `[]` | Entity names (users/orgs) tagged as EPFL |
-| `crawl_issues` | `bool` | no | `false` | Fetch issue authors and conversation commenters per repo (opt-in; expensive on busy repos) |
-| `crawl_prs` | `bool` | no | `false` | Fetch PR authors, conversation commenters, and reviewers per repo (opt-in; expensive on busy repos) |
-| `issue_max` | `int` | no | `100` | Max issues scanned per repo when `crawl_issues` is set (most recent first) |
-| `pr_max` | `int` | no | `100` | Max PRs scanned per repo when `crawl_prs` is set (most recent first) |
-| `gimie_repos` | `bool` | no | `false` | Populate repository nodes from gimie JSON-LD (user/org still from GitHub API). |
-| `gimie_api_base` | `string` | no | `http://host.docker.internal:1234` | Base URL for the gimie JSON-LD API. |
-| `gimie_store_jsonld` | `bool` | no | `false` | Store raw gimie JSON-LD payloads on disk under the job directory. |
-| `gimie_skip_existing_jsonld` | `bool` | no | `false` | If storing, skip HTTP when a payload file already exists under the job `jsonld/` directory (on-disk only). Actual gimie requests always include `force_refresh=true`. |
-| `gimie_archive_on_download` | `bool` | no | `false` | If true, try to create `jsonld.zip` after crawl completion (otherwise it is created on demand). |
+| Field                | Type          | Required | Default | Description                                |
+| -------------------- | ------------- | -------- | ------- | ------------------------------------------ |
+| `seeds`              | `string[]`    | yes      | —       | Seed nodes (users, orgs, or repos)         |
+| `max_rounds`         | `int`         | no       | `2`     | BFS rounds (1–10)                          |
+| `crawl_dependencies` | `bool`        | no       | `false` | Crawl downstream dependencies (SBOM)       |
+| `crawl_dependents`   | `bool`        | no       | `false` | Crawl upstream dependents ("Used by")      |
+| `min_stars`          | `int`         | no       | `0`     | Min stars for dep/dependent filtering      |
+| `max_dependents`     | `int \| null` | no       | `null`  | Max dependents to fetch per repo (≥1)      |
+| `max_contributors`   | `int \| null` | no       | `null`  | Skip contributor expansion above N (≥1) — see below |
+| `batch_size`         | `int \| null` | no       | `null`  | Concurrent nodes per round (≥1)            |
 
 ```json
 {
@@ -76,11 +115,24 @@ Start a new crawl job. The crawl runs asynchronously in the background.
   "crawl_dependents": true,
   "min_stars": 10,
   "max_dependents": 100,
-  "epfl_entities": ["epfl", "dslab-epfl"],
-  "gimie_repos": true,
-  "gimie_store_jsonld": true
+  "max_contributors": 200
 }
 ```
+
+#### `max_contributors`
+
+When set, repos with strictly more contributors than the threshold stay in the
+graph but **their contributor users are not queued for further BFS exploration**.
+Owner / fork / dependency / dependent edges are unaffected. The repo's
+`contributor_count` and a `skipped_high_contributors: true` flag are recorded on
+the node so downstream consumers can see why no contributors were expanded.
+
+The total count is read from cache when available (captured the first time a repo
+is fetched). On a cache miss the crawler issues a single `per_page=1` request to
+`/contributors` — one cheap call regardless of repo size — and writes the result
+through to the cache. Net cost is usually **negative** because skipping a
+mega-project saves the contributor pagination + the dozens of follow-up
+`get_user` calls those contributors would have triggered in the next round.
 
 **Response** `202 Accepted`
 
@@ -91,70 +143,23 @@ Start a new crawl job. The crawl runs asynchronously in the background.
 }
 ```
 
----
+> Note: gimie hybrid extraction (JSON-LD enrichment) is configured server-side via
+> `GIMIE_*` environment variables, not per-request — see
+> [`docs/DEPLOYMENT.md`](./DEPLOYMENT.md).
 
-### `POST /api/v1/crawl/graphql`
+### `POST /api/v1/crawl/graphql` — start a GraphQL-backed crawl
 
-Start a crawl using the **GraphQL-backed** client. Accepts the **same request
-body** as `POST /api/v1/crawl` and produces the same graph; it is plugged into
-the same BFS engine, so rounds, expansion, and edge export are identical.
-
-GraphQL collapses what the REST path does in dozens of requests into one query
-per entity — e.g. fetching a repo's issue/PR activity costs ~1 GraphQL point
-versus ~80 REST requests.
-
-GraphQL covers: user/org/repo metadata, follows, starred, watching, teams, and
-issue/PR activity. Three things still fall back to REST automatically: the top
-contributors list (no public GraphQL endpoint), SBOM `crawl_dependencies`, and
-the "Used by" `crawl_dependents` graph.
-
-**Token scopes:** GraphQL requires `read:org` for org-level fields
-(login/name/members/teams). The user query self-heals when `read:org` is
-missing — it drops the `organizations` field and re-fetches that list via REST —
-but `GET /api/v1/crawl/graphql` crawls seeded on an organization need a token
-with `read:org`. The `gimie_*` options are not supported on this endpoint;
-use `POST /api/v1/crawl` for gimie hybrid mode.
+Accepts the **same request body** as `POST /api/v1/crawl` and produces the same graph,
+but fetches user / org / repo data via GitHub's GraphQL API — roughly one query per
+entity instead of dozens of REST calls. Contributors, SBOM dependencies, and the
+"Used by" dependents graph still fall back to REST. Org-level fields require a token
+with `read:org` scope. Gimie hybrid mode is not available on this endpoint.
 
 **Response** `202 Accepted` — identical shape to `POST /api/v1/crawl`.
 
----
+### `GET /api/v1/crawl/{job_id}` — status, progress, ETA
 
-### `GET /api/v1/crawl/{job_id}`
-
-Get status and summary counts of a crawl job.
-
-**Response** `200`
-
-```json
-{
-  "job_id": "d290f1ee-6c54-4b01-90e6-d701748f0851",
-  "status": "completed",
-  "detail": null,
-  "users": 42,
-  "orgs": 5,
-  "repos": 87,
-  "rounds_completed": 2
-}
-```
-
-Possible `status` values: `pending`, `running`, `completed`, `failed`, `stopped`.
-`rounds_completed` is the number of BFS rounds finished so far (useful for
-monitoring progress and for partial reads).
-
-Returns `404` if the job ID is unknown.
-
----
-
-### `POST /api/v1/crawl/{job_id}/stop`
-
-Request a **cooperative stop** of a running crawl. Returns immediately; the
-crawl halts at the next BFS round boundary — the in-flight round drains first,
-so the graph stays round-consistent — and the job's status then settles to
-`stopped`. A stopped job's state is persisted and can be continued with
-`POST .../resume`.
-
-A stop that arrives after the crawl already finished all its work is a no-op:
-the job is reported `completed`, not `stopped`.
+Returns status, summary counts, and (for running jobs) live BFS progress.
 
 **Response** `200`
 
@@ -162,48 +167,72 @@ the job is reported `completed`, not `stopped`.
 {
   "job_id": "d290f1ee-6c54-4b01-90e6-d701748f0851",
   "status": "running",
-  "detail": "Stop requested; the crawl will halt after the current round drains."
+  "detail": null,
+  "users": 12,
+  "orgs": 3,
+  "repos": 87,
+  "started_at": "2026-05-05T08:30:15Z",
+  "completed_at": null,
+  "current_round": 2,
+  "nodes_processed": 156,
+  "nodes_in_queue": 234,
+  "estimated_completion_at": "2026-05-05T08:31:42Z"
 }
 ```
 
-Returns `404` if the job ID is unknown, or `409 Conflict` if the job is not in a
-stoppable state (`pending`/`running`).
+| Field                     | Populated when                                  |
+| ------------------------- | ----------------------------------------------- |
+| `started_at`              | the job has started running                     |
+| `completed_at`            | the job has reached a terminal state            |
+| `current_round`           | the job is `running`                            |
+| `nodes_processed`         | the job is `running`                            |
+| `nodes_in_queue`          | the job is `running`                            |
+| `estimated_completion_at` | running, ≥1 node processed, queue non-empty     |
 
----
+The ETA is a best-effort linear extrapolation from the current node-processing rate.
+It drifts mid-BFS because the queue grows as the crawl expands; treat it as a hint, not
+a guarantee.
 
-### `POST /api/v1/crawl/{job_id}/resume`
+`status` values: `pending`, `running`, `paused`, `completed`, `cancelled`, `failed`.
+Returns `404` if the job ID is unknown.
 
-Resume a `stopped` or `failed` crawl from its persisted BFS state — the saved
-queue, visited set, and graph — instead of re-crawling from the seeds. The crawl
-is re-dispatched on whichever client (REST or GraphQL) the original job used.
+### `GET /api/v1/jobs` — list all jobs
 
-Resume works even when the in-memory job record was lost (container restart), as
-long as the job's `state.json` and `request.json` are still on disk under
-`OPC_DATA_DIR/{job_id}/` — see [Persistence](#persistence).
+Returns every job currently in the in-memory registry, newest first
+(by `completed_at`, then `started_at`).
 
-**Response** `202 Accepted`
+**Query**
+
+| Param           | Type        | Description                                          |
+| --------------- | ----------- | ---------------------------------------------------- |
+| `status_filter` | `JobStatus` | Narrow to one status (e.g. `?status_filter=completed`) |
+
+**Response** `200`
 
 ```json
 {
-  "job_id": "d290f1ee-6c54-4b01-90e6-d701748f0851",
-  "status": "pending",
-  "detail": "Resuming crawl from saved state."
+  "jobs": [
+    {
+      "job_id": "d290f1ee-6c54-4b01-90e6-d701748f0851",
+      "status": "completed",
+      "started_at": "2026-05-05T08:30:15Z",
+      "completed_at": "2026-05-05T08:31:38Z",
+      "users": 42,
+      "orgs": 5,
+      "repos": 87,
+      "detail": null
+    }
+  ],
+  "total": 1
 }
 ```
 
-Returns `404` if no persisted request exists for the job, or `409 Conflict` if
-there is no saved crawler state, or if the job is already `pending`/`running`.
+### `GET /api/v1/graph/{job_id}` — fetch the graph
 
----
-
-### `GET /api/v1/graph/{job_id}`
-
-Return graph data for a crawl job.
-
-By default only a **completed** job is served. Pass `?partial=true` to also read
-a partial graph — from a still-`running`/`stopped`/`failed` job, or, when the
-in-memory job record is gone (container restart), from the last per-round disk
-snapshot keyed by `job_id`.
+Graph data for a crawl job. By default only a **completed** job is served; pass
+`?partial=true` to also read a partial graph from a running / cancelled / failed job,
+or to recover a job by ID after its in-memory record was lost (container restart) from
+the last per-round disk snapshot.
 
 **Query parameters**
 
@@ -217,7 +246,7 @@ snapshot keyed by `job_id`.
 {
   "job_id": "d290f1ee-6c54-4b01-90e6-d701748f0851",
   "graph": {
-    "users": { "torvalds": { "login": "torvalds", "..." : "..." } },
+    "users": { "torvalds": { "login": "torvalds", "...": "..." } },
     "orgs": {},
     "repos": {}
   },
@@ -227,116 +256,96 @@ snapshot keyed by `job_id`.
 }
 ```
 
-`partial` is `true` when the returned graph is not a final completed result.
+Without `?partial=true`: `404` if the job ID is unknown, `409 Conflict` if the job has
+not completed. With `?partial=true`: returns the latest round snapshot, or `404`/`409`
+if no snapshot exists yet.
 
-Without `?partial=true`: returns `404` if the job ID is unknown, or `409 Conflict`
-if the job has not completed. With `?partial=true`: returns the latest snapshot,
-or `404`/`409` if no snapshot exists yet.
+### Lifecycle controls
 
----
+Pause, resume, and cancel are cooperative — they set flags on the live crawler instance
+which the BFS loop checks at round boundaries. In-flight network calls finish first, so
+the graph stays consistent (partial but not torn).
 
-### `GET /api/v1/crawl/{job_id}/jsonld.zip`
+#### `POST /api/v1/crawl/{job_id}/pause`
 
-Download the stored gimie JSON-LD payloads (`application/zip`) for a completed crawl job.
+Pauses at the next round boundary. Status flips to `paused` immediately; the loop sleeps
+in 1-second ticks until `resume` or `cancel`.
 
-Returns `404` if the job does not exist, is not completed, or `gimie_store_jsonld` was not enabled for that job.
+`409` if the job isn't `running` or already `paused`.
 
-## Persistence
+#### `POST /api/v1/crawl/{job_id}/resume`
 
-The job store is in-memory, so a job's status is lost on container restart.
-To make graph data durable, every crawl writes to disk under
-`OPC_DATA_DIR/{job_id}/` (default `OPC_DATA_DIR` is `/tmp/open-pulse-crawler`):
+Lifts a previous pause. Also resumes a `cancelled` or `failed` job: it continues from
+the persisted BFS state (queue + visited set + graph) instead of re-crawling from the
+seeds, and works even after the in-memory job record was lost — as long as the job's
+`state.json` + `request.json` are still on disk under `OPC_DATA_DIR/{job_id}/`.
 
-| File                  | Written            | Purpose                                          |
-| --------------------- | ------------------ | ------------------------------------------------ |
-| `graph.snapshot.json` | after every round  | Partial-graph reads via `GET /graph?partial=true` |
-| `state.json`          | after every round  | Full BFS state for `POST .../resume`             |
-| `request.json`        | at job creation    | Original crawl config, so resume rebuilds it     |
+`409` if the job is `running`/`pending`, or if there is no resumable state.
 
-**Deployment note:** mount `OPC_DATA_DIR` to a persistent volume in production.
-Without a mount, snapshots and resumable state do not survive a container
-restart or OOM-kill, and `POST .../resume` / `GET /graph?partial=true` recovery
-will not work across restarts.
+#### `POST /api/v1/crawl/{job_id}/cancel`
+
+Asks the BFS loop to stop at the next round boundary. The final status becomes
+`cancelled` once the loop exits. The graph collected up to that point is preserved —
+read it with `GET /api/v1/graph/{job_id}?partial=true`, or continue the crawl with
+`POST /api/v1/crawl/{job_id}/resume`.
+
+`409` if the job is already in a terminal state.
+
+#### `DELETE /api/v1/crawl/{job_id}`
+
+Drops a terminal job from the in-memory registry — useful for clearing the listing in
+long-lived deployments.
+
+`409` if the job is still `running` or `paused` (cancel it first).
 
 ## Quick curl examples
 
-With Docker Compose + Nginx:
-
 ```bash
-export API_BASE="http://localhost/api/v1"
+# Pick the right base URL for your deploy
+export API_BASE="http://localhost:8000/api/v1"      # uvicorn directly
+# export API_BASE="http://localhost/api/v1"         # behind Nginx
 export API_TOKEN="my-secret-api-token"
-```
 
-Running FastAPI directly (no Nginx):
-
-```bash
-export API_BASE="http://localhost:8000/api/v1"
-export API_TOKEN="my-secret-api-token"
-```
-
-Start crawl:
-
-```bash
-curl -X POST "$API_BASE/crawl" \
+# Start a crawl
+JOB_ID=$(curl -s -X POST "$API_BASE/crawl" \
   -H "Authorization: Bearer $API_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"seeds":["torvalds"],"max_rounds":2}'
+  -d '{"seeds":["torvalds"],"max_rounds":2}' \
+  | python -c 'import sys, json; print(json.load(sys.stdin)["job_id"])')
+
+# Poll status until completed
+while :; do
+  curl -s "$API_BASE/crawl/$JOB_ID" \
+    -H "Authorization: Bearer $API_TOKEN" \
+    | python -m json.tool
+  sleep 5
+done
+
+# Pause / resume / cancel
+curl -X POST "$API_BASE/crawl/$JOB_ID/pause"  -H "Authorization: Bearer $API_TOKEN"
+curl -X POST "$API_BASE/crawl/$JOB_ID/resume" -H "Authorization: Bearer $API_TOKEN"
+curl -X POST "$API_BASE/crawl/$JOB_ID/cancel" -H "Authorization: Bearer $API_TOKEN"
+
+# List jobs (optionally filtered)
+curl "$API_BASE/jobs?status_filter=completed" -H "Authorization: Bearer $API_TOKEN"
+
+# Fetch the graph once completed
+curl "$API_BASE/graph/$JOB_ID" -H "Authorization: Bearer $API_TOKEN"
+
+# Drop a terminal job
+curl -X DELETE "$API_BASE/crawl/$JOB_ID" -H "Authorization: Bearer $API_TOKEN"
 ```
 
-Check status:
-
-```bash
-curl "$API_BASE/crawl/<job_id>" \
-  -H "Authorization: Bearer $API_TOKEN"
-```
-
-Fetch graph:
-
-```bash
-curl "$API_BASE/graph/<job_id>" \
-  -H "Authorization: Bearer $API_TOKEN"
-```
-
-Start a GraphQL-backed crawl (same body as `/crawl`):
-
-```bash
-curl -X POST "$API_BASE/crawl/graphql" \
-  -H "Authorization: Bearer $API_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"seeds":["sdsc-ordes/gimie"],"max_rounds":2,"crawl_issues":true,"crawl_prs":true}'
-```
-
-Stop a running crawl, then read its partial graph:
-
-```bash
-curl -X POST "$API_BASE/crawl/<job_id>/stop" \
-  -H "Authorization: Bearer $API_TOKEN"
-
-curl "$API_BASE/graph/<job_id>?partial=true" \
-  -H "Authorization: Bearer $API_TOKEN"
-```
-
-Resume a stopped crawl:
-
-```bash
-curl -X POST "$API_BASE/crawl/<job_id>/resume" \
-  -H "Authorization: Bearer $API_TOKEN"
-```
-
-## Running the Server
+## Running the server
 
 ```bash
 export API_TOKEN="my-secret"
 export GITHUB_TOKEN="ghp_..."
-export OPC_DATA_DIR="/var/lib/crawler/jobs"        # optional; defaults to /tmp/open-pulse-crawler
-export OPC_CACHE_DIR="/var/lib/crawler/cache"      # optional; defaults to data/open-pulse-crawler/cache
+export OPC_DATA_DIR="/var/lib/crawler/jobs"     # optional; per-job snapshots + resumable state
+export OPC_CACHE_DIR="data/open-pulse-crawler/cache"  # optional; GitHub API response cache
 uvicorn open_pulse_crawler.api:app --host 0.0.0.0 --port 8000
 ```
 
-`OPC_DATA_DIR` is where per-job snapshots and resumable state are written — see
-[Persistence](#persistence). Point it at a mounted volume so partial results and
-resume survive container restarts.
-
-`OPC_CACHE_DIR` is where GitHub API responses are cached between crawls; it
-defaults to `data/open-pulse-crawler/cache`. Set it to an empty string to
-disable caching.
+For the full Docker Compose + Nginx stack, see
+[`docs/DEPLOYMENT.md`](./DEPLOYMENT.md). For concurrency, rate limiting, and multi-token
+rotation, see [`docs/CONCURRENCY.md`](./CONCURRENCY.md).

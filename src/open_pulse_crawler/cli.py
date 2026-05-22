@@ -190,6 +190,17 @@ def crawl(
         help="Maximum number of PRs to scan per repo when --crawl-prs is enabled (most recent first)",
         min=1
     ),
+    max_contributors: Optional[int] = typer.Option(
+        None,
+        "--max-contributors",
+        help=(
+            "Skip contributor expansion for repos with more than N contributors. "
+            "The repo node stays in the graph (with owner / fork / deps); only "
+            "contributor users are not queued. Useful for avoiding mega-projects "
+            "(e.g. linux kernel) that would dominate the BFS frontier. "
+            "Default: None = unlimited."
+        ),
+    ),
     verbose: bool = typer.Option(
         False,
         "--verbose",
@@ -222,13 +233,6 @@ def crawl(
         min=1,
         max=50
     ),
-    epfl_list: Optional[Path] = typer.Option(
-        None,
-        "--epfl-list",
-        help="Path to file containing EPFL entities (one per line)",
-        exists=True
-    )
-    ,
     # ── Optional gimie hybrid repo discovery ──────────────────────────────
     gimie_repos: bool = typer.Option(
         False,
@@ -295,19 +299,11 @@ def crawl(
             cache_dir.mkdir(parents=True, exist_ok=True)
             console.print(f"[green]✓[/green] Cache directory: {cache_dir}")
     
-    # Load EPFL entities
-    epfl_entities = set()
-    if epfl_list:
-        try:
-            with open(epfl_list, 'r') as f:
-                for line in f:
-                    line = line.strip()
-                    if line and not line.startswith('#'):
-                        epfl_entities.add(line)
-            console.print(f"[green]✓[/green] Loaded {len(epfl_entities)} EPFL entities from {epfl_list}")
-        except Exception as e:
-            console.print(f"[red]Error reading EPFL list: {e}[/red]")
-            raise typer.Exit(1)
+    # ── gimie hybrid repo option wiring ─────────────────────────────────────
+    jsonld_dir: Optional[Path] = None
+    if gimie_repos:
+        if gimie_store_jsonld:
+            jsonld_dir = output_dir / "jsonld"
 
     # ── gimie hybrid repo option wiring ─────────────────────────────────────
     jsonld_dir: Optional[Path] = None
@@ -324,8 +320,8 @@ def crawl(
         rate_limit_buffer=rate_limit_buffer
     )
     crawler = GitHubCrawler(
-        client, 
-        max_rounds=rounds, 
+        client,
+        max_rounds=rounds,
         state_file=state_file,
         batch_size=batch_size,
         crawl_dependencies=crawl_dependencies,
@@ -336,7 +332,7 @@ def crawl(
         pr_max=pr_max,
         min_stars=min_stars,
         max_dependents=max_dependents,
-        epfl_entities=epfl_entities,
+        max_contributors=max_contributors,
         gimie_repos=gimie_repos,
         gimie_api_base=gimie_api_base,
         gimie_store_jsonld_dir=jsonld_dir,
@@ -494,11 +490,10 @@ def crawl(
         
         nodes_csv_path = output_dir / f"{timestamp}.nodes.csv"
         export_nodes_csv(
-            crawler.graph, 
-            nodes_csv_path, 
+            crawler.graph,
+            nodes_csv_path,
             crawler.seed_nodes,
             discovered_nodes=crawler.discovered_nodes,
-            epfl_entities=epfl_entities
         )
         console.print(f"[green]✓[/green] CSV (nodes): {nodes_csv_path}")
     

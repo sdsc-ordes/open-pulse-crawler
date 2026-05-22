@@ -16,6 +16,24 @@ The `api` and `gui` services pull a prebuilt image from the registry by default:
 All services join the shared `opc` bridge network and use health checks so startup
 ordering follows service readiness.
 
+```mermaid
+flowchart LR
+    user([Browser / API client])
+
+    subgraph stack["Docker Compose stack (opc network)"]
+        nginx["nginx<br/>:80 / OPC_PORT"]
+        api["api<br/>FastAPI :8000"]
+        gui["gui<br/>Streamlit :8501"]
+    end
+
+    user -->|"/"| nginx
+    user -->|"/api/*"| nginx
+    nginx --> api
+    nginx --> gui
+    api -.->|GIMIE_ENABLED| gimie[git-metadata-extractor<br/>:1234]
+    api --> gh[(GitHub API)]
+```
+
 ### Prerequisites
 
 - Docker Engine 24+
@@ -101,13 +119,13 @@ OPC_PORT=18080 bash tests/test_integration.sh
 
 ## Single-Container API Deployment
 
-The project ships a multi-stage `Dockerfile` at the repository root that
+The project ships a multi-stage `Dockerfile` at `tools/image/Dockerfile` that
 produces a small production image based on `python:3.12-slim`.
 
 ### Building the image
 
 ```bash
-docker build -t open-pulse-crawler .
+docker build -f tools/image/Dockerfile -t open-pulse-crawler .
 ```
 
 ### Running the container
@@ -132,12 +150,34 @@ lost when the container restarts — see [API.md → Persistence](./API.md#persi
 
 ### Environment variables
 
-| Variable       | Required | Description                                       |
-| -------------- | -------- | ------------------------------------------------- |
-| `GITHUB_TOKEN` | Yes      | GitHub personal access token(s), comma-separated. |
-| `API_TOKEN`    | Yes      | Bearer token required for protected endpoints.    |
-| `OPC_DATA_DIR` | No       | Directory for per-job snapshots and resumable state (default `/tmp/open-pulse-crawler`). Mount it to a volume for durability. |
-| `OPC_CACHE_DIR` | No      | Directory for the API response cache (default `data/open-pulse-crawler/cache`). Set empty to disable caching. |
+#### Required
+
+| Variable       | Description                                       |
+| -------------- | ------------------------------------------------- |
+| `GITHUB_TOKEN` | GitHub personal access token(s), comma-separated. |
+| `API_TOKEN`    | Bearer token required for protected endpoints.    |
+
+#### Optional
+
+| Variable                       | Default                                | Description                                                                                                  |
+| ------------------------------ | -------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `OPC_DATA_DIR`                 | `/tmp/open-pulse-crawler`              | Root directory for per-job artifacts (graph snapshots, resumable state, `<job_id>/jsonld/`). Mount a volume for persistence. |
+| `OPC_CACHE_DIR`                | `data/open-pulse-crawler/cache`        | Directory for the GitHub API response cache. Set to an empty value to disable caching.                       |
+| `OPC_PORT`                     | `80`                                   | Host port the Nginx reverse proxy publishes.                                                                 |
+| `OPC_IMAGE`                    | `ghcr.io/sdsc-ordes/open-pulse-crawler:latest` | Image tag used by the Compose stack.                                                                  |
+
+#### Gimie hybrid extraction (optional)
+
+These are server-side deployment knobs — clients do not pass them per-request. When
+`GIMIE_ENABLED` is on, repository entries are enriched with JSON-LD metadata fetched
+from a sibling `git-metadata-extractor` instance.
+
+| Variable                     | Default                                  | Description                                                                                |
+| ---------------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `GIMIE_ENABLED`              | `false`                                  | Truthy values: `true` / `1` / `yes` / `on`. Off by default.                                |
+| `GIMIE_API_BASE`             | `http://host.docker.internal:1234`       | Base URL of the gimie / git-metadata-extractor service.                                    |
+| `GIMIE_STORE_JSONLD`         | `false`                                  | When on, persist per-repo JSON-LD payloads under `${OPC_DATA_DIR}/<job_id>/jsonld/`.       |
+| `GIMIE_SKIP_EXISTING_JSONLD` | `false`                                  | When on, skip the gimie HTTP fetch for repos whose JSON-LD already exists on disk.         |
 
 You can pass an env file instead:
 

@@ -280,5 +280,4 @@ with self.visited_lock:  # Lock acquired once
 ## See Also
 
 - [Progress Tracking](./PROGRESS_TRACKING.md)
-- [Quick Reference](./QUICK_REFERENCE.md)
-- [Architecture](./PROGRESS_ARCHITECTURE.md)
+- [REST API reference](./API.md)

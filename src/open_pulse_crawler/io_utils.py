@@ -281,28 +281,25 @@ def export_to_csv(graph: GraphData, output_path: Path, seed_nodes: Set[str]):
 
 
 def export_nodes_csv(
-    graph: GraphData, 
-    output_path: Path, 
+    graph: GraphData,
+    output_path: Path,
     seed_nodes: Set[str],
     discovered_nodes: Optional[Dict[str, tuple]] = None,
-    epfl_entities: Optional[Set[str]] = None
 ):
     """
     Export node data to CSV format.
-    
-    CSV format: id,name,type,is_seed,is_explored,exploration_timestamp,is_epfl
-    
+
+    CSV format: id,name,type,is_seed,is_explored,exploration_timestamp
+
     Args:
         graph: GraphData to export
         output_path: Path to output CSV file
         seed_nodes: Set of initial seed node identifiers
         discovered_nodes: Optional dict of discovered but unexplored nodes
-        epfl_entities: Optional set of EPFL entity names
     """
-    epfl_entities = {e.lower() for e in (epfl_entities or set())}
     nodes = []
     processed_ids = set()
-    
+
     # Add users
     for user in graph.users.values():
         nodes.append({
@@ -312,10 +309,9 @@ def export_nodes_csv(
             'is_seed': user.login in seed_nodes,
             'is_explored': user.is_explored,
             'exploration_timestamp': user.exploration_timestamp,
-            'is_epfl': user.is_epfl
         })
         processed_ids.add(user.login)
-    
+
     # Add orgs
     for org in graph.orgs.values():
         nodes.append({
@@ -325,10 +321,9 @@ def export_nodes_csv(
             'is_seed': org.login in seed_nodes,
             'is_explored': org.is_explored,
             'exploration_timestamp': org.exploration_timestamp,
-            'is_epfl': org.is_epfl
         })
         processed_ids.add(org.login)
-    
+
     # Add repos
     for repo in graph.repos.values():
         nodes.append({
@@ -338,7 +333,6 @@ def export_nodes_csv(
             'is_seed': repo.full_name in seed_nodes,
             'is_explored': repo.is_explored,
             'exploration_timestamp': repo.exploration_timestamp,
-            'is_epfl': repo.is_epfl
         })
         processed_ids.add(repo.full_name)
 
@@ -351,7 +345,6 @@ def export_nodes_csv(
             'is_seed': team.full_name in seed_nodes,
             'is_explored': team.is_explored,
             'exploration_timestamp': team.exploration_timestamp,
-            'is_epfl': team.is_epfl,
         })
         processed_ids.add(team.full_name)
 
@@ -359,29 +352,20 @@ def export_nodes_csv(
     if discovered_nodes:
         for node_id, (node_type, _, _) in discovered_nodes.items():
             if node_id not in processed_ids:
-                # Determine if EPFL
-                is_epfl = False
-                if node_type == 'repo':
-                    owner = node_id.split('/')[0]
-                    is_epfl = owner.lower() in epfl_entities
-                else:
-                    is_epfl = node_id.lower() in epfl_entities
-                
                 nodes.append({
                     'id': node_id,
-                    'name': node_id, # We don't have the name for unexplored nodes
+                    'name': node_id,  # We don't have the name for unexplored nodes
                     'type': node_type,
                     'is_seed': node_id in seed_nodes,
                     'is_explored': False,
                     'exploration_timestamp': None,
-                    'is_epfl': is_epfl
                 })
                 processed_ids.add(node_id)
-    
+
     # Write to CSV
     try:
         with open(output_path, 'w', newline='') as f:
-            fieldnames = ['id', 'name', 'type', 'is_seed', 'is_explored', 'exploration_timestamp', 'is_epfl']
+            fieldnames = ['id', 'name', 'type', 'is_seed', 'is_explored', 'exploration_timestamp']
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
             writer.writerows(nodes)

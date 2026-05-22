@@ -54,7 +54,6 @@ def test_crawler_process_repository_uses_gimie_hybrid_when_enabled():
             max_rounds=2,
             crawl_dependencies=False,
             crawl_dependents=False,
-            epfl_entities=set(),
             gimie_repos=True,
             gimie_api_base="http://example.invalid",
             gimie_store_jsonld_dir=None,

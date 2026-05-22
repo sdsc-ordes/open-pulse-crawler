@@ -26,8 +26,8 @@ class GitHubCrawler:
     """BFS crawler for GitHub entities."""
     
     def __init__(
-        self, 
-        client: GitHubClient, 
+        self,
+        client: GitHubClient,
         max_rounds: int = 3,
         state_file: Optional[Path] = None,
         batch_size: Optional[int] = None,
@@ -39,7 +39,7 @@ class GitHubCrawler:
         pr_max: int = 100,
         min_stars: int = 0,
         max_dependents: Optional[int] = None,
-        epfl_entities: Optional[Set[str]] = None,
+        max_contributors: Optional[int] = None,
         gimie_repos: bool = False,
         gimie_api_base: str = "http://host.docker.internal:1234",
         gimie_store_jsonld_dir: Optional[Path] = None,
@@ -47,7 +47,7 @@ class GitHubCrawler:
     ):
         """
         Initialize the crawler.
-        
+
         Args:
             client: GitHub API client
             max_rounds: Maximum number of BFS rounds
@@ -60,7 +60,11 @@ class GitHubCrawler:
             issue_max: Maximum number of issues to scan per repo (most recent)
             pr_max: Maximum number of PRs to scan per repo (most recent)
             min_stars: Minimum stars for dependents/dependencies filtering
-            epfl_entities: Set of entity names (users/orgs) that belong to EPFL
+            max_contributors: When set, repos with strictly more contributors are
+                kept in the graph but their contributor edges are NOT expanded
+                (no users queued from this repo). Useful for avoiding mega-projects
+                like the linux kernel that would dominate the BFS frontier.
+                Default ``None`` = unlimited.
             gimie_repos: When true, populate repository nodes from gimie JSON-LD.
             gimie_api_base: Base URL for the gimie JSON-LD API.
             gimie_store_jsonld_dir: Optional directory to store gimie JSON-LD payloads.
@@ -78,7 +82,7 @@ class GitHubCrawler:
         self.pr_max = pr_max
         self.min_stars = min_stars
         self.max_dependents = max_dependents
-        self.epfl_entities = {e.lower() for e in (epfl_entities or set())}
+        self.max_contributors = max_contributors
 
         # Optional gimie hybrid repo population.
         self.gimie_repos = gimie_repos
@@ -107,16 +111,19 @@ class GitHubCrawler:
         # Thread-safe access to graph and visited set
         self.graph_lock = threading.Lock()
         self.visited_lock = threading.Lock()
+
+        # Cooperative pause / cancel flags. The HTTP API toggles these via
+        # the JobRecord; the BFS loop checks them between rounds and at
+        # the head of each batch to honour Pause/Cancel without ripping
+        # work mid-flight (network calls / thread-pool tasks finish first).
+        self.pause_requested: bool = False
+        self.cancel_requested: bool = False
         
         # Statistics per round
         self.round_stats: List[Dict] = []
         
         # Optional callback for incremental exports
         self.incremental_export_callback: Optional[Callable[[int], None]] = None
-
-        # Optional cooperative-stop signal, checked at each round boundary.
-        # Set externally (e.g. by the API's /stop endpoint).
-        self.stop_event: Optional[threading.Event] = None
 
         logger.info(f"Crawler initialized with batch_size={self.batch_size}")
     
@@ -255,7 +262,6 @@ class GitHubCrawler:
                     type=user_type,
                     is_explored=True,
                     exploration_timestamp=datetime.now().isoformat(),
-                    is_epfl=user_obj['login'].lower() in self.epfl_entities
                 )
                 
                 # Use cached repos data if available
@@ -304,7 +310,6 @@ class GitHubCrawler:
                     type=GitHubItemType.USER if user_obj.type == 'User' else GitHubItemType.BOT,
                     is_explored=True,
                     exploration_timestamp=datetime.now().isoformat(),
-                    is_epfl=user_obj.login.lower() in self.epfl_entities
                 )
                 
                 # Get user's repositories from live API
@@ -387,7 +392,6 @@ class GitHubCrawler:
                     type=GitHubItemType.ORGANIZATION,
                     is_explored=True,
                     exploration_timestamp=datetime.now().isoformat(),
-                    is_epfl=org_obj['login'].lower() in self.epfl_entities
                 )
                 
                 # Use cached members data if available
@@ -427,7 +431,6 @@ class GitHubCrawler:
                     type=GitHubItemType.ORGANIZATION,
                     is_explored=True,
                     exploration_timestamp=datetime.now().isoformat(),
-                    is_epfl=org_obj.login.lower() in self.epfl_entities
                 )
                 
                 # Get organization members from live API
@@ -493,7 +496,6 @@ class GitHubCrawler:
                 parent=parent_full_name,
                 is_explored=True,
                 exploration_timestamp=datetime.now().isoformat(),
-                is_epfl=org_name.lower() in self.epfl_entities,
             )
             team.members.extend(team_data.get("members", []) or [])
             team.repositories.extend(team_data.get("repositories", []) or [])
@@ -538,7 +540,6 @@ class GitHubCrawler:
                     parent=parent_full_name,
                     is_explored=True,
                     exploration_timestamp=datetime.now().isoformat(),
-                    is_epfl=org_name.lower() in self.epfl_entities,
                 )
 
                 try:
@@ -579,7 +580,6 @@ class GitHubCrawler:
                             forked_from=None,
                             is_explored=True,
                             exploration_timestamp=datetime.now().isoformat(),
-                            is_epfl=parsed.owner_login.lower() in self.epfl_entities,
                         )
 
                         repo.contributors.extend(parsed.contributor_logins)
@@ -709,7 +709,6 @@ class GitHubCrawler:
                     forked_from=repo_obj.get('parent'),
                     is_explored=True,
                     exploration_timestamp=datetime.now().isoformat(),
-                    is_epfl=repo_obj.get('owner', '').lower() in self.epfl_entities
                 )
                 
                 # Collect items to queue
@@ -722,11 +721,37 @@ class GitHubCrawler:
                     owner_type = 'org' if owner_type_str == 'Organization' else 'user'
                     items_to_queue.append((owner_type, owner_login))
                 
-                # Use cached contributors data if available
-                cached_contributors = repo_obj.get('contributors', [])
-                repo.contributors.extend(cached_contributors)
-                for contributor_login in cached_contributors:
-                    items_to_queue.append(('user', contributor_login))
+                # Apply the --max-contributors skip rule. The cached entry
+                # already carries ``contributor_count`` (captured the first
+                # time this repo was fetched) so this branch costs zero API
+                # calls. If the count is missing from the cache (older entry)
+                # we fall back to the live fetcher, which makes one cheap
+                # ``per_page=1`` request and writes through.
+                cached_count = repo_obj.get('contributor_count')
+                if isinstance(cached_count, int):
+                    repo.contributor_count = cached_count
+                elif self.max_contributors is not None:
+                    fetched = self.client.get_contributor_count(repo_full_name)
+                    if fetched is not None:
+                        repo.contributor_count = fetched
+
+                if (
+                    self.max_contributors is not None
+                    and repo.contributor_count is not None
+                    and repo.contributor_count > self.max_contributors
+                ):
+                    repo.skipped_high_contributors = True
+                    logger.info(
+                        f"Skipping contributor expansion for {repo_full_name} "
+                        f"({repo.contributor_count} contributors > "
+                        f"max_contributors={self.max_contributors})"
+                    )
+                else:
+                    # Use cached contributors data if available
+                    cached_contributors = repo_obj.get('contributors', [])
+                    repo.contributors.extend(cached_contributors)
+                    for contributor_login in cached_contributors:
+                        items_to_queue.append(('user', contributor_login))
 
                 # Cached issue/PR activity (populated by the GraphQL client when
                 # crawl_issues/crawl_prs are set; REST cache omits these).
@@ -816,7 +841,6 @@ class GitHubCrawler:
                     forked_from=repo_obj.parent.full_name if repo_obj.parent else None,
                     is_explored=True,
                     exploration_timestamp=datetime.now().isoformat(),
-                    is_epfl=repo_obj.owner.login.lower() in self.epfl_entities
                 )
                 
                 # Collect items to queue
@@ -826,14 +850,36 @@ class GitHubCrawler:
                 owner_type = 'org' if repo_obj.owner.type == 'Organization' else 'user'
                 items_to_queue.append((owner_type, repo_obj.owner.login))
                 
-                # Get contributors from live API (limited to avoid too many API calls)
+                # Get contributors from live API (limited to avoid too many API calls).
+                # ``totalCount`` is one cheap ``per_page=1`` request; we read it
+                # before iterating so the --max-contributors skip rule can
+                # kick in without paginating the full list of a megaproject.
                 try:
                     contributors = self.client._make_request(repo_obj.get_contributors)
-                    for i, contributor in enumerate(contributors):
-                        if i >= 10:  # Limit to top 10 contributors
-                            break
-                        repo.contributors.append(contributor.login)
-                        items_to_queue.append(('user', contributor.login))
+                    try:
+                        repo.contributor_count = int(contributors.totalCount)
+                    except Exception as e:
+                        logger.debug(
+                            f"Failed to read contributor totalCount for {repo_full_name}: {e}"
+                        )
+
+                    if (
+                        self.max_contributors is not None
+                        and repo.contributor_count is not None
+                        and repo.contributor_count > self.max_contributors
+                    ):
+                        repo.skipped_high_contributors = True
+                        logger.info(
+                            f"Skipping contributor expansion for {repo_full_name} "
+                            f"({repo.contributor_count} contributors > "
+                            f"max_contributors={self.max_contributors})"
+                        )
+                    else:
+                        for i, contributor in enumerate(contributors):
+                            if i >= 10:  # Limit to top 10 contributors
+                                break
+                            repo.contributors.append(contributor.login)
+                            items_to_queue.append(('user', contributor.login))
                 except Exception as e:
                     logger.warning(f"Failed to get contributors for repo {repo_full_name}: {e}")
                 
@@ -1094,14 +1140,21 @@ class GitHubCrawler:
         
         try:
             while self.queue and self.current_round < self.max_rounds:
-                # Cooperative stop: checked at the round boundary so the
-                # graph stays round-consistent. An in-flight round always
-                # finishes draining before the loop exits here.
-                if self.stop_event is not None and self.stop_event.is_set():
-                    logger.info(
-                        f"Stop requested; halting crawl before round "
-                        f"{self.current_round} ({len(self.queue)} nodes left queued)"
-                    )
+                # Honour cooperative cancel between rounds. Inside a single
+                # round we let the in-flight thread pool drain (work that's
+                # already mid-network-call finishes) and then break.
+                if self.cancel_requested:
+                    logger.info("Crawl cancellation requested — exiting BFS")
+                    break
+
+                # If paused, sleep in 1s ticks until either the flag clears
+                # or a cancel comes in. Pause is a between-rounds construct
+                # — same reason as cancel: don't tear down active work.
+                while self.pause_requested and not self.cancel_requested:
+                    import time as _t
+                    _t.sleep(1.0)
+                if self.cancel_requested:
+                    logger.info("Crawl cancellation while paused — exiting BFS")
                     break
 
                 # Start new round
@@ -1323,7 +1376,6 @@ class GitHubCrawler:
                 nodes_csv, 
                 self.seed_nodes,
                 discovered_nodes=self.discovered_nodes,
-                epfl_entities=self.epfl_entities
             )
             logger.debug(f"Nodes CSV exported to {nodes_csv}")
         

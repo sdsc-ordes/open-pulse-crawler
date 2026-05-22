@@ -42,6 +42,11 @@ dev = [
   "ruff>=0.1.0",
   "httpx>=0.27.0",
 ]
+docs = [
+  "mkdocs>=1.6.0",
+  "mkdocs-material>=9.5.0",
+  "pymdown-extensions>=10.7.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/sdsc-ordes/open-pulse-crawler"
