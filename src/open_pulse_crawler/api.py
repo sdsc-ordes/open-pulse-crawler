@@ -400,9 +400,21 @@ def _bool_env(name: str, default: bool = False) -> bool:
 # state file. All paths live under OPC_DATA_DIR/{job_id}/.
 
 
+def _data_root() -> Path:
+    """Root directory for API-side artifacts. Writable in the container
+    (unlike the process CWD, which is root-owned)."""
+    return Path(os.environ.get("OPC_DATA_DIR", "/tmp/open-pulse-crawler"))
+
+
+def _api_cache_dir() -> Path:
+    """Default API response cache location — under OPC_DATA_DIR so it is
+    writable in the container. The repo-relative CLI default
+    (`data/open-pulse-crawler/cache`) would land in a non-writable CWD."""
+    return _data_root() / "cache"
+
+
 def _snapshot_dir(job_id: str) -> Path:
-    data_root = Path(os.environ.get("OPC_DATA_DIR", "/tmp/open-pulse-crawler"))
-    return data_root / job_id
+    return _data_root() / job_id
 
 
 def _state_path(job_id: str) -> Path:
@@ -567,7 +579,9 @@ def _run_crawl(
             jsonld_dir = _snapshot_dir(job_id) / "jsonld"
             jsonld_dir.mkdir(parents=True, exist_ok=True)
 
-        client = GitHubClient(tokens=tokens, cache_dir=resolve_cache_dir())
+        client = GitHubClient(
+            tokens=tokens, cache_dir=resolve_cache_dir(default=_api_cache_dir())
+        )
         crawler = GitHubCrawler(
             client=client,
             max_rounds=max_rounds,
@@ -656,7 +670,7 @@ def _run_crawl_graphql(
 
         client = GitHubGraphQLClient(
             tokens=tokens,
-            cache_dir=resolve_cache_dir(),
+            cache_dir=resolve_cache_dir(default=_api_cache_dir()),
             crawl_issues=crawl_issues,
             crawl_prs=crawl_prs,
             issue_max=issue_max,

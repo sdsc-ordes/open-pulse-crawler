@@ -23,18 +23,23 @@ CACHE_DIR_ENV = "OPC_CACHE_DIR"
 DEFAULT_CACHE_DIR = "data/open-pulse-crawler/cache"
 
 
-def resolve_cache_dir(explicit: Optional[Path] = None) -> Optional[Path]:
+def resolve_cache_dir(
+    explicit: Optional[Path] = None,
+    default: Optional[Path] = None,
+) -> Optional[Path]:
     """Resolve the API response cache directory.
 
     Precedence:
       1. `explicit` argument (e.g. a CLI `--cache-dir` value), when given.
       2. The `OPC_CACHE_DIR` environment variable.
-      3. The default `data/open-pulse-crawler/cache`.
+      3. The `default` argument, when the caller supplies a context-specific
+         one (the API passes a path under `OPC_DATA_DIR`, which is writable
+         in the container — unlike the repo-relative CLI default).
+      4. The repo-relative default `data/open-pulse-crawler/cache`.
 
     Setting `OPC_CACHE_DIR` to an empty string disables caching (returns
-    `None`), as does an explicit value of `None` only via the env path —
-    callers that want caching off should pass no explicit dir and set the
-    env var empty, or skip cache wiring entirely.
+    `None`). Caching is also resilient at runtime: an unwritable directory
+    disables the cache rather than failing the crawl (see `APICache`).
     """
     if explicit is not None:
         return Path(explicit)
@@ -42,26 +47,47 @@ def resolve_cache_dir(explicit: Optional[Path] = None) -> Optional[Path]:
     if env_value is not None:
         env_value = env_value.strip()
         return Path(env_value) if env_value else None
+    if default is not None:
+        return Path(default)
     return Path(DEFAULT_CACHE_DIR)
 
 
 class APICache:
-    """Simple file-based cache for API responses."""
-    
+    """Simple file-based cache for API responses.
+
+    Caching is an optimization — a crawl must never fail because the cache
+    directory can't be created (e.g. an unwritable path inside a container).
+    If the directory can't be made, the cache disables itself: ``get`` always
+    misses and ``set`` is a no-op, so the crawl runs uncached.
+    """
+
     def __init__(self, cache_dir: Path):
         self.cache_dir = cache_dir
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-    
+        self.enabled = True
+        try:
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            self.enabled = False
+            logger.warning(
+                "Cache directory '%s' is not usable (%s); continuing without "
+                "caching. Set OPC_CACHE_DIR to a writable path, or to an empty "
+                "string to disable caching without this warning.",
+                cache_dir,
+                exc,
+            )
+
     def _get_cache_key(self, endpoint: str, params: str) -> str:
         """Generate cache key from endpoint and params."""
         content = f"{endpoint}:{params}"
         return hashlib.md5(content.encode()).hexdigest()
-    
+
     def get(self, endpoint: str, params: str = "") -> Optional[Any]:
         """Get cached response."""
+        if not self.enabled:
+            return None
         key = self._get_cache_key(endpoint, params)
         cache_file = self.cache_dir / f"{key}.json"
-        
+
         if cache_file.exists():
             try:
                 with open(cache_file, 'r') as f:
@@ -73,6 +99,8 @@ class APICache:
     
     def set(self, endpoint: str, params: str, data: Any):
         """Store response in cache."""
+        if not self.enabled:
+            return
         key = self._get_cache_key(endpoint, params)
         cache_file = self.cache_dir / f"{key}.json"
         
