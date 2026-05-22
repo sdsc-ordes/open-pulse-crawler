@@ -78,7 +78,7 @@ def export_to_csv(graph: GraphData, output_path: Path, seed_nodes: Set[str]):
                 'source_type': 'user',
                 'target_type': 'repo',
             })
-        
+
         # User -> forked repositories (fork_of - reverse direction)
         for repo_name in user.forked_repositories:
             # The user created a fork, so user -> repo "contributor_of"
@@ -90,19 +90,49 @@ def export_to_csv(graph: GraphData, output_path: Path, seed_nodes: Set[str]):
                 'source_type': 'user',
                 'target_type': 'repo',
             })
+
+        # Follow relationships — only emit edges between users both in the graph.
+        for followed_login in user.following:
+            if followed_login in graph.users:
+                edges.append({
+                    'source': user.login,
+                    'target': followed_login,
+                    'property': 'follows',
+                    'source_type': 'user',
+                    'target_type': 'user',
+                })
+        for follower_login in user.followers:
+            if follower_login in graph.users:
+                edges.append({
+                    'source': follower_login,
+                    'target': user.login,
+                    'property': 'follows',
+                    'source_type': 'user',
+                    'target_type': 'user',
+                })
+
+        # Starred and watched repositories — only emit when the repo is in the graph.
+        for repo_name in user.starred_repositories:
+            if repo_name in graph.repos:
+                edges.append({
+                    'source': user.login,
+                    'target': repo_name,
+                    'property': 'starred',
+                    'source_type': 'user',
+                    'target_type': 'repo',
+                })
+        for repo_name in user.watched_repositories:
+            if repo_name in graph.repos:
+                edges.append({
+                    'source': user.login,
+                    'target': repo_name,
+                    'property': 'watching',
+                    'source_type': 'user',
+                    'target_type': 'repo',
+                })
     
     # Process organizations
     for org in graph.orgs.values():
-        # Org members -> org (member_of)
-        for member_login in org.members:
-            edges.append({
-                'source': member_login,
-                'target': org.login,
-                'property': 'member_of',
-                'source_type': 'user',
-                'target_type': 'org',
-            })
-        
         # Org -> authored repositories (owner_of)
         for repo_name in org.authored_repositories:
             edges.append({
@@ -180,7 +210,58 @@ def export_to_csv(graph: GraphData, output_path: Path, seed_nodes: Set[str]):
                 'source_type': 'repo',
                 'target_type': 'repo',
             })
-    
+
+        # Issue / PR activity — only emit when the user is in the graph.
+        _activity_pairs = (
+            ('issue_author', repo.issue_authors),
+            ('pr_author', repo.pr_authors),
+            ('commented_on', repo.commenters),
+            ('pr_reviewer', repo.pr_reviewers),
+        )
+        for property_name, login_list in _activity_pairs:
+            for user_login in login_list:
+                if user_login in graph.users:
+                    edges.append({
+                        'source': user_login,
+                        'target': repo.full_name,
+                        'property': property_name,
+                        'source_type': 'user',
+                        'target_type': 'repo',
+                    })
+
+    # Process teams
+    for team in graph.teams.values():
+        # Team is contained by an org.
+        if team.org and team.org in graph.orgs:
+            edges.append({
+                'source': team.org,
+                'target': team.full_name,
+                'property': 'has_team',
+                'source_type': 'org',
+                'target_type': 'team',
+            })
+
+        # Team access to repositories.
+        for repo_name in team.repositories:
+            if repo_name in graph.repos:
+                edges.append({
+                    'source': team.full_name,
+                    'target': repo_name,
+                    'property': 'has_access',
+                    'source_type': 'team',
+                    'target_type': 'repo',
+                })
+
+        # Nested teams: parent -> child.
+        if team.parent and team.parent in graph.teams:
+            edges.append({
+                'source': team.parent,
+                'target': team.full_name,
+                'property': 'parent_of',
+                'source_type': 'team',
+                'target_type': 'team',
+            })
+
     # Deduplicate edges to prevent double-counting (e.g. if A depends on B, and both are in graph)
     # Convert list of dicts to set of frozen items, then back to list of dicts
     unique_edges = {tuple(sorted(d.items())) for d in edges}
@@ -254,6 +335,18 @@ def export_nodes_csv(
             'exploration_timestamp': repo.exploration_timestamp,
         })
         processed_ids.add(repo.full_name)
+
+    # Add teams
+    for team in graph.teams.values():
+        nodes.append({
+            'id': team.full_name,
+            'name': team.name or team.full_name,
+            'type': 'team',
+            'is_seed': team.full_name in seed_nodes,
+            'is_explored': team.is_explored,
+            'exploration_timestamp': team.exploration_timestamp,
+        })
+        processed_ids.add(team.full_name)
 
     # Add discovered but unexplored nodes
     if discovered_nodes:

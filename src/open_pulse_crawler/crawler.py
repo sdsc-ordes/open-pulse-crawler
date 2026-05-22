@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 
 from .models import (
-    GraphData, UserModel, OrgModel, RepoModel,
+    GraphData, UserModel, OrgModel, RepoModel, TeamModel,
     GitHubItemType
 )
 from .github_client import GitHubClient
@@ -33,6 +33,10 @@ class GitHubCrawler:
         batch_size: Optional[int] = None,
         crawl_dependencies: bool = False,
         crawl_dependents: bool = False,
+        crawl_issues: bool = False,
+        crawl_prs: bool = False,
+        issue_max: int = 100,
+        pr_max: int = 100,
         min_stars: int = 0,
         max_dependents: Optional[int] = None,
         max_contributors: Optional[int] = None,
@@ -51,6 +55,10 @@ class GitHubCrawler:
             batch_size: Number of nodes to process concurrently (default: matches client's max_concurrent_requests)
             crawl_dependencies: Whether to crawl dependencies (downstream)
             crawl_dependents: Whether to crawl dependents (upstream)
+            crawl_issues: Whether to fetch issue authors and conversation commenters per repo
+            crawl_prs: Whether to fetch PR authors, conversation commenters, and reviewers per repo
+            issue_max: Maximum number of issues to scan per repo (most recent)
+            pr_max: Maximum number of PRs to scan per repo (most recent)
             min_stars: Minimum stars for dependents/dependencies filtering
             max_contributors: When set, repos with strictly more contributors are
                 kept in the graph but their contributor edges are NOT expanded
@@ -68,6 +76,10 @@ class GitHubCrawler:
         self.batch_size = batch_size if batch_size is not None else client.semaphore._value
         self.crawl_dependencies = crawl_dependencies
         self.crawl_dependents = crawl_dependents
+        self.crawl_issues = crawl_issues
+        self.crawl_prs = crawl_prs
+        self.issue_max = issue_max
+        self.pr_max = pr_max
         self.min_stars = min_stars
         self.max_dependents = max_dependents
         self.max_contributors = max_contributors
@@ -112,7 +124,7 @@ class GitHubCrawler:
         
         # Optional callback for incremental exports
         self.incremental_export_callback: Optional[Callable[[int], None]] = None
-        
+
         logger.info(f"Crawler initialized with batch_size={self.batch_size}")
     
     def _track_discovered_node(self, node_type: str, identifier: str, parent_id: str = None, parent_type: str = None):
@@ -266,7 +278,15 @@ class GitHubCrawler:
                 # Use cached organizations data if available
                 cached_orgs = user_obj.get('orgs', [])
                 orgs_to_queue = list(cached_orgs)
-                
+
+                # Record follow lists (no queueing — edges only).
+                user.followers.extend(user_obj.get('followers', []))
+                user.following.extend(user_obj.get('following', []))
+
+                # Record star/watch lists (no queueing — edges only).
+                user.starred_repositories.extend(user_obj.get('starred', []))
+                user.watched_repositories.extend(user_obj.get('watching', []))
+
                 # Add all items to queue in a single lock acquisition
                 with self.visited_lock:
                     for repo_name in repos_to_queue:
@@ -312,7 +332,33 @@ class GitHubCrawler:
                     orgs_to_queue = [org.login for org in orgs]
                 except Exception as e:
                     logger.warning(f"Failed to get organizations for user {username}: {e}")
-                
+
+                # Fetch follow lists from live API — record only, do not queue.
+                try:
+                    followers = self.client._make_request(user_obj.get_followers)
+                    user.followers.extend(f.login for f in followers)
+                except Exception as e:
+                    logger.warning(f"Failed to get followers for user {username}: {e}")
+
+                try:
+                    following = self.client._make_request(user_obj.get_following)
+                    user.following.extend(f.login for f in following)
+                except Exception as e:
+                    logger.warning(f"Failed to get following for user {username}: {e}")
+
+                # Fetch starred and watched (subscriptions) — record only, do not queue.
+                try:
+                    starred = self.client._make_request(user_obj.get_starred)
+                    user.starred_repositories.extend(r.full_name for r in starred)
+                except Exception as e:
+                    logger.warning(f"Failed to get starred for user {username}: {e}")
+
+                try:
+                    subs = self.client._make_request(user_obj.get_subscriptions)
+                    user.watched_repositories.extend(r.full_name for r in subs)
+                except Exception as e:
+                    logger.warning(f"Failed to get subscriptions for user {username}: {e}")
+
                 # Add all items to queue in a single lock acquisition
                 with self.visited_lock:
                     for repo_name in repos_to_queue:
@@ -363,6 +409,10 @@ class GitHubCrawler:
                         org.authored_repositories.append(repo_data['full_name'])
                     repos_to_queue.append(repo_data['full_name'])
                 
+                # Cached teams (populated by GraphQL client; REST cache omits teams).
+                for team_data in org_obj.get('teams', []) or []:
+                    self._build_team_from_dict(org_name, team_data)
+
                 # Add all items to queue in a single lock acquisition
                 with self.visited_lock:
                     for member_login in members_to_queue:
@@ -405,7 +455,12 @@ class GitHubCrawler:
                         repos_to_queue.append(repo.full_name)
                 except Exception as e:
                     logger.warning(f"Failed to get repos for org {org_name}: {e}")
-                
+
+                # Get organization teams from live API. Requires the auth token
+                # to be an org member with team-read perms; 403/404 is expected
+                # for external orgs and is logged at debug level.
+                self._fetch_org_teams(org_obj, org_name)
+
                 # Add all items to queue in a single lock acquisition
                 with self.visited_lock:
                     for member_login in members_to_queue:
@@ -416,11 +471,93 @@ class GitHubCrawler:
                         if repo_name not in self.visited:
                             self.queue.append(('repo', repo_name, self.current_round + 1))
                             self._track_discovered_node('repo', repo_name, org_name, 'org')
-            
+
             return org
         except Exception as e:
             logger.error(f"Error processing organization {org_name}: {e}")
             return None
+
+    def _build_team_from_dict(self, org_name: str, team_data: Dict):
+        """Build a TeamModel from a dict (e.g. served by the GraphQL client)."""
+        try:
+            slug = team_data["slug"]
+            full_name = f"{org_name}/{slug}"
+            parent_slug = team_data.get("parent_slug")
+            parent_full_name = f"{org_name}/{parent_slug}" if parent_slug else None
+
+            team = TeamModel(
+                full_name=full_name,
+                slug=slug,
+                name=team_data.get("name") or "",
+                id=team_data.get("id", 0),
+                org=org_name,
+                description=team_data.get("description") or "",
+                privacy=team_data.get("privacy") or "",
+                parent=parent_full_name,
+                is_explored=True,
+                exploration_timestamp=datetime.now().isoformat(),
+            )
+            team.members.extend(team_data.get("members", []) or [])
+            team.repositories.extend(team_data.get("repositories", []) or [])
+
+            with self.graph_lock:
+                self.graph.add_team(team)
+        except Exception as e:
+            logger.warning(f"Failed to materialize team from dict for org {org_name}: {e}")
+
+    def _fetch_org_teams(self, org_obj, org_name: str):
+        """Fetch teams for an org from the live API and add them to the graph.
+
+        Teams require auth-token membership in the org. When access is denied
+        we log at debug level and move on — this is the common case for
+        externally-crawled orgs.
+        """
+        try:
+            teams = self.client._make_request(org_obj.get_teams)
+            if teams is None:
+                return
+            team_objs = list(teams)
+        except Exception as e:
+            logger.debug(f"Cannot list teams for org {org_name} (likely no access): {e}")
+            return
+
+        for team_obj in team_objs:
+            try:
+                slug = team_obj.slug
+                full_name = f"{org_name}/{slug}"
+                parent_full_name = None
+                if getattr(team_obj, "parent", None) is not None:
+                    parent_full_name = f"{org_name}/{team_obj.parent.slug}"
+
+                team = TeamModel(
+                    full_name=full_name,
+                    slug=slug,
+                    name=team_obj.name or "",
+                    id=team_obj.id,
+                    org=org_name,
+                    description=team_obj.description or "",
+                    privacy=getattr(team_obj, "privacy", "") or "",
+                    parent=parent_full_name,
+                    is_explored=True,
+                    exploration_timestamp=datetime.now().isoformat(),
+                )
+
+                try:
+                    t_members = self.client._make_request(team_obj.get_members)
+                    team.members.extend(m.login for m in t_members)
+                except Exception as e:
+                    logger.warning(f"Failed to get members for team {full_name}: {e}")
+
+                try:
+                    t_repos = self.client._make_request(team_obj.get_repos)
+                    team.repositories.extend(r.full_name for r in t_repos)
+                except Exception as e:
+                    logger.warning(f"Failed to get repos for team {full_name}: {e}")
+
+                with self.graph_lock:
+                    self.graph.add_team(team)
+            except Exception as e:
+                logger.warning(f"Failed to process team in org {org_name}: {e}")
     
     def _process_repository(self, repo_full_name: str) -> Optional[RepoModel]:
         """Process a repository and return RepoModel."""
@@ -615,7 +752,14 @@ class GitHubCrawler:
                     repo.contributors.extend(cached_contributors)
                     for contributor_login in cached_contributors:
                         items_to_queue.append(('user', contributor_login))
-                
+
+                # Cached issue/PR activity (populated by the GraphQL client when
+                # crawl_issues/crawl_prs are set; REST cache omits these).
+                repo.issue_authors.extend(repo_obj.get('issue_authors', []) or [])
+                repo.pr_authors.extend(repo_obj.get('pr_authors', []) or [])
+                repo.commenters.extend(repo_obj.get('commenters', []) or [])
+                repo.pr_reviewers.extend(repo_obj.get('pr_reviewers', []) or [])
+
                 # If it's a fork, add parent
                 if repo.is_fork and repo.forked_from:
                     items_to_queue.append(('repo', repo.forked_from))
@@ -803,17 +947,130 @@ class GitHubCrawler:
                     except Exception as e:
                         logger.warning(f"Failed to crawl dependents for {repo_full_name}: {e}")
 
+                # Issue / PR activity (record only — does not queue new nodes).
+                if self.crawl_issues:
+                    self._fetch_repo_issues(repo_obj, repo)
+                if self.crawl_prs:
+                    self._fetch_repo_prs(repo_obj, repo)
+
                 # Add all items to queue in a single lock acquisition
                 with self.visited_lock:
                     for item_type, identifier in items_to_queue:
                         if identifier not in self.visited:
                             self.queue.append((item_type, identifier, self.current_round + 1))
                             self._track_discovered_node(item_type, identifier, repo_full_name, 'repo')
-            
+
             return repo
         except Exception as e:
             logger.error(f"Error processing repository {repo_full_name}: {e}")
             return None
+
+    def _fetch_repo_issues(self, repo_obj, repo: RepoModel):
+        """Populate repo.issue_authors and repo.commenters from the issues API.
+
+        Iterates up to self.issue_max true issues (excludes PRs via the
+        `pull_request` attribute). Per issue, also fetches conversation
+        comments and records commenter logins.
+        """
+        try:
+            issues = self.client._make_request(repo_obj.get_issues, state="all")
+        except Exception as e:
+            logger.warning(f"Failed to list issues for {repo.full_name}: {e}")
+            return
+        if issues is None:
+            return
+
+        authors_seen: Set[str] = set()
+        commenters_seen: Set[str] = set(repo.commenters)
+        count = 0
+        try:
+            for issue in issues:
+                if issue.pull_request is not None:
+                    continue
+                if count >= self.issue_max:
+                    break
+                count += 1
+
+                author = getattr(issue, "user", None)
+                if author is not None and author.login not in authors_seen:
+                    authors_seen.add(author.login)
+                    repo.issue_authors.append(author.login)
+
+                try:
+                    comments = self.client._make_request(issue.get_comments)
+                    if comments is None:
+                        continue
+                    for c in comments:
+                        cuser = getattr(c, "user", None)
+                        if cuser is None:
+                            continue
+                        if cuser.login in commenters_seen:
+                            continue
+                        commenters_seen.add(cuser.login)
+                        repo.commenters.append(cuser.login)
+                except Exception as e:
+                    logger.warning(f"Failed to get comments for issue in {repo.full_name}: {e}")
+        except Exception as e:
+            logger.warning(f"Issue iteration failed for {repo.full_name}: {e}")
+
+    def _fetch_repo_prs(self, repo_obj, repo: RepoModel):
+        """Populate repo.pr_authors, repo.pr_reviewers, repo.commenters from the PRs API.
+
+        Iterates up to self.pr_max PRs. Per PR also records conversation
+        comments (issue-comments) and review submitters.
+        """
+        try:
+            pulls = self.client._make_request(repo_obj.get_pulls, state="all")
+        except Exception as e:
+            logger.warning(f"Failed to list PRs for {repo.full_name}: {e}")
+            return
+        if pulls is None:
+            return
+
+        authors_seen: Set[str] = set()
+        reviewers_seen: Set[str] = set()
+        commenters_seen: Set[str] = set(repo.commenters)
+        count = 0
+        try:
+            for pr in pulls:
+                if count >= self.pr_max:
+                    break
+                count += 1
+
+                author = getattr(pr, "user", None)
+                if author is not None and author.login not in authors_seen:
+                    authors_seen.add(author.login)
+                    repo.pr_authors.append(author.login)
+
+                try:
+                    reviews = self.client._make_request(pr.get_reviews)
+                    if reviews is not None:
+                        for r in reviews:
+                            ruser = getattr(r, "user", None)
+                            if ruser is None:
+                                continue
+                            if ruser.login in reviewers_seen:
+                                continue
+                            reviewers_seen.add(ruser.login)
+                            repo.pr_reviewers.append(ruser.login)
+                except Exception as e:
+                    logger.warning(f"Failed to get reviews for PR in {repo.full_name}: {e}")
+
+                try:
+                    comments = self.client._make_request(pr.get_issue_comments)
+                    if comments is not None:
+                        for c in comments:
+                            cuser = getattr(c, "user", None)
+                            if cuser is None:
+                                continue
+                            if cuser.login in commenters_seen:
+                                continue
+                            commenters_seen.add(cuser.login)
+                            repo.commenters.append(cuser.login)
+                except Exception as e:
+                    logger.warning(f"Failed to get PR comments in {repo.full_name}: {e}")
+        except Exception as e:
+            logger.warning(f"PR iteration failed for {repo.full_name}: {e}")
     
     def _process_node(self, node_type: str, identifier: str) -> Optional[tuple]:
         """

@@ -147,6 +147,16 @@ mega-project saves the contributor pagination + the dozens of follow-up
 > `GIMIE_*` environment variables, not per-request — see
 > [`docs/DEPLOYMENT.md`](./DEPLOYMENT.md).
 
+### `POST /api/v1/crawl/graphql` — start a GraphQL-backed crawl
+
+Accepts the **same request body** as `POST /api/v1/crawl` and produces the same graph,
+but fetches user / org / repo data via GitHub's GraphQL API — roughly one query per
+entity instead of dozens of REST calls. Contributors, SBOM dependencies, and the
+"Used by" dependents graph still fall back to REST. Org-level fields require a token
+with `read:org` scope. Gimie hybrid mode is not available on this endpoint.
+
+**Response** `202 Accepted` — identical shape to `POST /api/v1/crawl`.
+
 ### `GET /api/v1/crawl/{job_id}` — status, progress, ETA
 
 Returns status, summary counts, and (for running jobs) live BFS progress.
@@ -219,7 +229,16 @@ Returns every job currently in the in-memory registry, newest first
 
 ### `GET /api/v1/graph/{job_id}` — fetch the graph
 
-Full graph data for a **completed** crawl job.
+Graph data for a crawl job. By default only a **completed** job is served; pass
+`?partial=true` to also read a partial graph from a running / cancelled / failed job,
+or to recover a job by ID after its in-memory record was lost (container restart) from
+the last per-round disk snapshot.
+
+**Query parameters**
+
+| Param     | Type   | Default | Description                                              |
+| --------- | ------ | ------- | -------------------------------------------------------- |
+| `partial` | `bool` | `false` | Allow reading a non-completed / snapshot-recovered graph |
 
 **Response** `200`
 
@@ -230,13 +249,16 @@ Full graph data for a **completed** crawl job.
     "users": { "torvalds": { "login": "torvalds", "...": "..." } },
     "orgs": {},
     "repos": {}
-  }
+  },
+  "partial": false,
+  "status": "completed",
+  "rounds_completed": 2
 }
 ```
 
-`404` if the job ID is unknown; `409 Conflict` if the job is not in `completed` state
-(use the status endpoint to check; partial graphs from cancelled jobs are not exposed
-here yet).
+Without `?partial=true`: `404` if the job ID is unknown, `409 Conflict` if the job has
+not completed. With `?partial=true`: returns the latest round snapshot, or `404`/`409`
+if no snapshot exists yet.
 
 ### Lifecycle controls
 
@@ -253,14 +275,19 @@ in 1-second ticks until `resume` or `cancel`.
 
 #### `POST /api/v1/crawl/{job_id}/resume`
 
-Lifts a previous pause. `409` if the job isn't `paused`.
+Lifts a previous pause. Also resumes a `cancelled` or `failed` job: it continues from
+the persisted BFS state (queue + visited set + graph) instead of re-crawling from the
+seeds, and works even after the in-memory job record was lost — as long as the job's
+`state.json` + `request.json` are still on disk under `OPC_DATA_DIR/{job_id}/`.
+
+`409` if the job is `running`/`pending`, or if there is no resumable state.
 
 #### `POST /api/v1/crawl/{job_id}/cancel`
 
 Asks the BFS loop to stop at the next round boundary. The final status becomes
-`cancelled` once the loop exits. The graph collected up to that point is preserved
-internally; access it via the (in-memory) job record once we expose partial graphs on
-the graph endpoint.
+`cancelled` once the loop exits. The graph collected up to that point is preserved —
+read it with `GET /api/v1/graph/{job_id}?partial=true`, or continue the crawl with
+`POST /api/v1/crawl/{job_id}/resume`.
 
 `409` if the job is already in a terminal state.
 
@@ -314,6 +341,8 @@ curl -X DELETE "$API_BASE/crawl/$JOB_ID" -H "Authorization: Bearer $API_TOKEN"
 ```bash
 export API_TOKEN="my-secret"
 export GITHUB_TOKEN="ghp_..."
+export OPC_DATA_DIR="/var/lib/crawler/jobs"     # optional; per-job snapshots + resumable state
+export OPC_CACHE_DIR="data/open-pulse-crawler/cache"  # optional; GitHub API response cache
 uvicorn open_pulse_crawler.api:app --host 0.0.0.0 --port 8000
 ```
 

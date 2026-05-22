@@ -188,10 +188,10 @@ rm -rf cache/
 ### Output Structure
 ```
 output/
-├── graph_YYYYMMDD_HHMMSS.json           # Full graph data
-├── edges_YYYYMMDD_HHMMSS.csv            # Relationships
-├── nodes_YYYYMMDD_HHMMSS.csv            # All entities
-└── graph_YYYYMMDD_HHMMSS.png            # Visualization
+├── YYYYMMDDHHMMSS.graph.json           # Full graph data
+├── YYYYMMDDHHMMSS.edges.csv            # Relationships
+├── YYYYMMDDHHMMSS.nodes.csv            # All entities
+└── YYYYMMDDHHMMSS.graph.png            # Visualization
 ```
 
 ### Visualization Features

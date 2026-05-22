@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Resume-from-state: `POST /api/v1/crawl/{job_id}/resume` — in addition to lifting a pause — continues a `cancelled`/`failed` job from its persisted BFS state (queue + visited set + graph) rather than re-crawling from the seeds. Works even after the in-memory job record is lost (container restart), as long as the job's `state.json` + `request.json` are on disk. The background crawl wires the crawler's `state_file` (written per round) and persists the original request so the resume rebuilds the exact config — REST or GraphQL.
+- Partial-graph recovery for crawl jobs:
+  - The background crawl now writes the graph to disk after every BFS round (and once more on the terminal transition) as `{OPC_DATA_DIR}/{job_id}/graph.snapshot.json`, written atomically and tagged with `status` + `rounds_completed`.
+  - `GET /api/v1/graph/{job_id}` accepts `?partial=true`. Without it the strict contract is unchanged (only a COMPLETED in-memory job is served). With it, a still-RUNNING or FAILED job's partial graph is returned from the last round snapshot — and a job whose in-memory record was lost (container restart/OOM) is recoverable by `job_id` from the same snapshot.
+  - `GraphResponse` gained `partial`, `status`, and `rounds_completed`; `CrawlResultResponse` gained `rounds_completed`.
+- Follow relationships: `UserModel` now carries `followers` and `following` login lists, populated from the GitHub API (and cached) per crawled user. CSV export includes `follows` edges (`source` follows `target`) between users that are both present in the graph. Follow lists do not expand the crawl — they are recorded as edges only.
+- Starred and watched repositories: `UserModel` gains `starred_repositories` and `watched_repositories` lists, sourced from `users/<login>/starred` and `users/<login>/subscriptions`. CSV export emits `starred` and `watching` edges between users and repos that are both present in the graph. Like follows, these do not expand the crawl.
+- GraphQL-backed crawl endpoint:
+  - New `POST /api/v1/crawl/graphql` accepts the same `CrawlRequest` body as `/api/v1/crawl`.
+  - New `GitHubGraphQLClient` (`graphql_client.py`) is duck-type compatible with the REST `GitHubClient`; it serves user / org / repo data via `api.github.com/graphql` and is plugged into the existing `GitHubCrawler` so BFS rounds, expansion, and edge export work unchanged.
+  - One GraphQL query covers everything `--crawl-issues` + `--crawl-prs` previously fetched via dozens of REST calls — measured cost on `sdsc-ordes/gimie` (issue-max 25, pr-max 25): 1 GraphQL point + 1 REST contributors call (1.5s) vs 80 REST calls (97s) for the same data.
+  - Crawler's cached-path branches now also materialize teams and issue/PR fields from dict payloads, so any client returning that shape (file cache, GraphQL) populates the same edges.
+  - REST is still used for: top contributors (no public GraphQL equivalent), SBOM dependencies, and the "Used by" dependents graph — the latter two only fire when their existing flags are set.
+  - Gimie hybrid mode is not wired into the GraphQL endpoint; use `/api/v1/crawl` for that.
+  - **Token scopes:** GraphQL requires `read:org` for any org-level field (login/name/members/teams) and `User.organizations` — REST returns the same public data with a less strict scope check. The user query now self-heals when the token lacks `read:org`: it falls back to a no-organizations query and re-fetches `orgs` via REST (`/users/{login}/orgs`, no scope needed) so the field still populates. Org-level queries (`get_organization`) still require `read:org`. Errors are surfaced at WARNING.
+  - **Pagination:** `User.starredRepositories` and `User.repositories` now paginate via cursors up to `max_per_list` items (default 1000) — closes the parity gap observed against power users (e.g. 243 starred repos on `cmdoret` were truncated to 100 in the initial implementation). Other connections (`followers`, `following`, `watching`, `organizations`) stay at first-100 — most users are well under that cap.
+- Issue and PR activity edges, opt-in:
+  - `RepoModel` gains `issue_authors`, `pr_authors`, `commenters`, and `pr_reviewers` lists.
+  - New CLI flags `--crawl-issues` and `--crawl-prs` (off by default; matches the existing `--crawl-dependencies` / `--crawl-dependents` pattern).
+  - `--issue-max` / `--pr-max` caps (default 100) limit how many of the most-recent issues/PRs are scanned per repo, mirroring the existing 10-contributor cap.
+  - CSV export emits `issue_author`, `pr_author`, `commented_on`, and `pr_reviewer` edges between users present in the graph and the repo.
+  - `commenters` covers conversation comments on both issues and PRs (both come from the issues API); `pr_reviewers` covers formal PR reviews only.
+  - The same parameters are exposed on `POST /api/v1/crawl` (`crawl_issues`, `crawl_prs`, `issue_max`, `pr_max`).
+- `TeamModel` for GitHub organization teams (`org/slug` full-name, members, repos, parent team, privacy) and a new `teams` collection on `GraphData`. When the auth token has access to an org's teams, teams are fetched live and emit `has_team` (org → team), `has_access` (team → repo), and `parent_of` (team → team) edges. Team data is fetched on the live API path only; orgs served from existing cache will not be re-checked for teams until the cache is invalidated.
+- `OPC_CACHE_DIR` environment variable for the API response cache directory, and a `--no-cache` CLI flag to disable caching. See **Changed** for the new default behavior.
 - `--max-contributors` skip rule (CLI flag, REST API field on `POST /api/v1/crawl`, Streamlit GUI input under "Performance & filtering", and constructor argument on `GitHubCrawler`). When set, repos with more than N contributors stay in the graph but their contributor users are not queued for BFS expansion — owner / fork / dependency / dependent edges are unaffected. Useful for avoiding mega-projects (linux kernel, etc.) that would otherwise dominate the frontier.
 - `RepoModel.contributor_count` and `RepoModel.skipped_high_contributors` fields. The total contributor count is captured the first time a repo is fetched (one cheap `per_page=1` request via `repo.get_contributors().totalCount`) and cached alongside the existing `repo:{full_name}` entry, so repeat crawls re-apply the skip rule with zero additional API calls.
 - `GitHubClient.get_contributor_count(repo_full_name)` helper — cache-first lookup with a single live fallback on miss; write-throughs the count so the next call hits cache.
@@ -49,8 +74,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Docker Compose stack (`infra/docker-compose.yml`) for `api`, `gui`, and `nginx` services on a shared network with env-file configuration and per-service health checks.
 - End-to-end Docker integration test script (`tests/test_integration.sh`) validating health, auth behavior, and GUI/API routing through Nginx.
 
+### Fixed
+
+- Partial crawl results were unrecoverable. `record.graph` was assigned only on the success path, so a FAILED job — or any job whose container restarted — lost every completed round (the graph lived solely in a local variable that was garbage-collected). The job record now references the live `GraphData` object before the crawl starts, and per-round disk snapshots make the partial graph durable across process restarts.
+
 ### Changed
 
+- API response caching is now **on by default**, stored at `data/open-pulse-crawler/cache`. Previously the CLI cached only when `--cache-dir` was passed, and the REST/GraphQL API never cached. Resolution order: explicit `--cache-dir` → `OPC_CACHE_DIR` env var → the default path; an empty `OPC_CACHE_DIR` (or the CLI `--no-cache` flag) disables caching. The `data/` directory is already git-ignored.
 - Fixed `infra/docker-compose.yml` nginx healthcheck: replaced `wget http://localhost/api/v1/health` with `wget http://127.0.0.1/api/v1/health`. Inside the Alpine container, `localhost` resolves to `::1` (IPv6) but `infra/nginx/nginx.conf` only declares `listen 80;` (IPv4-only), so the probe was getting "Connection refused" while external access worked fine. Stack went from `unhealthy` to healthy in 7s after recreate.
 - Crawl export filenames: timestamp first, then kind — e.g. `YYYYMMDDHHMMSS.graph.json`, `YYYYMMDDHHMMSS.edges.csv`, `YYYYMMDDHHMMSS.nodes.csv`, `YYYYMMDDHHMMSS.graph.png`, directory `YYYYMMDDHHMMSS.clusters/`. Incremental round folders are `YYYYMMDDHHMMSS.round_NN/` with the same inner naming.
 - Gimie JSON-LD: on success (HTTP 2xx) or when using an existing payload file with skip-existing, remove matching `jsonld_errors/<repo>.*.json` files for that repository.
@@ -66,5 +96,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Gimie hybrid extraction is now configured via environment variables (`GIMIE_ENABLED`, `GIMIE_API_BASE`, `GIMIE_STORE_JSONLD`, `GIMIE_SKIP_EXISTING_JSONLD`), not the per-request `gimie_repos` flag. Operators decide whether the gimie path is on; clients submitting crawls don't need to know.
 - Cleaned up `docs/`: removed completion-report markdown (`*_COMPLETE`, `*_FIX_SUMMARY`, `*_IMPLEMENTATION`, `IMPROVEMENTS_SUMMARY`, `PLAN_*`, `QUICK_REFERENCE`, etc.) and the duplicate copies of files that already live under `docs/dev/dependency-graph/`. The remaining doc set is `API.md`, `DEPLOYMENT.md`, `CONCURRENCY.md`, `PROGRESS_TRACKING.md`, `TIMESTAMPS.md`, `VISUALIZATION.md`, plus `docs/dev/`. README's broken `RATE_LIMITING.md` link now points at `docs/CONCURRENCY.md`.
 - Refreshed `docs/API.md` to match the current API surface (job list / pause / resume / cancel / delete, live progress fields with ETA, env-driven gimie config) and corrected the Dockerfile path in `docs/DEPLOYMENT.md` (`tools/image/Dockerfile`).
+
+### Removed
+
+- `member_of` edges (user → org and user → team) are no longer emitted in the CSV export. Org and team member lists are not a complete public signal — non-publicized org members are hidden from external tokens, and team membership requires org-level access — so they were dropped in favor of richer public signals (follows, stars, contributions). The underlying `OrgModel.members` and `TeamModel.members` lists are still populated in the JSON dump.
 
 [Unreleased]: https://github.com/sdsc-ordes/open-pulse-crawler/compare/v0.1.0...HEAD

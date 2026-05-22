@@ -15,7 +15,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from dotenv import load_dotenv
 
 from .models import GraphData
-from .github_client import GitHubClient
+from .github_client import GitHubClient, resolve_cache_dir
 from .crawler import GitHubCrawler
 from .io_utils import parse_seed_file, export_to_json, export_to_csv, export_nodes_csv
 from .visualization import visualize_graph, visualize_clusters as viz_clusters, VISUALIZATION_AVAILABLE
@@ -95,7 +95,13 @@ def crawl(
     cache_dir: Optional[Path] = typer.Option(
         None,
         "--cache-dir", "-c",
-        help="Directory for caching API responses"
+        help="Directory for caching API responses "
+             "(default: $OPC_CACHE_DIR or data/open-pulse-crawler/cache)"
+    ),
+    no_cache: bool = typer.Option(
+        False,
+        "--no-cache",
+        help="Disable API response caching (overrides --cache-dir and $OPC_CACHE_DIR)"
     ),
     state_file: Optional[Path] = typer.Option(
         None,
@@ -161,6 +167,28 @@ def crawl(
         None,
         "--max-dependents",
         help="Maximum number of dependents to fetch (default: None = all)"
+    ),
+    crawl_issues: bool = typer.Option(
+        False,
+        "--crawl-issues",
+        help="Fetch issue authors and conversation commenters per repo (opt-in, can be expensive on busy repos)"
+    ),
+    crawl_prs: bool = typer.Option(
+        False,
+        "--crawl-prs",
+        help="Fetch PR authors, conversation commenters, and reviewers per repo (opt-in, can be expensive on busy repos)"
+    ),
+    issue_max: int = typer.Option(
+        100,
+        "--issue-max",
+        help="Maximum number of issues to scan per repo when --crawl-issues is enabled (most recent first)",
+        min=1
+    ),
+    pr_max: int = typer.Option(
+        100,
+        "--pr-max",
+        help="Maximum number of PRs to scan per repo when --crawl-prs is enabled (most recent first)",
+        min=1
     ),
     max_contributors: Optional[int] = typer.Option(
         None,
@@ -260,10 +288,23 @@ def crawl(
     tokens = get_github_tokens()
     console.print(f"[green]✓[/green] Loaded {len(tokens)} GitHub token(s)")
     
-    # Setup cache directory
-    if cache_dir:
-        cache_dir.mkdir(parents=True, exist_ok=True)
+    # Resolve cache directory: --cache-dir wins, else $OPC_CACHE_DIR / default.
+    # --no-cache disables caching outright.
+    if no_cache:
+        cache_dir = None
+        console.print("[yellow]●[/yellow] API response caching disabled (--no-cache)")
+    else:
+        cache_dir = resolve_cache_dir(cache_dir)
+        if cache_dir:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            console.print(f"[green]✓[/green] Cache directory: {cache_dir}")
     
+    # ── gimie hybrid repo option wiring ─────────────────────────────────────
+    jsonld_dir: Optional[Path] = None
+    if gimie_repos:
+        if gimie_store_jsonld:
+            jsonld_dir = output_dir / "jsonld"
+
     # ── gimie hybrid repo option wiring ─────────────────────────────────────
     jsonld_dir: Optional[Path] = None
     if gimie_repos:
@@ -285,6 +326,10 @@ def crawl(
         batch_size=batch_size,
         crawl_dependencies=crawl_dependencies,
         crawl_dependents=crawl_dependents,
+        crawl_issues=crawl_issues,
+        crawl_prs=crawl_prs,
+        issue_max=issue_max,
+        pr_max=pr_max,
         min_stars=min_stars,
         max_dependents=max_dependents,
         max_contributors=max_contributors,

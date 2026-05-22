@@ -12,10 +12,11 @@ A powerful GitHub crawler based on breadth-first search (BFS) strategy to discov
 - ⏸️ **State Management**: Save and resume crawler state
 - 📝 **Rich Logging**: Timestamped logs with progress tracking and statistics
 - 📉 **Progress Tracking**: Real-time progress bars with percentage, ETA, and statistics using tqdm
-- 🎯 **Relationship Mapping**: Tracks "owner of", "contributor of", "member of", "fork of", "parent of", and "depends on" relationships
+- 🎯 **Relationship Mapping**: Tracks ownership, contribution, forks, follows, stars, watches, org teams, and issue/PR activity
 - 🔗 **Dependency Graph**: Crawl repository dependencies (SBOM) and dependents ("Used by")
+- ⚡ **GraphQL Mode**: Optional GraphQL-backed crawl that collapses dozens of REST calls into a single query per entity
 - 🚦 **Intelligent Rate Limiting**: Adaptive rate limit management with semaphores, delays, and multi-token rotation
-- ⚡ **Concurrent Control**: Configurable request throttling to prevent API abuse
+- ⚙️ **Concurrent Control**: Configurable request throttling to prevent API abuse
 
 ## Installation
 
@@ -95,13 +96,19 @@ API_TOKEN=your_api_token_for_rest_api
 Open Pulse Crawler includes a FastAPI service at `/api/v1` with:
 
 - `GET /api/v1/health` (public)
-- `POST /api/v1/crawl` (Bearer auth)
-- `GET /api/v1/crawl/{job_id}` (Bearer auth)
-- `GET /api/v1/graph/{job_id}` (Bearer auth)
+- `POST /api/v1/crawl` — start a crawl (Bearer auth)
+- `POST /api/v1/crawl/graphql` — start a GraphQL-backed crawl, same request body (Bearer auth)
+- `GET /api/v1/crawl/{job_id}` — job status (Bearer auth)
+- `POST /api/v1/crawl/{job_id}/stop` — cooperatively stop a running crawl (Bearer auth)
+- `POST /api/v1/crawl/{job_id}/resume` — resume a stopped/failed crawl from saved state (Bearer auth)
+- `GET /api/v1/graph/{job_id}` — graph data; `?partial=true` reads partial/recovered results (Bearer auth)
 
 The crawl request body supports the same core crawl controls as the CLI, including
-dependent/dependency crawling, `min_stars`, `max_dependents`, `batch_size`, and inline
-`epfl_entities` tagging.
+dependent/dependency crawling, issue/PR activity (`crawl_issues`, `crawl_prs`),
+`min_stars`, `max_dependents`, `batch_size`, and inline `epfl_entities` tagging.
+
+Crawls are checkpointed to disk per round under `OPC_DATA_DIR`, so partial results
+survive a stop, failure, or container restart.
 
 Run locally:
 
@@ -211,7 +218,8 @@ open-pulse-crawler crawl DeepLabCut/DeepLabCut \
 - `--seed-file, -f`: Path to file containing seed nodes (one per line)
 - `--rounds, -r`: Number of BFS rounds to perform (default: 3)
 - `--output-dir, -o`: Directory for output files (default: ./output)
-- `--cache-dir, -c`: Directory for caching API responses
+- `--cache-dir, -c`: Directory for caching API responses (default: `$OPC_CACHE_DIR` or `data/open-pulse-crawler/cache`)
+- `--no-cache`: Disable API response caching
 - `--state-file, -s`: File to save/load crawler state
 - `--resume`: Resume from saved state file
 - `--no-json`: Skip JSON output
@@ -226,6 +234,15 @@ open-pulse-crawler crawl DeepLabCut/DeepLabCut \
 - `--min-stars`: Minimum stars for filtering dependents/dependencies (default: 0)
 - `--max-dependents`: Maximum number of dependents to fetch (default: all)
 - `--max-contributors`: Skip contributor expansion for repos with more than N contributors. The repo node still lands in the graph (with owner / fork / deps); only its contributors are not queued. Useful for avoiding mega-projects (e.g. linux kernel) that would dominate the BFS frontier. The total count is cached, so this is roughly free on re-crawls. Default: unlimited.
+
+#### Issue & PR Activity Options
+- `--crawl-issues`: Fetch issue authors and conversation commenters per repo (opt-in)
+- `--crawl-prs`: Fetch PR authors, conversation commenters, and reviewers per repo (opt-in)
+- `--issue-max`: Max issues scanned per repo when `--crawl-issues` is set (default: 100)
+- `--pr-max`: Max PRs scanned per repo when `--crawl-prs` is set (default: 100)
+
+These are opt-in because issues/PRs paginate heavily on busy repos. They emit
+`issue_author`, `pr_author`, `commented_on`, and `pr_reviewer` edges.
 
 #### Rate Limiting Options (New!)
 - `--request-delay`: Minimum delay in seconds between API requests (default: 0.0)
@@ -263,11 +280,33 @@ Relationships between entities:
 
 ```csv
 source,target,property,source_type,target_type
-caviri,caviri/repo1,owner of,user,repo
-user1,org1,member of,user,org
-repo1,repo2,parent of,repo,repo
+caviri,caviri/repo1,owner_of,user,repo
+caviri,torvalds,follows,user,user
+caviri,sdsc-ordes/gimie,starred,user,repo
+repo1,repo2,parent_of,repo,repo
 repo1,lib1,depends_on,repo,repo
 ```
+
+Edge `property` values:
+
+| Property         | Direction        | Meaning                                         |
+| ---------------- | ---------------- | ----------------------------------------------- |
+| `owner_of`       | user/org → repo  | Owns the repository                             |
+| `contributor_of` | user/org → repo  | Contributed to the repository                   |
+| `parent_of`      | repo → repo      | Upstream repo of a fork                         |
+| `parent_of`      | team → team      | Parent of a nested team                         |
+| `depends_on`     | repo → repo      | Dependency / dependent edge                     |
+| `follows`        | user → user      | Follows the target user                         |
+| `starred`        | user → repo      | Starred the repository                          |
+| `watching`       | user → repo      | Watching (subscribed to) the repository         |
+| `has_team`       | org → team       | Org contains the team                           |
+| `has_access`     | team → repo      | Team has access to the repository               |
+| `issue_author`   | user → repo      | Opened an issue (opt-in `--crawl-issues`)       |
+| `pr_author`      | user → repo      | Opened a pull request (opt-in `--crawl-prs`)    |
+| `commented_on`   | user → repo      | Commented on an issue/PR (opt-in)               |
+| `pr_reviewer`    | user → repo      | Reviewed a pull request (opt-in `--crawl-prs`)  |
+
+Edges are only emitted between nodes that are both present in the graph.
 
 ### CSV Output (Nodes)
 
@@ -279,6 +318,8 @@ caviri,Carlos Vivar,user,true,true,2025-11-19T10:00:00,false
 sdsc-ordes/gimie,gimie,repo,true,true,2025-11-19T10:00:05,true
 torvalds,Linus Torvalds,user,false,false,,false
 ```
+
+Node `type` is one of `user`, `org`, `repo`, or `team`.
 
 ### Visualization
 

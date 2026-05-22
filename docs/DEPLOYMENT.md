@@ -136,11 +136,17 @@ docker run -d \
   -p 8000:8000 \
   -e GITHUB_TOKEN="ghp_..." \
   -e API_TOKEN="my-secret-api-token" \
+  -e OPC_DATA_DIR="/var/lib/crawler/jobs" \
+  -v opc-jobs:/var/lib/crawler/jobs \
   open-pulse-crawler
 ```
 
 The API will be available at `http://localhost:8000`. Visit
 `http://localhost:8000/api/v1/health` to verify it is running.
+
+The `-v` volume above persists per-job graph snapshots and resumable state.
+Without it, a partial graph and the ability to resume a stopped/failed job are
+lost when the container restarts — see [API.md → Persistence](./API.md#persistence).
 
 ### Environment variables
 
@@ -155,7 +161,8 @@ The API will be available at `http://localhost:8000`. Visit
 
 | Variable                       | Default                                | Description                                                                                                  |
 | ------------------------------ | -------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `OPC_DATA_DIR`                 | `/tmp/open-pulse-crawler`              | Root directory for per-job artifacts (e.g. `<job_id>/jsonld/`). Mount a volume for persistence.              |
+| `OPC_DATA_DIR`                 | `/tmp/open-pulse-crawler`              | Root directory for per-job artifacts (graph snapshots, resumable state, `<job_id>/jsonld/`). Mount a volume for persistence. |
+| `OPC_CACHE_DIR`                | `data/open-pulse-crawler/cache`        | Directory for the GitHub API response cache. Set to an empty value to disable caching.                       |
 | `OPC_PORT`                     | `80`                                   | Host port the Nginx reverse proxy publishes.                                                                 |
 | `OPC_IMAGE`                    | `ghcr.io/sdsc-ordes/open-pulse-crawler:latest` | Image tag used by the Compose stack.                                                                  |
 

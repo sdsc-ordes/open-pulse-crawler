@@ -18,6 +18,32 @@ import hashlib
 
 logger = logging.getLogger(__name__)
 
+# Environment variable and default location for the API response cache.
+CACHE_DIR_ENV = "OPC_CACHE_DIR"
+DEFAULT_CACHE_DIR = "data/open-pulse-crawler/cache"
+
+
+def resolve_cache_dir(explicit: Optional[Path] = None) -> Optional[Path]:
+    """Resolve the API response cache directory.
+
+    Precedence:
+      1. `explicit` argument (e.g. a CLI `--cache-dir` value), when given.
+      2. The `OPC_CACHE_DIR` environment variable.
+      3. The default `data/open-pulse-crawler/cache`.
+
+    Setting `OPC_CACHE_DIR` to an empty string disables caching (returns
+    `None`), as does an explicit value of `None` only via the env path —
+    callers that want caching off should pass no explicit dir and set the
+    env var empty, or skip cache wiring entirely.
+    """
+    if explicit is not None:
+        return Path(explicit)
+    env_value = os.environ.get(CACHE_DIR_ENV)
+    if env_value is not None:
+        env_value = env_value.strip()
+        return Path(env_value) if env_value else None
+    return Path(DEFAULT_CACHE_DIR)
+
 
 class APICache:
     """Simple file-based cache for API responses."""
@@ -358,8 +384,38 @@ class GitHubClient:
                     orgs_data = [org.login for org in orgs]
                 except Exception as e:
                     logger.warning(f"Failed to get organizations for caching user {username}: {e}")
-                
-                # Cache basic user info + repos + orgs
+
+                # Fetch and cache user's followers and following lists
+                followers_data = []
+                try:
+                    followers = self._make_request(user.get_followers)
+                    followers_data = [f.login for f in followers]
+                except Exception as e:
+                    logger.warning(f"Failed to get followers for caching user {username}: {e}")
+
+                following_data = []
+                try:
+                    following = self._make_request(user.get_following)
+                    following_data = [f.login for f in following]
+                except Exception as e:
+                    logger.warning(f"Failed to get following for caching user {username}: {e}")
+
+                # Fetch and cache starred and watched (subscriptions) repo lists
+                starred_data = []
+                try:
+                    starred = self._make_request(user.get_starred)
+                    starred_data = [r.full_name for r in starred]
+                except Exception as e:
+                    logger.warning(f"Failed to get starred for caching user {username}: {e}")
+
+                watching_data = []
+                try:
+                    subs = self._make_request(user.get_subscriptions)
+                    watching_data = [r.full_name for r in subs]
+                except Exception as e:
+                    logger.warning(f"Failed to get subscriptions for caching user {username}: {e}")
+
+                # Cache basic user info + repos + orgs + follow lists + star/watch lists
                 user_data = {
                     'login': user.login,
                     'name': user.name or '',
@@ -367,6 +423,10 @@ class GitHubClient:
                     'type': user.type,
                     'repos': repos_data,
                     'orgs': orgs_data,
+                    'followers': followers_data,
+                    'following': following_data,
+                    'starred': starred_data,
+                    'watching': watching_data,
                 }
                 self.cache.set(cache_key, '', user_data)
             return user
