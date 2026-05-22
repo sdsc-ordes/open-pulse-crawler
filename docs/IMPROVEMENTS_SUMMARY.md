@@ -166,11 +166,11 @@ Running with `--visualize --visualize-clusters` creates:
 
 ```
 output/
-├── graph_20241002_123456.png          # Main visualization
-├── nodes_20241002_123456.csv          # Node data
-├── edges_20241002_123456.csv          # Edge data
-├── graph_20241002_123456.json         # Full graph data
-└── clusters_20241002_123456/          # Cluster visualizations
+├── 20241002123456.graph.png          # Main visualization
+├── 20241002123456.nodes.csv          # Node data
+├── 20241002123456.edges.csv          # Edge data
+├── 20241002123456.graph.json         # Full graph data
+└── 20241002123456.clusters/          # Cluster visualizations
     ├── cluster_01.png                 # Largest cluster
     ├── cluster_02.png                 # Second largest
     └── ...
