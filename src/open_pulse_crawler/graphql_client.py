@@ -248,14 +248,14 @@ class GitHubGraphQLClient:
         self.semaphore = threading.Semaphore(max_concurrent_requests)
 
         self._http = httpx.Client(timeout=60.0)
-        self._headers_graphql = {
-            "Authorization": f"bearer {tokens[0]}",
-            "Accept": "application/vnd.github+json",
-        }
-        self._headers_rest = {
-            "Authorization": f"token {tokens[0]}",
-            "Accept": "application/vnd.github+json",
-        }
+
+        # Token rotation. `_set_token` builds the auth headers for the active
+        # token; when its GraphQL point budget is spent we rotate to the next
+        # one, and only sleep once every token has been tried and exhausted.
+        # `_token_lock` serialises rotation across concurrent worker threads.
+        self._token_lock = threading.Lock()
+        self._exhausted_streak = 0
+        self._set_token(0)
 
         self.stats: Dict[str, Any] = {
             "graphql_calls": 0,
@@ -263,6 +263,8 @@ class GitHubGraphQLClient:
             "rest_calls": 0,
             "cache_hits": 0,
             "errors": 0,
+            "token_switches": 0,
+            "rate_limit_waits": 0,
         }
         self._stats_lock = threading.Lock()
 
@@ -271,13 +273,119 @@ class GitHubGraphQLClient:
             f"crawl_prs={crawl_prs}, issue_max={issue_max}, pr_max={pr_max})"
         )
 
+    # ── Token rotation ──────────────────────────────────────────────────────
+
+    def _set_token(self, idx: int) -> None:
+        """Point the client at token `idx`, rebuilding both auth headers.
+
+        Headers are reassigned as fresh dicts (not mutated) so a concurrent
+        request always reads either the old or the new dict cleanly.
+        """
+        self.current_token_idx = idx
+        token = self.tokens[idx]
+        self._headers_graphql = {
+            "Authorization": f"bearer {token}",
+            "Accept": "application/vnd.github+json",
+        }
+        self._headers_rest = {
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github+json",
+        }
+
+    def _rotate_token(self) -> None:
+        """Switch to the next token. The caller must hold `_token_lock`."""
+        self._set_token((self.current_token_idx + 1) % len(self.tokens))
+        with self._stats_lock:
+            self.stats["token_switches"] += 1
+        logger.info(
+            "GraphQL: rotated to token %d/%d",
+            self.current_token_idx + 1,
+            len(self.tokens),
+        )
+
+    def _sleep_until_reset(self, reset_at: Optional[str]) -> None:
+        """Block until the GraphQL rate-limit window resets.
+
+        `reset_at` is ISO-8601 UTC; falls back to 60s if it can't be parsed.
+        """
+        try:
+            import datetime as _dt
+
+            reset = _dt.datetime.fromisoformat((reset_at or "").replace("Z", "+00:00"))
+            delay = max(
+                0.0, (reset - _dt.datetime.now(_dt.timezone.utc)).total_seconds()
+            ) + 5
+        except Exception:
+            delay = 60.0
+        with self._stats_lock:
+            self.stats["rate_limit_waits"] += 1
+        logger.warning(
+            "GraphQL budget exhausted on all %d token(s); sleeping %.0fs",
+            len(self.tokens),
+            delay,
+        )
+        time.sleep(delay)
+
+    def _handle_rate_limit(
+        self,
+        token_idx: int,
+        remaining: Optional[int],
+        cost: int,
+        reset_at: Optional[str],
+    ) -> None:
+        """React to the `rateLimit` block of a query issued on `token_idx`.
+
+        A healthy budget clears the exhausted-token streak. An exhausted
+        token rotates to the next one; once every token has been tried and
+        found exhausted, sleep until the window resets. A response from a
+        token the client has already rotated past is ignored — a concurrent
+        request handled the same exhaustion.
+        """
+        if remaining is None:
+            return
+        should_sleep = False
+        sleep_reset: Optional[str] = None
+        with self._token_lock:
+            if token_idx != self.current_token_idx:
+                return  # stale: another thread already rotated past this token
+            if remaining > 0:
+                self._exhausted_streak = 0
+                if remaining < 50:
+                    logger.warning(
+                        "GraphQL points low on token %d/%d: %s remaining "
+                        "(query cost %s, resets at %s)",
+                        token_idx + 1,
+                        len(self.tokens),
+                        remaining,
+                        cost,
+                        reset_at,
+                    )
+                return
+            # remaining <= 0: the active token's GraphQL budget is spent.
+            self._exhausted_streak += 1
+            if self._exhausted_streak >= len(self.tokens):
+                self._exhausted_streak = 0
+                should_sleep = True
+                sleep_reset = reset_at
+            else:
+                self._rotate_token()
+        # Sleep outside the lock so other workers aren't blocked behind it.
+        if should_sleep:
+            self._sleep_until_reset(sleep_reset)
+
     # ── HTTP helpers ────────────────────────────────────────────────────────
 
     def _graphql(self, query: str, variables: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        # Capture the active token with its headers so the rate-limit handler
+        # acts on the token the request was actually issued under, even if a
+        # concurrent worker rotates in the meantime.
+        with self._token_lock:
+            headers = self._headers_graphql
+            token_idx = self.current_token_idx
         try:
             resp = self._http.post(
                 GRAPHQL_URL,
-                headers=self._headers_graphql,
+                headers=headers,
                 json={"query": query, "variables": variables},
             )
         except httpx.HTTPError as e:
@@ -318,26 +426,11 @@ class GitHubGraphQLClient:
                 logger.warning(f"GraphQL errors for {variables}: {msgs}")
         rl = (body.get("data") or {}).get("rateLimit") or {}
         cost = rl.get("cost", 0) or 0
-        remaining = rl.get("remaining")
         with self._stats_lock:
             self.stats["graphql_points"] += cost
-        if remaining is not None and remaining < 50:
-            logger.warning(
-                f"GraphQL points remaining low: {remaining}; query cost {cost}; "
-                f"resets at {rl.get('resetAt')}"
-            )
-            if remaining <= 0:
-                # Sleep until reset (`resetAt` is ISO-8601 UTC).
-                try:
-                    import datetime as _dt
-                    reset_at = _dt.datetime.fromisoformat(
-                        (rl.get("resetAt") or "").replace("Z", "+00:00")
-                    )
-                    delay = max(0.0, (reset_at - _dt.datetime.now(_dt.timezone.utc)).total_seconds()) + 5
-                    logger.warning(f"GraphQL budget exhausted; sleeping {delay:.0f}s")
-                    time.sleep(delay)
-                except Exception:
-                    time.sleep(60)
+        # Rotate to the next token when this one's budget is spent; only sleep
+        # once every token has been tried and exhausted.
+        self._handle_rate_limit(token_idx, rl.get("remaining"), cost, rl.get("resetAt"))
         return body
 
     def _rest_contributors(self, owner: str, name: str, limit: int = 10) -> List[str]:
