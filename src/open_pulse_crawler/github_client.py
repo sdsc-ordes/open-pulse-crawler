@@ -22,6 +22,36 @@ logger = logging.getLogger(__name__)
 CACHE_DIR_ENV = "OPC_CACHE_DIR"
 DEFAULT_CACHE_DIR = "data/open-pulse-crawler/cache"
 
+# Cache-entry time-to-live. A cached API response older than the TTL is
+# treated as a miss and refetched, so the cache self-refreshes instead of
+# serving indefinitely-stale data. Configurable via OPC_CACHE_TTL_DAYS.
+CACHE_TTL_ENV = "OPC_CACHE_TTL_DAYS"
+DEFAULT_CACHE_TTL_DAYS = 30
+
+
+def resolve_cache_ttl() -> Optional[float]:
+    """Resolve the cache-entry TTL, in seconds, from `OPC_CACHE_TTL_DAYS`.
+
+    Unset or blank -> the 30-day default. A value of `0` (or negative)
+    disables expiry — cache entries are kept indefinitely. Returns `None`
+    for "no expiry", otherwise a positive number of seconds.
+    """
+    raw = os.environ.get(CACHE_TTL_ENV)
+    if raw is None or not raw.strip():
+        days: float = DEFAULT_CACHE_TTL_DAYS
+    else:
+        try:
+            days = float(raw.strip())
+        except ValueError:
+            logger.warning(
+                "Invalid %s=%r; falling back to the %d-day default.",
+                CACHE_TTL_ENV, raw, DEFAULT_CACHE_TTL_DAYS,
+            )
+            days = DEFAULT_CACHE_TTL_DAYS
+    if days <= 0:
+        return None
+    return days * 86400.0
+
 
 def resolve_cache_dir(
     explicit: Optional[Path] = None,
@@ -59,10 +89,16 @@ class APICache:
     directory can't be created (e.g. an unwritable path inside a container).
     If the directory can't be made, the cache disables itself: ``get`` always
     misses and ``set`` is a no-op, so the crawl runs uncached.
+
+    Entries expire: ``get`` treats a cache file older than ``ttl_seconds`` as
+    a miss, so the caller refetches and ``set`` overwrites the stale file.
+    ``ttl_seconds=None`` disables expiry (entries are kept indefinitely).
     """
 
-    def __init__(self, cache_dir: Path):
+    def __init__(self, cache_dir: Path, ttl_seconds: Optional[float] = None):
         self.cache_dir = cache_dir
+        # Age (seconds) beyond which a cached entry is stale. None = no expiry.
+        self.ttl_seconds = ttl_seconds
         self.enabled = True
         try:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -82,20 +118,32 @@ class APICache:
         return hashlib.md5(content.encode()).hexdigest()
 
     def get(self, endpoint: str, params: str = "") -> Optional[Any]:
-        """Get cached response."""
+        """Get cached response, or ``None`` on a miss or a stale (expired) entry."""
         if not self.enabled:
             return None
         key = self._get_cache_key(endpoint, params)
         cache_file = self.cache_dir / f"{key}.json"
 
-        if cache_file.exists():
+        if not cache_file.exists():
+            return None
+
+        # TTL: an entry older than ttl_seconds is a miss — the caller refetches
+        # and set() overwrites the stale file. Keyed on the file's mtime.
+        if self.ttl_seconds is not None:
             try:
-                with open(cache_file, 'r') as f:
-                    return json.load(f)
-            except Exception as e:
-                logger.warning(f"Failed to read cache file {cache_file}: {e}")
+                age = time.time() - cache_file.stat().st_mtime
+            except OSError:
                 return None
-        return None
+            if age > self.ttl_seconds:
+                logger.debug("Cache entry %s expired (age %.0fs)", cache_file, age)
+                return None
+
+        try:
+            with open(cache_file, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            logger.warning(f"Failed to read cache file {cache_file}: {e}")
+            return None
     
     def set(self, endpoint: str, params: str, data: Any):
         """Store response in cache."""
@@ -147,8 +195,12 @@ class GitHubClient:
         self.last_request_time = 0
         self.request_lock = threading.Lock()
         
-        # Cache setup
-        self.cache = APICache(cache_dir) if cache_dir else None
+        # Cache setup. Entries expire per OPC_CACHE_TTL_DAYS (default 30).
+        self.cache = (
+            APICache(cache_dir, ttl_seconds=resolve_cache_ttl())
+            if cache_dir
+            else None
+        )
         
         # Statistics
         self.stats = {

@@ -342,9 +342,14 @@ curl -X DELETE "$API_BASE/crawl/$JOB_ID" -H "Authorization: Bearer $API_TOKEN"
 export API_TOKEN="my-secret"
 export GITHUB_TOKEN="ghp_..."
 export OPC_DATA_DIR="/var/lib/crawler/jobs"     # optional; per-job snapshots + resumable state
-export OPC_CACHE_DIR="data/open-pulse-crawler/cache"  # optional; GitHub API response cache
+export OPC_CACHE_DIR="$OPC_DATA_DIR/cache"      # optional; GitHub API response cache ("" disables)
+export OPC_CACHE_TTL_DAYS="30"                  # optional; cache entry expiry (0 = never expire)
 uvicorn open_pulse_crawler.api:app --host 0.0.0.0 --port 8000
 ```
+
+GitHub API responses are cached so repeat crawls skip network calls; entries
+expire after `OPC_CACHE_TTL_DAYS` (default 30). See
+[`docs/DEPLOYMENT.md` → Caching](./DEPLOYMENT.md#caching) for the full behavior.
 
 For the full Docker Compose + Nginx stack, see
 [`docs/DEPLOYMENT.md`](./DEPLOYMENT.md). For concurrency, rate limiting, and multi-token
