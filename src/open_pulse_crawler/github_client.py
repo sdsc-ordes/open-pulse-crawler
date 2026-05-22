@@ -18,6 +18,32 @@ import hashlib
 
 logger = logging.getLogger(__name__)
 
+# Environment variable and default location for the API response cache.
+CACHE_DIR_ENV = "OPC_CACHE_DIR"
+DEFAULT_CACHE_DIR = "data/open-pulse-crawler/cache"
+
+
+def resolve_cache_dir(explicit: Optional[Path] = None) -> Optional[Path]:
+    """Resolve the API response cache directory.
+
+    Precedence:
+      1. `explicit` argument (e.g. a CLI `--cache-dir` value), when given.
+      2. The `OPC_CACHE_DIR` environment variable.
+      3. The default `data/open-pulse-crawler/cache`.
+
+    Setting `OPC_CACHE_DIR` to an empty string disables caching (returns
+    `None`), as does an explicit value of `None` only via the env path —
+    callers that want caching off should pass no explicit dir and set the
+    env var empty, or skip cache wiring entirely.
+    """
+    if explicit is not None:
+        return Path(explicit)
+    env_value = os.environ.get(CACHE_DIR_ENV)
+    if env_value is not None:
+        env_value = env_value.strip()
+        return Path(env_value) if env_value else None
+    return Path(DEFAULT_CACHE_DIR)
+
 
 class APICache:
     """Simple file-based cache for API responses."""

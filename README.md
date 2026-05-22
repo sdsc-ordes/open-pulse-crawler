@@ -218,7 +218,8 @@ open-pulse-crawler crawl DeepLabCut/DeepLabCut \
 - `--seed-file, -f`: Path to file containing seed nodes (one per line)
 - `--rounds, -r`: Number of BFS rounds to perform (default: 3)
 - `--output-dir, -o`: Directory for output files (default: ./output)
-- `--cache-dir, -c`: Directory for caching API responses
+- `--cache-dir, -c`: Directory for caching API responses (default: `$OPC_CACHE_DIR` or `data/open-pulse-crawler/cache`)
+- `--no-cache`: Disable API response caching
 - `--state-file, -s`: File to save/load crawler state
 - `--resume`: Resume from saved state file
 - `--no-json`: Skip JSON output

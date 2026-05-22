@@ -15,7 +15,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from dotenv import load_dotenv
 
 from .models import GraphData
-from .github_client import GitHubClient
+from .github_client import GitHubClient, resolve_cache_dir
 from .crawler import GitHubCrawler
 from .io_utils import parse_seed_file, export_to_json, export_to_csv, export_nodes_csv
 from .visualization import visualize_graph, visualize_clusters as viz_clusters, VISUALIZATION_AVAILABLE
@@ -95,7 +95,13 @@ def crawl(
     cache_dir: Optional[Path] = typer.Option(
         None,
         "--cache-dir", "-c",
-        help="Directory for caching API responses"
+        help="Directory for caching API responses "
+             "(default: $OPC_CACHE_DIR or data/open-pulse-crawler/cache)"
+    ),
+    no_cache: bool = typer.Option(
+        False,
+        "--no-cache",
+        help="Disable API response caching (overrides --cache-dir and $OPC_CACHE_DIR)"
     ),
     state_file: Optional[Path] = typer.Option(
         None,
@@ -278,9 +284,16 @@ def crawl(
     tokens = get_github_tokens()
     console.print(f"[green]✓[/green] Loaded {len(tokens)} GitHub token(s)")
     
-    # Setup cache directory
-    if cache_dir:
-        cache_dir.mkdir(parents=True, exist_ok=True)
+    # Resolve cache directory: --cache-dir wins, else $OPC_CACHE_DIR / default.
+    # --no-cache disables caching outright.
+    if no_cache:
+        cache_dir = None
+        console.print("[yellow]●[/yellow] API response caching disabled (--no-cache)")
+    else:
+        cache_dir = resolve_cache_dir(cache_dir)
+        if cache_dir:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            console.print(f"[green]✓[/green] Cache directory: {cache_dir}")
     
     # Load EPFL entities
     epfl_entities = set()

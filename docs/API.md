@@ -328,10 +328,15 @@ curl -X POST "$API_BASE/crawl/<job_id>/resume" \
 ```bash
 export API_TOKEN="my-secret"
 export GITHUB_TOKEN="ghp_..."
-export OPC_DATA_DIR="/var/lib/crawler/jobs"   # optional; defaults to /tmp/open-pulse-crawler
+export OPC_DATA_DIR="/var/lib/crawler/jobs"        # optional; defaults to /tmp/open-pulse-crawler
+export OPC_CACHE_DIR="/var/lib/crawler/cache"      # optional; defaults to data/open-pulse-crawler/cache
 uvicorn open_pulse_crawler.api:app --host 0.0.0.0 --port 8000
 ```
 
 `OPC_DATA_DIR` is where per-job snapshots and resumable state are written — see
 [Persistence](#persistence). Point it at a mounted volume so partial results and
 resume survive container restarts.
+
+`OPC_CACHE_DIR` is where GitHub API responses are cached between crawls; it
+defaults to `data/open-pulse-crawler/cache`. Set it to an empty string to
+disable caching.

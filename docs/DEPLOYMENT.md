@@ -137,6 +137,7 @@ lost when the container restarts — see [API.md → Persistence](./API.md#persi
 | `GITHUB_TOKEN` | Yes      | GitHub personal access token(s), comma-separated. |
 | `API_TOKEN`    | Yes      | Bearer token required for protected endpoints.    |
 | `OPC_DATA_DIR` | No       | Directory for per-job snapshots and resumable state (default `/tmp/open-pulse-crawler`). Mount it to a volume for durability. |
+| `OPC_CACHE_DIR` | No      | Directory for the API response cache (default `data/open-pulse-crawler/cache`). Set empty to disable caching. |
 
 You can pass an env file instead:
 

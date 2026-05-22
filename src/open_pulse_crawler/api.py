@@ -313,7 +313,7 @@ def _run_crawl(job_id: str, body: "CrawlRequest", resume: bool = False) -> None:
 
     try:
         from .crawler import GitHubCrawler
-        from .github_client import GitHubClient
+        from .github_client import GitHubClient, resolve_cache_dir
 
         tokens_raw = os.environ.get("GITHUB_TOKEN", "")
         tokens = [t.strip() for t in tokens_raw.split(",") if t.strip()]
@@ -329,7 +329,7 @@ def _run_crawl(job_id: str, body: "CrawlRequest", resume: bool = False) -> None:
             jsonld_dir.mkdir(parents=True, exist_ok=True)
             jsonld_zip_path = _snapshot_dir(job_id) / "jsonld.zip"
 
-        client = GitHubClient(tokens=tokens)
+        client = GitHubClient(tokens=tokens, cache_dir=resolve_cache_dir())
         crawler = GitHubCrawler(
             client=client,
             max_rounds=body.max_rounds,
@@ -396,6 +396,7 @@ def _run_crawl_graphql(job_id: str, body: "CrawlRequest", resume: bool = False) 
 
     try:
         from .crawler import GitHubCrawler
+        from .github_client import resolve_cache_dir
         from .graphql_client import GitHubGraphQLClient
 
         tokens_raw = os.environ.get("GITHUB_TOKEN", "")
@@ -407,6 +408,7 @@ def _run_crawl_graphql(job_id: str, body: "CrawlRequest", resume: bool = False) 
 
         client = GitHubGraphQLClient(
             tokens=tokens,
+            cache_dir=resolve_cache_dir(),
             crawl_issues=body.crawl_issues,
             crawl_prs=body.crawl_prs,
             issue_max=body.issue_max,
