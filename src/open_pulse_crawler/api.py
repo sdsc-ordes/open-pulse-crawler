@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import zipfile
 import uuid
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, status
 from fastapi.responses import FileResponse
@@ -105,11 +107,17 @@ class CrawlResultResponse(BaseModel):
     users: int = 0
     orgs: int = 0
     repos: int = 0
+    rounds_completed: int = 0
 
 
 class GraphResponse(BaseModel):
     job_id: str
     graph: dict
+    # True when the graph is a partial snapshot (job not COMPLETED, or the
+    # job record was lost — e.g. container restart — and only disk remains).
+    partial: bool = False
+    status: Optional[JobStatus] = None
+    rounds_completed: Optional[int] = None
 
 
 class HealthResponse(BaseModel):
@@ -128,9 +136,83 @@ class _JobRecord(BaseModel):
     graph: Optional[GraphData] = None
     jsonld_dir: Optional[str] = None
     jsonld_zip_path: Optional[str] = None
+    rounds_completed: int = 0
+    graph_snapshot_path: Optional[str] = None
 
 
 _jobs: Dict[str, _JobRecord] = {}
+
+# ---------------------------------------------------------------------------
+# Graph snapshots (per-round, on disk)
+# ---------------------------------------------------------------------------
+#
+# The job store above is in-memory only, so a partial graph is lost on
+# container restart/OOM and a non-COMPLETED job has nothing to serve. To
+# make partial results recoverable, the background crawl writes the graph
+# to disk after every BFS round (and once more on the terminal transition).
+# `GET /api/v1/graph/{job_id}?partial=true` reads these snapshots, which
+# also lets a consumer recover by job_id after the in-memory record is gone.
+
+
+def _snapshot_dir(job_id: str) -> Path:
+    data_root = Path(os.environ.get("OPC_DATA_DIR", "/tmp/open-pulse-crawler"))
+    return data_root / job_id
+
+
+def _write_snapshot(
+    job_id: str, graph: GraphData, status_value: JobStatus, rounds_completed: int
+) -> Optional[str]:
+    """Atomically write the current graph + metadata to disk. Best-effort."""
+    try:
+        job_dir = _snapshot_dir(job_id)
+        job_dir.mkdir(parents=True, exist_ok=True)
+        path = job_dir / "graph.snapshot.json"
+        payload = {
+            "job_id": job_id,
+            "status": status_value.value,
+            "rounds_completed": rounds_completed,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "graph": graph.model_dump(),
+        }
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(payload))
+        tmp.replace(path)  # atomic: readers never see a half-written file
+        return str(path)
+    except Exception as exc:  # snapshotting must never break the crawl
+        logger.warning("Failed to write graph snapshot for %s: %s", job_id, exc)
+        return None
+
+
+def _read_snapshot(job_id: str) -> Optional[Dict[str, Any]]:
+    """Read a graph snapshot from disk. Returns the full payload dict or None."""
+    try:
+        path = _snapshot_dir(job_id) / "graph.snapshot.json"
+        if not path.exists():
+            return None
+        return json.loads(path.read_text())
+    except Exception as exc:
+        logger.warning("Failed to read graph snapshot for %s: %s", job_id, exc)
+        return None
+
+
+def _install_snapshotting(crawler, record: "_JobRecord", job_id: str) -> None:
+    """Point record.graph at the live GraphData and snapshot per round.
+
+    `GraphData` is mutated in place by the crawler, so assigning it to the
+    record now means a FAILED/partial job still exposes whatever rounds
+    completed — without waiting for the success path that previously was
+    the only place `record.graph` got set.
+    """
+    record.graph = crawler.graph
+
+    def _on_round(round_index: int) -> None:
+        record.rounds_completed = round_index + 1
+        record.graph_snapshot_path = _write_snapshot(
+            job_id, crawler.graph, JobStatus.RUNNING, round_index + 1
+        )
+
+    crawler.incremental_export_callback = _on_round
+
 
 # ---------------------------------------------------------------------------
 # Background task
@@ -160,6 +242,7 @@ def _run_crawl(
     """Execute a crawl in the background and store results."""
     record = _jobs[job_id]
     record.status = JobStatus.RUNNING
+    crawler = None
 
     try:
         from .crawler import GitHubCrawler
@@ -200,6 +283,7 @@ def _run_crawl(
             gimie_store_jsonld_dir=jsonld_dir,
             gimie_skip_existing_jsonld=gimie_skip_existing_jsonld,
         )
+        _install_snapshotting(crawler, record, job_id)
         crawler.add_seeds(seeds)
         crawler.crawl(show_progress=False)
 
@@ -220,10 +304,15 @@ def _run_crawl(
                 except Exception as exc:
                     logger.warning("Failed to create jsonld zip: %s", exc)
         record.status = JobStatus.COMPLETED
+        _write_snapshot(job_id, crawler.graph, JobStatus.COMPLETED, record.rounds_completed)
     except Exception as exc:
         logger.exception("Crawl job %s failed", job_id)
         record.status = JobStatus.FAILED
         record.detail = str(exc)
+        # Persist whatever rounds completed before the failure so the
+        # partial graph is still recoverable via ?partial=true.
+        if crawler is not None:
+            _write_snapshot(job_id, crawler.graph, JobStatus.FAILED, record.rounds_completed)
 
 
 def _run_crawl_graphql(
@@ -249,6 +338,7 @@ def _run_crawl_graphql(
     """
     record = _jobs[job_id]
     record.status = JobStatus.RUNNING
+    crawler = None
 
     try:
         from .crawler import GitHubCrawler
@@ -282,15 +372,19 @@ def _run_crawl_graphql(
             max_dependents=max_dependents,
             epfl_entities=set(epfl_entities),
         )
+        _install_snapshotting(crawler, record, job_id)
         crawler.add_seeds(seeds)
         crawler.crawl(show_progress=False)
 
         record.graph = crawler.graph
         record.status = JobStatus.COMPLETED
+        _write_snapshot(job_id, crawler.graph, JobStatus.COMPLETED, record.rounds_completed)
     except Exception as exc:
         logger.exception("GraphQL crawl job %s failed", job_id)
         record.status = JobStatus.FAILED
         record.detail = str(exc)
+        if crawler is not None:
+            _write_snapshot(job_id, crawler.graph, JobStatus.FAILED, record.rounds_completed)
 
 
 # ---------------------------------------------------------------------------
@@ -401,6 +495,7 @@ def get_crawl_status(
         job_id=job_id,
         status=record.status,
         detail=record.detail,
+        rounds_completed=record.rounds_completed,
     )
     if record.graph:
         resp.users = len(record.graph.users)
@@ -412,18 +507,77 @@ def get_crawl_status(
 @app.get("/api/v1/graph/{job_id}", response_model=GraphResponse)
 def get_graph(
     job_id: str,
+    partial: bool = False,
     _token: str = Depends(verify_token),
 ) -> GraphResponse:
-    """Return full graph data for a completed crawl job."""
+    """Return graph data for a crawl job.
+
+    Default (strict) behavior is unchanged: only a COMPLETED job in memory
+    is served. Pass `?partial=true` to also read a partial graph — from the
+    in-memory record of a still-RUNNING/FAILED job, or, if the job record
+    is gone (container restart), from the last per-round disk snapshot.
+    The `partial` field in the response flags non-final output.
+    """
     record = _jobs.get(job_id)
-    if record is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
-    if record.status != JobStatus.COMPLETED:
+
+    # Strict path: completed job held in memory — unchanged semantics.
+    if record is not None and record.status == JobStatus.COMPLETED and record.graph is not None:
+        return GraphResponse(
+            job_id=job_id,
+            graph=record.graph.model_dump(),
+            partial=False,
+            status=record.status,
+            rounds_completed=record.rounds_completed,
+        )
+
+    if not partial:
+        # Keep the strict 409/404 contract for callers that did not opt in.
+        if record is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Job not found"
+            )
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"Job is not completed (current status: {record.status.value})",
+            detail=(
+                f"Job is not completed (current status: {record.status.value}). "
+                f"Pass ?partial=true to read partial output."
+            ),
         )
-    return GraphResponse(job_id=job_id, graph=record.graph.model_dump())
+
+    # Partial read: prefer the on-disk snapshot (always round-consistent;
+    # written atomically between rounds) over the in-memory graph, which a
+    # concurrent round could be mutating.
+    snapshot = _read_snapshot(job_id)
+    if snapshot is not None:
+        snap_status = snapshot.get("status")
+        return GraphResponse(
+            job_id=job_id,
+            graph=snapshot.get("graph") or {},
+            partial=snap_status != JobStatus.COMPLETED.value,
+            status=snap_status,
+            rounds_completed=snapshot.get("rounds_completed"),
+        )
+
+    # No snapshot on disk. Fall back to the in-memory graph if present
+    # (e.g. a job that failed before its first round finished).
+    if record is not None and record.graph is not None:
+        return GraphResponse(
+            job_id=job_id,
+            graph=record.graph.model_dump(),
+            partial=record.status != JobStatus.COMPLETED,
+            status=record.status,
+            rounds_completed=record.rounds_completed,
+        )
+
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Job not found (no in-memory record and no disk snapshot)",
+        )
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail=f"No graph snapshot available yet (status: {record.status.value})",
+    )
 
 
 @app.get("/api/v1/crawl/{job_id}/jsonld.zip", response_class=FileResponse)

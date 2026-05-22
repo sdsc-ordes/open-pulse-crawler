@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Partial-graph recovery for crawl jobs:
+  - The background crawl now writes the graph to disk after every BFS round (and once more on the terminal transition) as `{OPC_DATA_DIR}/{job_id}/graph.snapshot.json`, written atomically and tagged with `status` + `rounds_completed`.
+  - `GET /api/v1/graph/{job_id}` accepts `?partial=true`. Without it the strict contract is unchanged (only a COMPLETED in-memory job is served). With it, a still-RUNNING or FAILED job's partial graph is returned from the last round snapshot — and a job whose in-memory record was lost (container restart/OOM) is recoverable by `job_id` from the same snapshot.
+  - `GraphResponse` gained `partial`, `status`, and `rounds_completed`; `CrawlResultResponse` gained `rounds_completed`.
 - Follow relationships: `UserModel` now carries `followers` and `following` login lists, populated from the GitHub API (and cached) per crawled user. CSV export includes `follows` edges (`source` follows `target`) between users that are both present in the graph. Follow lists do not expand the crawl — they are recorded as edges only.
 - Starred and watched repositories: `UserModel` gains `starred_repositories` and `watched_repositories` lists, sourced from `users/<login>/starred` and `users/<login>/subscriptions`. CSV export emits `starred` and `watching` edges between users and repos that are both present in the graph. Like follows, these do not expand the crawl.
 - GraphQL-backed crawl endpoint:
@@ -55,6 +59,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Optional gimie JSON-LD hybrid repository fetching (`gimie_repos` request flag) and `/api/v1/crawl/{job_id}/jsonld.zip` download endpoint.
 - Docker Compose stack (`infra/docker-compose.yml`) for `api`, `gui`, and `nginx` services on a shared network with env-file configuration and per-service health checks.
 - End-to-end Docker integration test script (`tests/test_integration.sh`) validating health, auth behavior, and GUI/API routing through Nginx.
+
+### Fixed
+
+- Partial crawl results were unrecoverable. `record.graph` was assigned only on the success path, so a FAILED job — or any job whose container restarted — lost every completed round (the graph lived solely in a local variable that was garbage-collected). The job record now references the live `GraphData` object before the crawl starts, and per-round disk snapshots make the partial graph durable across process restarts.
 
 ### Changed
 

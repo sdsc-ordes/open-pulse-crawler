@@ -314,3 +314,131 @@ class TestGraph:
         assert body["job_id"] == "done-job"
         assert "graph" in body
         assert body["graph"]["users"] == {}
+        assert body["partial"] is False
+
+
+class TestGraphPartial:
+    """Partial-graph recovery: ?partial=true and per-round disk snapshots."""
+
+    def test_partial_not_requested_keeps_strict_409(
+        self, client: TestClient, auth_header: dict
+    ):
+        from open_pulse_crawler.api import _JobRecord
+
+        _jobs["run-job"] = _JobRecord(status=JobStatus.RUNNING)
+        resp = client.get("/api/v1/graph/run-job", headers=auth_header)
+        assert resp.status_code == 409
+        assert "partial=true" in resp.json()["detail"]
+
+    def test_partial_running_job_reads_snapshot(
+        self, client: TestClient, auth_header: dict, tmp_path
+    ):
+        from open_pulse_crawler.api import _JobRecord, _write_snapshot
+        from open_pulse_crawler.models import GraphData, UserModel
+
+        with patch.dict(os.environ, {"OPC_DATA_DIR": str(tmp_path)}):
+            graph = GraphData()
+            graph.add_user(UserModel(login="alice", id=1))
+            _write_snapshot("run-job", graph, JobStatus.RUNNING, 2)
+            _jobs["run-job"] = _JobRecord(status=JobStatus.RUNNING, rounds_completed=2)
+            resp = client.get("/api/v1/graph/run-job?partial=true", headers=auth_header)
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["partial"] is True
+        assert body["status"] == "running"
+        assert body["rounds_completed"] == 2
+        assert "alice" in body["graph"]["users"]
+
+    def test_partial_failed_job_reads_snapshot(
+        self, client: TestClient, auth_header: dict, tmp_path
+    ):
+        from open_pulse_crawler.api import _JobRecord, _write_snapshot
+        from open_pulse_crawler.models import GraphData, RepoModel
+
+        with patch.dict(os.environ, {"OPC_DATA_DIR": str(tmp_path)}):
+            graph = GraphData()
+            graph.add_repo(RepoModel(full_name="o/r", id=9, owner="o"))
+            _write_snapshot("failed-job", graph, JobStatus.FAILED, 1)
+            _jobs["failed-job"] = _JobRecord(
+                status=JobStatus.FAILED, detail="boom", rounds_completed=1
+            )
+            resp = client.get("/api/v1/graph/failed-job?partial=true", headers=auth_header)
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["partial"] is True
+        assert body["status"] == "failed"
+        assert "o/r" in body["graph"]["repos"]
+
+    def test_restart_recovery_job_not_in_memory(
+        self, client: TestClient, auth_header: dict, tmp_path
+    ):
+        """Snapshot survives loss of the in-memory record (container restart)."""
+        from open_pulse_crawler.api import _write_snapshot
+        from open_pulse_crawler.models import GraphData, OrgModel
+
+        with patch.dict(os.environ, {"OPC_DATA_DIR": str(tmp_path)}):
+            graph = GraphData()
+            graph.add_org(OrgModel(login="acme", id=1))
+            _write_snapshot("lost-job", graph, JobStatus.RUNNING, 3)
+            # Deliberately NOT added to _jobs — simulates a restarted container.
+            resp = client.get("/api/v1/graph/lost-job?partial=true", headers=auth_header)
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["partial"] is True
+        assert body["rounds_completed"] == 3
+        assert "acme" in body["graph"]["orgs"]
+
+    def test_restart_recovery_requires_partial_flag(
+        self, client: TestClient, auth_header: dict, tmp_path
+    ):
+        """A lost job without ?partial=true still 404s — strict contract holds."""
+        from open_pulse_crawler.api import _write_snapshot
+        from open_pulse_crawler.models import GraphData
+
+        with patch.dict(os.environ, {"OPC_DATA_DIR": str(tmp_path)}):
+            _write_snapshot("lost-job-2", GraphData(), JobStatus.RUNNING, 1)
+            resp = client.get("/api/v1/graph/lost-job-2", headers=auth_header)
+
+        assert resp.status_code == 404
+
+    def test_completed_snapshot_flagged_not_partial(
+        self, client: TestClient, auth_header: dict, tmp_path
+    ):
+        """A snapshot whose status is completed reports partial=false even via ?partial."""
+        from open_pulse_crawler.api import _write_snapshot
+        from open_pulse_crawler.models import GraphData
+
+        with patch.dict(os.environ, {"OPC_DATA_DIR": str(tmp_path)}):
+            _write_snapshot("done-disk", GraphData(), JobStatus.COMPLETED, 4)
+            resp = client.get("/api/v1/graph/done-disk?partial=true", headers=auth_header)
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["partial"] is False
+        assert body["status"] == "completed"
+        assert body["rounds_completed"] == 4
+
+    def test_snapshot_write_read_roundtrip(self, tmp_path):
+        from open_pulse_crawler.api import _read_snapshot, _write_snapshot
+        from open_pulse_crawler.models import GraphData, OrgModel
+
+        with patch.dict(os.environ, {"OPC_DATA_DIR": str(tmp_path)}):
+            graph = GraphData()
+            graph.add_org(OrgModel(login="acme", id=1))
+            path = _write_snapshot("rt-job", graph, JobStatus.RUNNING, 2)
+            assert path is not None
+            snap = _read_snapshot("rt-job")
+
+        assert snap is not None
+        assert snap["status"] == "running"
+        assert snap["rounds_completed"] == 2
+        assert "acme" in snap["graph"]["orgs"]
+
+    def test_read_snapshot_missing_returns_none(self, tmp_path):
+        from open_pulse_crawler.api import _read_snapshot
+
+        with patch.dict(os.environ, {"OPC_DATA_DIR": str(tmp_path)}):
+            assert _read_snapshot("never-existed") is None
