@@ -70,9 +70,10 @@ class CrawlRequest(BaseModel):
         default=None,
         ge=1,
         description=(
-            "Per-repo contributor limit. At most N contributors are recorded "
-            "and queued per repo — a repo with more is truncated to the top N, "
-            "never skipped. Omit to use the built-in default cap."
+            "Optional per-repo contributor limit. When set, at most N "
+            "contributors are recorded and queued per repo — a repo with more "
+            "is truncated to the top N, never skipped. Omit (the default) for "
+            "no cap: every contributor is recorded and queued."
         ),
     )
     crawl_issues: bool = Field(

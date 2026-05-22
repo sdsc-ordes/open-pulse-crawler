@@ -11,7 +11,7 @@ from types import SimpleNamespace
 from typing import List, Optional
 from unittest.mock import MagicMock
 
-from open_pulse_crawler.crawler import _DEFAULT_CONTRIBUTOR_LIMIT, GitHubCrawler
+from open_pulse_crawler.crawler import GitHubCrawler
 
 
 def _fake_client(cached_repo: Optional[dict] = None) -> MagicMock:
@@ -80,16 +80,16 @@ def test_fewer_contributors_than_cap_takes_all():
     assert repo.contributors == ["alice", "bob"]
 
 
-def test_default_cap_applies_when_unset():
-    """Unset ``max_contributors`` falls back to the built-in default cap."""
+def test_no_cap_when_unset():
+    """Unset ``max_contributors`` means no cap — every contributor is taken."""
     contributors = [f"c{i}" for i in range(20)]
     cached = _cached_repo(contributors, contributor_count=20)
     crawler = GitHubCrawler(client=_fake_client(cached), max_contributors=None, batch_size=1)
 
     repo = crawler._process_repository("o/r")
 
-    assert len(repo.contributors) == _DEFAULT_CONTRIBUTOR_LIMIT
-    assert repo.contributors == contributors[:_DEFAULT_CONTRIBUTOR_LIMIT]
+    assert repo.contributors == contributors  # all 20, no truncation
+    assert set(contributors).issubset(_users_enqueued(crawler))
 
 
 def test_contributor_limit_helper():
@@ -97,7 +97,7 @@ def test_contributor_limit_helper():
     assert set_cap._contributor_limit() == 50
 
     unset = GitHubCrawler(client=_fake_client(), max_contributors=None, batch_size=1)
-    assert unset._contributor_limit() == _DEFAULT_CONTRIBUTOR_LIMIT
+    assert unset._contributor_limit() is None  # None = no cap
 
 
 def test_owner_edge_survives_truncation():

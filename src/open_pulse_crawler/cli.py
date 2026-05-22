@@ -194,9 +194,9 @@ def crawl(
         None,
         "--max-contributors",
         help=(
-            "Per-repo contributor limit: take up to N contributors per repo. "
-            "A repo with more is truncated to the top N — never skipped. "
-            "Default: built-in cap (10)."
+            "Optional per-repo contributor limit: take up to N contributors "
+            "per repo (a repo with more is truncated to the top N, never "
+            "skipped). Default: no cap — every contributor is taken."
         ),
     ),
     verbose: bool = typer.Option(

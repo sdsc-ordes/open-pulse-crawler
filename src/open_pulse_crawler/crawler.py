@@ -21,12 +21,6 @@ from .gimie_jsonld import parse_gimie_repo_jsonld
 
 logger = logging.getLogger(__name__)
 
-# Default per-repo contributor cap when `max_contributors` is not set. Keeps
-# mega-projects from flooding the BFS frontier. Any explicit `max_contributors`
-# overrides this — and like every cap in this project it means "take up to N",
-# never "skip to 0".
-_DEFAULT_CONTRIBUTOR_LIMIT = 10
-
 
 class GitHubCrawler:
     """BFS crawler for GitHub entities."""
@@ -66,10 +60,11 @@ class GitHubCrawler:
             issue_max: Maximum number of issues to scan per repo (most recent)
             pr_max: Maximum number of PRs to scan per repo (most recent)
             min_stars: Minimum stars for dependents/dependencies filtering
-            max_contributors: Per-repo contributor limit. When set, at most
-                this many contributors are recorded and queued per repo — a
-                repo with more contributors is truncated to the top N, never
-                skipped. ``None`` falls back to the built-in default cap.
+            max_contributors: Optional per-repo contributor limit. When set,
+                at most this many contributors are recorded and queued per
+                repo — a repo with more is truncated to the top N, never
+                skipped. ``None`` (the default) means no cap: every
+                contributor the GitHub API returns is recorded and queued.
             gimie_repos: When true, populate repository nodes from gimie JSON-LD.
             gimie_api_base: Base URL for the gimie JSON-LD API.
             gimie_store_jsonld_dir: Optional directory to store gimie JSON-LD payloads.
@@ -132,16 +127,18 @@ class GitHubCrawler:
 
         logger.info(f"Crawler initialized with batch_size={self.batch_size}")
 
-    def _contributor_limit(self) -> int:
-        """How many contributors to take per repo.
+    def _contributor_limit(self) -> Optional[int]:
+        """How many contributors to take per repo, or None for no limit.
 
         `max_contributors`, when set, is a take-up-to-N limit: a repo with
         more contributors is truncated to the top N — never skipped. When
-        unset, falls back to the default cap.
+        unset (the default), there is no cap — every contributor the GitHub
+        API returns is recorded and queued. (GitHub itself caps the
+        contributors endpoint at ~500 for very large repos.)
+
+        Returns an int usable as a slice bound; `None` slices the whole list.
         """
-        if self.max_contributors is not None:
-            return self.max_contributors
-        return _DEFAULT_CONTRIBUTOR_LIMIT
+        return self.max_contributors
 
     def _track_discovered_node(self, node_type: str, identifier: str, parent_id: str = None, parent_type: str = None):
         """
@@ -598,7 +595,7 @@ class GitHubCrawler:
                             exploration_timestamp=datetime.now().isoformat(),
                         )
 
-                        # Take up to `max_contributors` (or the default cap).
+                        # All contributors, or the top N if max_contributors is set.
                         gimie_contributors = parsed.contributor_logins[
                             : self._contributor_limit()
                         ]
@@ -747,10 +744,9 @@ class GitHubCrawler:
                 if isinstance(cached_count, int):
                     repo.contributor_count = cached_count
 
-                # Take up to `max_contributors` contributors (or the default
-                # cap when unset). A repo with more contributors than the
-                # limit still contributes — it is truncated to the top N, not
-                # skipped.
+                # Record and queue every contributor. With an explicit
+                # `max_contributors`, truncate to the top N (a `None` slice
+                # bound keeps the whole list when there is no cap).
                 cached_contributors = repo_obj.get('contributors', [])
                 for contributor_login in cached_contributors[:self._contributor_limit()]:
                     repo.contributors.append(contributor_login)
@@ -854,9 +850,9 @@ class GitHubCrawler:
                 items_to_queue.append((owner_type, repo_obj.owner.login))
                 
                 # Get contributors from the live API. ``totalCount`` is one
-                # cheap ``per_page=1`` request kept as metadata; we then take
-                # up to `max_contributors` (or the default cap) contributors —
-                # a repo with more is truncated to the top N, never skipped.
+                # cheap ``per_page=1`` request kept as metadata. Every
+                # contributor is recorded and queued; an explicit
+                # `max_contributors` truncates to the top N (never skips).
                 try:
                     contributors = self.client._make_request(repo_obj.get_contributors)
                     try:
@@ -868,7 +864,7 @@ class GitHubCrawler:
 
                     limit = self._contributor_limit()
                     for i, contributor in enumerate(contributors):
-                        if i >= limit:
+                        if limit is not None and i >= limit:
                             break
                         repo.contributors.append(contributor.login)
                         items_to_queue.append(('user', contributor.login))

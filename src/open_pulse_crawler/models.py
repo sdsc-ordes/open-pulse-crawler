@@ -85,8 +85,8 @@ class RepoModel(BaseEntityModel):
 
     # Total contributor count reported by GitHub (metadata). Captured the
     # first time the repo is fetched and persisted in the cache. ``None``
-    # means we don't have a count yet. Note `contributors` above may be
-    # shorter than this — it is capped at `max_contributors` (top N).
+    # means we don't have a count yet. `contributors` above holds them all
+    # by default; it is shorter than this only when `max_contributors` caps it.
     contributor_count: Optional[int] = None
 
 
