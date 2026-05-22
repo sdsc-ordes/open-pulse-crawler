@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Cooperative stop & resume for crawl jobs:
+  - `GitHubCrawler` gained a `stop_event` (`threading.Event`) checked at each BFS round boundary — an in-flight round always drains first, so the graph stays round-consistent.
+  - `POST /api/v1/crawl/{job_id}/stop` requests a stop; the job's status becomes `stopped` once the current round finishes. A new `JobStatus.STOPPED` is reported only when the stop actually cut the crawl short (work remained) — a stop that lands after the crawl already finished is a no-op and the job is `completed`.
+  - `POST /api/v1/crawl/{job_id}/resume` continues a `stopped`/`failed` job from its persisted BFS state (queue + visited set + graph), rather than re-crawling from the seeds. Works even after the in-memory job record is lost (container restart), as long as the job's `state.json` + `request.json` are on disk.
+  - The background crawl now wires the crawler's `state_file` (`{OPC_DATA_DIR}/{job_id}/state.json`, written per round) and persists the original request (`request.json`) so a resume can rebuild the exact crawl config — REST or GraphQL.
 - Partial-graph recovery for crawl jobs:
   - The background crawl now writes the graph to disk after every BFS round (and once more on the terminal transition) as `{OPC_DATA_DIR}/{job_id}/graph.snapshot.json`, written atomically and tagged with `status` + `rounds_completed`.
   - `GET /api/v1/graph/{job_id}` accepts `?partial=true`. Without it the strict contract is unchanged (only a COMPLETED in-memory job is served). With it, a still-RUNNING or FAILED job's partial graph is returned from the last round snapshot — and a job whose in-memory record was lost (container restart/OOM) is recoverable by `job_id` from the same snapshot.

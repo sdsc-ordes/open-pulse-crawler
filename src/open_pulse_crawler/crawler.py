@@ -113,7 +113,11 @@ class GitHubCrawler:
         
         # Optional callback for incremental exports
         self.incremental_export_callback: Optional[Callable[[int], None]] = None
-        
+
+        # Optional cooperative-stop signal, checked at each round boundary.
+        # Set externally (e.g. by the API's /stop endpoint).
+        self.stop_event: Optional[threading.Event] = None
+
         logger.info(f"Crawler initialized with batch_size={self.batch_size}")
     
     def _track_discovered_node(self, node_type: str, identifier: str, parent_id: str = None, parent_type: str = None):
@@ -1090,6 +1094,16 @@ class GitHubCrawler:
         
         try:
             while self.queue and self.current_round < self.max_rounds:
+                # Cooperative stop: checked at the round boundary so the
+                # graph stays round-consistent. An in-flight round always
+                # finishes draining before the loop exits here.
+                if self.stop_event is not None and self.stop_event.is_set():
+                    logger.info(
+                        f"Stop requested; halting crawl before round "
+                        f"{self.current_round} ({len(self.queue)} nodes left queued)"
+                    )
+                    break
+
                 # Start new round
                 round_start_time = __import__('time').time()
                 nodes_in_round = []

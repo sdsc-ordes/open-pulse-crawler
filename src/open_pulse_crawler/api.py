@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import zipfile
 import uuid
 from datetime import datetime, timezone
@@ -32,6 +33,7 @@ class JobStatus(str, Enum):
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+    STOPPED = "stopped"
 
 
 class CrawlRequest(BaseModel):
@@ -142,6 +144,11 @@ class _JobRecord(BaseModel):
 
 _jobs: Dict[str, _JobRecord] = {}
 
+# Cooperative-stop signals, keyed by job_id. Created when a crawl is
+# dispatched, set by POST /stop, removed when the background task exits.
+# In-memory only — a stop is meaningful only for a live process.
+_stop_events: Dict[str, threading.Event] = {}
+
 # ---------------------------------------------------------------------------
 # Graph snapshots (per-round, on disk)
 # ---------------------------------------------------------------------------
@@ -157,6 +164,16 @@ _jobs: Dict[str, _JobRecord] = {}
 def _snapshot_dir(job_id: str) -> Path:
     data_root = Path(os.environ.get("OPC_DATA_DIR", "/tmp/open-pulse-crawler"))
     return data_root / job_id
+
+
+def _state_path(job_id: str) -> Path:
+    """Path to the crawler's full resumable state file (queue + visited + graph)."""
+    return _snapshot_dir(job_id) / "state.json"
+
+
+def _request_path(job_id: str) -> Path:
+    """Path to the persisted crawl request — needed to reconstruct config on resume."""
+    return _snapshot_dir(job_id) / "request.json"
 
 
 def _write_snapshot(
@@ -204,6 +221,9 @@ def _install_snapshotting(crawler, record: "_JobRecord", job_id: str) -> None:
     the only place `record.graph` got set.
     """
     record.graph = crawler.graph
+    # current_round is 0 for a fresh crawl, or the restored value after a
+    # resume — keep the record in sync before the first new round lands.
+    record.rounds_completed = crawler.current_round
 
     def _on_round(round_index: int) -> None:
         record.rounds_completed = round_index + 1
@@ -214,32 +234,79 @@ def _install_snapshotting(crawler, record: "_JobRecord", job_id: str) -> None:
     crawler.incremental_export_callback = _on_round
 
 
+def _persist_request(job_id: str, body: "CrawlRequest", mode: str) -> None:
+    """Persist the crawl request so a resume can rebuild the same config.
+
+    `mode` is "rest" or "graphql" — resume must re-dispatch the matching
+    background task. Best-effort; resume simply won't be available if this
+    write fails.
+    """
+    try:
+        job_dir = _snapshot_dir(job_id)
+        job_dir.mkdir(parents=True, exist_ok=True)
+        path = _request_path(job_id)
+        payload = {"mode": mode, "request": body.model_dump()}
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(payload))
+        tmp.replace(path)
+    except Exception as exc:
+        logger.warning("Failed to persist crawl request for %s: %s", job_id, exc)
+
+
+def _load_persisted_request(job_id: str) -> Optional[Dict[str, Any]]:
+    """Return {'mode': ..., 'request': {...}} for a job, or None if absent."""
+    try:
+        path = _request_path(job_id)
+        if not path.exists():
+            return None
+        return json.loads(path.read_text())
+    except Exception as exc:
+        logger.warning("Failed to read persisted request for %s: %s", job_id, exc)
+        return None
+
+
+def _finalize_job(job_id: str, record: "_JobRecord", crawler) -> None:
+    """Set the terminal status after crawl() returns and write a final snapshot.
+
+    STOPPED only when the stop signal actually cut the crawl short — i.e.
+    a stop was requested *and* there was still work left (queued nodes and
+    rounds below the cap). A stop that arrives after the crawl already
+    exhausted its work is a no-op: the job is COMPLETED.
+    """
+    event = _stop_events.get(job_id)
+    stop_requested = event is not None and event.is_set()
+    work_remained = bool(crawler.queue) and crawler.current_round < crawler.max_rounds
+    final = JobStatus.STOPPED if (stop_requested and work_remained) else JobStatus.COMPLETED
+    record.status = final
+    _write_snapshot(job_id, crawler.graph, final, record.rounds_completed)
+
+
+def _seed_or_resume(crawler, body: "CrawlRequest", job_id: str, resume: bool) -> None:
+    """Resume from the persisted state file when asked and possible, else seed fresh.
+
+    `load_state()` replaces `crawler.graph`, so this must run *before*
+    `_install_snapshotting` (which captures the live graph reference).
+    """
+    if resume and _state_path(job_id).exists():
+        if crawler.load_state():
+            logger.info("Resuming job %s from saved crawler state", job_id)
+            return
+        logger.warning("Job %s: saved state unusable, starting fresh", job_id)
+    crawler.add_seeds(body.seeds)
+
+
 # ---------------------------------------------------------------------------
 # Background task
 # ---------------------------------------------------------------------------
 
 
-def _run_crawl(
-    job_id: str,
-    seeds: List[str],
-    max_rounds: int,
-    crawl_dependencies: bool,
-    crawl_dependents: bool,
-    crawl_issues: bool,
-    crawl_prs: bool,
-    issue_max: int,
-    pr_max: int,
-    min_stars: int,
-    max_dependents: Optional[int],
-    batch_size: Optional[int],
-    epfl_entities: List[str],
-    gimie_repos: bool,
-    gimie_api_base: str,
-    gimie_store_jsonld: bool,
-    gimie_skip_existing_jsonld: bool,
-    gimie_archive_on_download: bool,
-) -> None:
-    """Execute a crawl in the background and store results."""
+def _run_crawl(job_id: str, body: "CrawlRequest", resume: bool = False) -> None:
+    """Execute a REST-backed crawl in the background.
+
+    With `resume=True` and a saved state file present, the crawl continues
+    from the persisted BFS queue/visited set/graph instead of the seeds.
+    A registered stop event halts the crawl at the next round boundary.
+    """
     record = _jobs[job_id]
     record.status = JobStatus.RUNNING
     crawler = None
@@ -257,41 +324,40 @@ def _run_crawl(
 
         jsonld_dir: Optional[Path] = None
         jsonld_zip_path: Optional[Path] = None
-        if gimie_repos and gimie_store_jsonld:
-            data_root = Path(os.environ.get("OPC_DATA_DIR", "/tmp/open-pulse-crawler"))
-            job_root = data_root / job_id
-            jsonld_dir = job_root / "jsonld"
+        if body.gimie_repos and body.gimie_store_jsonld:
+            jsonld_dir = _snapshot_dir(job_id) / "jsonld"
             jsonld_dir.mkdir(parents=True, exist_ok=True)
-            jsonld_zip_path = job_root / "jsonld.zip"
+            jsonld_zip_path = _snapshot_dir(job_id) / "jsonld.zip"
 
         client = GitHubClient(tokens=tokens)
         crawler = GitHubCrawler(
             client=client,
-            max_rounds=max_rounds,
-            batch_size=batch_size,
-            crawl_dependencies=crawl_dependencies,
-            crawl_dependents=crawl_dependents,
-            crawl_issues=crawl_issues,
-            crawl_prs=crawl_prs,
-            issue_max=issue_max,
-            pr_max=pr_max,
-            min_stars=min_stars,
-            max_dependents=max_dependents,
-            epfl_entities=set(epfl_entities),
-            gimie_repos=gimie_repos,
-            gimie_api_base=gimie_api_base,
+            max_rounds=body.max_rounds,
+            state_file=_state_path(job_id),
+            batch_size=body.batch_size,
+            crawl_dependencies=body.crawl_dependencies,
+            crawl_dependents=body.crawl_dependents,
+            crawl_issues=body.crawl_issues,
+            crawl_prs=body.crawl_prs,
+            issue_max=body.issue_max,
+            pr_max=body.pr_max,
+            min_stars=body.min_stars,
+            max_dependents=body.max_dependents,
+            epfl_entities=set(body.epfl_entities),
+            gimie_repos=body.gimie_repos,
+            gimie_api_base=body.gimie_api_base,
             gimie_store_jsonld_dir=jsonld_dir,
-            gimie_skip_existing_jsonld=gimie_skip_existing_jsonld,
+            gimie_skip_existing_jsonld=body.gimie_skip_existing_jsonld,
         )
+        crawler.stop_event = _stop_events.get(job_id)
+        _seed_or_resume(crawler, body, job_id, resume)
         _install_snapshotting(crawler, record, job_id)
-        crawler.add_seeds(seeds)
         crawler.crawl(show_progress=False)
 
-        record.graph = crawler.graph
-        if jsonld_dir is not None:
+        if body.gimie_repos and jsonld_dir is not None:
             record.jsonld_dir = str(jsonld_dir)
             record.jsonld_zip_path = str(jsonld_zip_path) if jsonld_zip_path else None
-            if gimie_archive_on_download and jsonld_zip_path:
+            if body.gimie_archive_on_download and jsonld_zip_path:
                 # Best-effort zip creation; download endpoint also works on-demand.
                 try:
                     if jsonld_zip_path.exists():
@@ -303,8 +369,7 @@ def _run_crawl(
                             zf.write(file_path, file_path.name)
                 except Exception as exc:
                     logger.warning("Failed to create jsonld zip: %s", exc)
-        record.status = JobStatus.COMPLETED
-        _write_snapshot(job_id, crawler.graph, JobStatus.COMPLETED, record.rounds_completed)
+        _finalize_job(job_id, record, crawler)
     except Exception as exc:
         logger.exception("Crawl job %s failed", job_id)
         record.status = JobStatus.FAILED
@@ -313,28 +378,17 @@ def _run_crawl(
         # partial graph is still recoverable via ?partial=true.
         if crawler is not None:
             _write_snapshot(job_id, crawler.graph, JobStatus.FAILED, record.rounds_completed)
+    finally:
+        _stop_events.pop(job_id, None)
 
 
-def _run_crawl_graphql(
-    job_id: str,
-    seeds: List[str],
-    max_rounds: int,
-    crawl_dependencies: bool,
-    crawl_dependents: bool,
-    crawl_issues: bool,
-    crawl_prs: bool,
-    issue_max: int,
-    pr_max: int,
-    min_stars: int,
-    max_dependents: Optional[int],
-    batch_size: Optional[int],
-    epfl_entities: List[str],
-) -> None:
-    """Execute a crawl using the GraphQL-backed client.
+def _run_crawl_graphql(job_id: str, body: "CrawlRequest", resume: bool = False) -> None:
+    """Execute a GraphQL-backed crawl in the background.
 
     Reuses GitHubCrawler. The GraphQL client returns cached-shape dicts,
     so the crawler routes through its cached-path code. SBOM dependencies
-    and "Used by" dependents still go via REST (existing helpers).
+    and "Used by" dependents still go via REST (existing helpers). Stop
+    and resume behave exactly as for the REST-backed crawl.
     """
     record = _jobs[job_id]
     record.status = JobStatus.RUNNING
@@ -353,38 +407,39 @@ def _run_crawl_graphql(
 
         client = GitHubGraphQLClient(
             tokens=tokens,
-            crawl_issues=crawl_issues,
-            crawl_prs=crawl_prs,
-            issue_max=issue_max,
-            pr_max=pr_max,
+            crawl_issues=body.crawl_issues,
+            crawl_prs=body.crawl_prs,
+            issue_max=body.issue_max,
+            pr_max=body.pr_max,
         )
         crawler = GitHubCrawler(
             client=client,
-            max_rounds=max_rounds,
-            batch_size=batch_size,
-            crawl_dependencies=crawl_dependencies,
-            crawl_dependents=crawl_dependents,
-            crawl_issues=crawl_issues,
-            crawl_prs=crawl_prs,
-            issue_max=issue_max,
-            pr_max=pr_max,
-            min_stars=min_stars,
-            max_dependents=max_dependents,
-            epfl_entities=set(epfl_entities),
+            max_rounds=body.max_rounds,
+            state_file=_state_path(job_id),
+            batch_size=body.batch_size,
+            crawl_dependencies=body.crawl_dependencies,
+            crawl_dependents=body.crawl_dependents,
+            crawl_issues=body.crawl_issues,
+            crawl_prs=body.crawl_prs,
+            issue_max=body.issue_max,
+            pr_max=body.pr_max,
+            min_stars=body.min_stars,
+            max_dependents=body.max_dependents,
+            epfl_entities=set(body.epfl_entities),
         )
+        crawler.stop_event = _stop_events.get(job_id)
+        _seed_or_resume(crawler, body, job_id, resume)
         _install_snapshotting(crawler, record, job_id)
-        crawler.add_seeds(seeds)
         crawler.crawl(show_progress=False)
-
-        record.graph = crawler.graph
-        record.status = JobStatus.COMPLETED
-        _write_snapshot(job_id, crawler.graph, JobStatus.COMPLETED, record.rounds_completed)
+        _finalize_job(job_id, record, crawler)
     except Exception as exc:
         logger.exception("GraphQL crawl job %s failed", job_id)
         record.status = JobStatus.FAILED
         record.detail = str(exc)
         if crawler is not None:
             _write_snapshot(job_id, crawler.graph, JobStatus.FAILED, record.rounds_completed)
+    finally:
+        _stop_events.pop(job_id, None)
 
 
 # ---------------------------------------------------------------------------
@@ -418,27 +473,11 @@ def start_crawl(
     """Start a new crawl job (runs in the background)."""
     job_id = str(uuid.uuid4())
     _jobs[job_id] = _JobRecord()
-    background_tasks.add_task(
-        _run_crawl,
-        job_id,
-        body.seeds,
-        body.max_rounds,
-        body.crawl_dependencies,
-        body.crawl_dependents,
-        body.crawl_issues,
-        body.crawl_prs,
-        body.issue_max,
-        body.pr_max,
-        body.min_stars,
-        body.max_dependents,
-        body.batch_size,
-        body.epfl_entities,
-        body.gimie_repos,
-        body.gimie_api_base,
-        body.gimie_store_jsonld,
-        body.gimie_skip_existing_jsonld,
-        body.gimie_archive_on_download,
-    )
+    # The stop event is created here (not in the background task) so a
+    # /stop call that races ahead of the task starting still finds it.
+    _stop_events[job_id] = threading.Event()
+    _persist_request(job_id, body, mode="rest")
+    background_tasks.add_task(_run_crawl, job_id, body)
     return CrawlJobResponse(job_id=job_id, status=JobStatus.PENDING)
 
 
@@ -462,23 +501,100 @@ def start_crawl_graphql(
     """
     job_id = str(uuid.uuid4())
     _jobs[job_id] = _JobRecord()
-    background_tasks.add_task(
-        _run_crawl_graphql,
-        job_id,
-        body.seeds,
-        body.max_rounds,
-        body.crawl_dependencies,
-        body.crawl_dependents,
-        body.crawl_issues,
-        body.crawl_prs,
-        body.issue_max,
-        body.pr_max,
-        body.min_stars,
-        body.max_dependents,
-        body.batch_size,
-        body.epfl_entities,
-    )
+    _stop_events[job_id] = threading.Event()
+    _persist_request(job_id, body, mode="graphql")
+    background_tasks.add_task(_run_crawl_graphql, job_id, body)
     return CrawlJobResponse(job_id=job_id, status=JobStatus.PENDING)
+
+
+@app.post("/api/v1/crawl/{job_id}/stop", response_model=CrawlJobResponse)
+def stop_crawl(
+    job_id: str,
+    _token: str = Depends(verify_token),
+) -> CrawlJobResponse:
+    """Request a cooperative stop of a running crawl.
+
+    Returns immediately. The crawl halts at the next BFS round boundary —
+    the in-flight round drains first, so the graph stays round-consistent —
+    and the job's status then flips to `stopped`. A stopped job's state is
+    persisted and can be continued with `POST .../resume`.
+    """
+    record = _jobs.get(job_id)
+    if record is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+    if record.status not in (JobStatus.PENDING, JobStatus.RUNNING):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Job is not stoppable (current status: {record.status.value})",
+        )
+    event = _stop_events.get(job_id)
+    if event is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Job has no active stop signal",
+        )
+    event.set()
+    return CrawlJobResponse(
+        job_id=job_id,
+        status=record.status,
+        detail="Stop requested; the crawl will halt after the current round drains.",
+    )
+
+
+@app.post(
+    "/api/v1/crawl/{job_id}/resume",
+    response_model=CrawlJobResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def resume_crawl(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    _token: str = Depends(verify_token),
+) -> CrawlJobResponse:
+    """Resume a stopped/failed crawl from its persisted BFS state.
+
+    Continues from the saved queue + visited set + graph rather than the
+    seeds. Works even when the in-memory job record was lost (container
+    restart), as long as the job's `state.json` + `request.json` are on
+    disk. The crawl is re-dispatched on whichever client (REST/GraphQL)
+    the original job used.
+    """
+    saved = _load_persisted_request(job_id)
+    if saved is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No persisted request for this job; cannot resume",
+        )
+    if not _state_path(job_id).exists():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="No saved crawler state for this job; nothing to resume",
+        )
+    record = _jobs.get(job_id)
+    if record is not None and record.status in (JobStatus.PENDING, JobStatus.RUNNING):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Job is already active (status: {record.status.value})",
+        )
+
+    try:
+        body = CrawlRequest(**saved["request"])
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Persisted request is invalid: {exc}",
+        )
+
+    mode = saved.get("mode", "rest")
+    task = _run_crawl_graphql if mode == "graphql" else _run_crawl
+    _jobs[job_id] = _JobRecord()
+    _stop_events[job_id] = threading.Event()
+    background_tasks.add_task(task, job_id, body, True)  # resume=True
+    return CrawlJobResponse(
+        job_id=job_id,
+        status=JobStatus.PENDING,
+        detail="Resuming crawl from saved state.",
+    )
 
 
 @app.get("/api/v1/crawl/{job_id}", response_model=CrawlResultResponse)

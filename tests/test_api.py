@@ -1,6 +1,8 @@
 """Tests for the FastAPI REST API."""
 
+import json
 import os
+import threading
 from unittest.mock import patch
 
 import pytest
@@ -13,10 +15,14 @@ TEST_TOKEN = "test-secret-token"
 
 @pytest.fixture(autouse=True)
 def _clear_jobs():
-    """Reset the in-memory job store between tests."""
+    """Reset the in-memory job store and stop signals between tests."""
+    from open_pulse_crawler.api import _stop_events
+
     _jobs.clear()
+    _stop_events.clear()
     yield
     _jobs.clear()
+    _stop_events.clear()
 
 
 @pytest.fixture()
@@ -442,3 +448,133 @@ class TestGraphPartial:
 
         with patch.dict(os.environ, {"OPC_DATA_DIR": str(tmp_path)}):
             assert _read_snapshot("never-existed") is None
+
+
+class TestStopResume:
+    """Cooperative stop and resume-from-state."""
+
+    def test_stop_running_job_sets_event(self, client: TestClient, auth_header: dict):
+        from open_pulse_crawler.api import _JobRecord, _stop_events
+
+        _jobs["sj"] = _JobRecord(status=JobStatus.RUNNING)
+        event = threading.Event()
+        _stop_events["sj"] = event
+
+        resp = client.post("/api/v1/crawl/sj/stop", headers=auth_header)
+        assert resp.status_code == 200
+        assert event.is_set()
+        assert "after the current round" in resp.json()["detail"]
+
+    def test_stop_unknown_job_returns_404(self, client: TestClient, auth_header: dict):
+        resp = client.post("/api/v1/crawl/no-such-job/stop", headers=auth_header)
+        assert resp.status_code == 404
+
+    def test_stop_completed_job_returns_409(self, client: TestClient, auth_header: dict):
+        from open_pulse_crawler.api import _JobRecord
+
+        _jobs["cj"] = _JobRecord(status=JobStatus.COMPLETED)
+        resp = client.post("/api/v1/crawl/cj/stop", headers=auth_header)
+        assert resp.status_code == 409
+
+    def test_resume_no_persisted_request_returns_404(
+        self, client: TestClient, auth_header: dict, tmp_path
+    ):
+        with patch.dict(os.environ, {"OPC_DATA_DIR": str(tmp_path)}):
+            resp = client.post("/api/v1/crawl/ghost/resume", headers=auth_header)
+        assert resp.status_code == 404
+
+    def test_resume_no_state_file_returns_409(
+        self, client: TestClient, auth_header: dict, tmp_path
+    ):
+        from open_pulse_crawler.api import CrawlRequest, _persist_request
+
+        with patch.dict(os.environ, {"OPC_DATA_DIR": str(tmp_path)}):
+            _persist_request(
+                "nostate", CrawlRequest(seeds=["torvalds"], max_rounds=2), mode="rest"
+            )
+            # request.json exists, state.json does not.
+            resp = client.post("/api/v1/crawl/nostate/resume", headers=auth_header)
+        assert resp.status_code == 409
+
+    def test_resume_already_running_returns_409(
+        self, client: TestClient, auth_header: dict, tmp_path
+    ):
+        from open_pulse_crawler.api import (
+            CrawlRequest,
+            _JobRecord,
+            _persist_request,
+            _state_path,
+        )
+
+        with patch.dict(os.environ, {"OPC_DATA_DIR": str(tmp_path)}):
+            _persist_request(
+                "busy", CrawlRequest(seeds=["torvalds"], max_rounds=2), mode="rest"
+            )
+            _state_path("busy").write_text("{}")
+            _jobs["busy"] = _JobRecord(status=JobStatus.RUNNING)
+            resp = client.post("/api/v1/crawl/busy/resume", headers=auth_header)
+        assert resp.status_code == 409
+
+    def test_resume_dispatches_with_resume_flag(
+        self, client: TestClient, auth_header: dict, tmp_path
+    ):
+        """A valid resume re-dispatches the crawl on the load_state path."""
+        from open_pulse_crawler.api import CrawlRequest, _persist_request, _state_path
+
+        with patch.dict(
+            os.environ, {"OPC_DATA_DIR": str(tmp_path), "GITHUB_TOKEN": "ghp_fake"}
+        ):
+            _persist_request(
+                "rj", CrawlRequest(seeds=["torvalds"], max_rounds=2), mode="rest"
+            )
+            _state_path("rj").write_text("{}")  # presence is all the endpoint checks
+
+            with patch("open_pulse_crawler.github_client.GitHubClient"), patch(
+                "open_pulse_crawler.crawler.GitHubCrawler"
+            ) as crawler_cls:
+                crawler = crawler_cls.return_value
+                crawler.current_round = 1
+                crawler.load_state.return_value = True
+                crawler.crawl.return_value = None
+                crawler.graph.users = {}
+                crawler.graph.orgs = {}
+                crawler.graph.repos = {}
+
+                resp = client.post("/api/v1/crawl/rj/resume", headers=auth_header)
+
+        assert resp.status_code == 202
+        # Resume path: load persisted state, do NOT re-seed.
+        crawler.load_state.assert_called_once()
+        crawler.add_seeds.assert_not_called()
+
+    def test_resume_graphql_mode_uses_graphql_task(
+        self, client: TestClient, auth_header: dict, tmp_path
+    ):
+        """A job persisted with mode=graphql resumes on the GraphQL client."""
+        from open_pulse_crawler.api import CrawlRequest, _persist_request, _state_path
+
+        with patch.dict(
+            os.environ, {"OPC_DATA_DIR": str(tmp_path), "GITHUB_TOKEN": "ghp_fake"}
+        ):
+            _persist_request(
+                "gj", CrawlRequest(seeds=["torvalds"], max_rounds=2), mode="graphql"
+            )
+            _state_path("gj").write_text("{}")
+
+            with patch("open_pulse_crawler.graphql_client.GitHubGraphQLClient") as gql_cls, patch(
+                "open_pulse_crawler.crawler.GitHubCrawler"
+            ) as crawler_cls:
+                crawler = crawler_cls.return_value
+                crawler.current_round = 1
+                crawler.load_state.return_value = True
+                crawler.crawl.return_value = None
+                crawler.graph.users = {}
+                crawler.graph.orgs = {}
+                crawler.graph.repos = {}
+
+                resp = client.post("/api/v1/crawl/gj/resume", headers=auth_header)
+
+        assert resp.status_code == 202
+        # The GraphQL client was constructed — confirms the graphql task ran.
+        gql_cls.assert_called_once()
+        crawler.load_state.assert_called_once()
