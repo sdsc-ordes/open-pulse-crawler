@@ -447,3 +447,69 @@ def test_get_stats_reports_points(gql_client):
     assert stats["efficiency"]["points_per_call"] == pytest.approx(7 / 3)
     # Field names that the CLI table reads.
     assert "api_calls" in stats
+
+
+# ── Token rotation ──────────────────────────────────────────────────────────
+
+
+def test_rotate_token_cycles_and_rebuilds_headers():
+    client = GitHubGraphQLClient(tokens=["tok-a", "tok-b", "tok-c"])
+    assert client.current_token_idx == 0
+    assert client._headers_graphql["Authorization"] == "bearer tok-a"
+
+    client._rotate_token()
+    assert client.current_token_idx == 1
+    assert client._headers_graphql["Authorization"] == "bearer tok-b"
+    assert client._headers_rest["Authorization"] == "token tok-b"
+
+    client._rotate_token()
+    client._rotate_token()  # tok-c -> wraps back to tok-a
+    assert client.current_token_idx == 0
+    assert client.stats["token_switches"] == 3
+
+
+def test_handle_rate_limit_rotates_before_sleeping():
+    """Exhausting one token rotates; only when every token is spent do we sleep."""
+    client = GitHubGraphQLClient(tokens=["a", "b"])
+
+    with patch("open_pulse_crawler.graphql_client.time.sleep") as slept:
+        # token 0 exhausted -> rotate to token 1, no sleep
+        client._handle_rate_limit(0, 0, 1, "2000-01-01T00:00:00Z")
+        assert client.current_token_idx == 1
+        slept.assert_not_called()
+
+        # token 1 also exhausted -> every token tried -> sleep
+        client._handle_rate_limit(1, 0, 1, "2000-01-01T00:00:00Z")
+        slept.assert_called_once()
+
+    assert client.stats["token_switches"] == 1
+    assert client.stats["rate_limit_waits"] == 1
+
+
+def test_handle_rate_limit_ignores_stale_token_response():
+    """A response tagged with an already-rotated-past token must not re-rotate."""
+    client = GitHubGraphQLClient(tokens=["a", "b"])
+    client._handle_rate_limit(0, 0, 1, "2000-01-01T00:00:00Z")  # rotate 0 -> 1
+    assert client.current_token_idx == 1
+
+    with patch("open_pulse_crawler.graphql_client.time.sleep") as slept:
+        # late "exhausted" response still tagged token 0 — stale, ignore it
+        client._handle_rate_limit(0, 0, 1, "2000-01-01T00:00:00Z")
+        slept.assert_not_called()
+
+    assert client.current_token_idx == 1
+    assert client.stats["token_switches"] == 1
+
+
+def test_handle_rate_limit_healthy_response_clears_streak():
+    """A healthy budget resets the streak, so it takes N fresh exhaustions to sleep."""
+    client = GitHubGraphQLClient(tokens=["a", "b"])
+    client._handle_rate_limit(0, 0, 1, "2000-01-01T00:00:00Z")  # exhausted -> rotate to 1
+    client._handle_rate_limit(1, 5000, 1, "2000-01-01T00:00:00Z")  # healthy -> streak cleared
+
+    with patch("open_pulse_crawler.graphql_client.time.sleep") as slept:
+        # exhausted on 1 -> streak is 1 (not 2), so rotate, do not sleep
+        client._handle_rate_limit(1, 0, 1, "2000-01-01T00:00:00Z")
+        slept.assert_not_called()
+
+    assert client.current_token_idx == 0
