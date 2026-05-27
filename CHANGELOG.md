@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] — 2026-05-27
+
+**Breaking release.** Headlines:
+
+* Node identifiers are now canonical public URLs (e.g. `https://github.com/torvalds`). Graph dict keys, CSV `id`/`source`/`target` columns, and the API response shape all change. See [`docs/MIGRATION_v1_to_v2.md`](docs/MIGRATION_v1_to_v2.md) for the field-by-field diff and the operator checklist.
+* GitHub-token env vars renamed to `CRAWLER_GITHUB_TOKEN` / `CRAWLER_GITHUB_TOKEN_POOL`. Legacy `GITHUB_TOKEN` still read with a one-shot deprecation warning.
+* Snapshot + state schema version bumped to `2`. Snapshots written under 1.x are refused on load — operators must re-crawl.
+* GraphQL-backed crawl endpoint, multi-token rotation (proactive + reactive), cache TTL, resume-from-state, partial-graph recovery, issue/PR activity edges, team modeling, gimie hybrid mode, and richer documentation accumulate from the v1.x line.
+
 ### Added
 
 - Resume-from-state: `POST /api/v1/crawl/{job_id}/resume` — in addition to lifting a pause — continues a `cancelled`/`failed` job from its persisted BFS state (queue + visited set + graph) rather than re-crawling from the seeds. Works even after the in-memory job record is lost (container restart), as long as the job's `state.json` + `request.json` are on disk. The background crawl wires the crawler's `state_file` (written per round) and persists the original request so the resume rebuilds the exact config — REST or GraphQL.
@@ -117,4 +126,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `member_of` edges (user → org and user → team) are no longer emitted in the CSV export. Org and team member lists are not a complete public signal — non-publicized org members are hidden from external tokens, and team membership requires org-level access — so they were dropped in favor of richer public signals (follows, stars, contributions). The underlying `OrgModel.members` and `TeamModel.members` lists are still populated in the JSON dump.
 
-[Unreleased]: https://github.com/sdsc-ordes/open-pulse-crawler/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/sdsc-ordes/open-pulse-crawler/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/sdsc-ordes/open-pulse-crawler/compare/v1.0.0...v2.0.0

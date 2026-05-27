@@ -165,6 +165,25 @@ Exactly one of `CRAWLER_GITHUB_TOKEN` or `CRAWLER_GITHUB_TOKEN_POOL` is required
 The legacy `GITHUB_TOKEN` variable is still read as a deprecated fallback and
 logs a warning when used.
 
+#### Upgrading from v1.x — operator checklist
+
+Open Pulse Crawler 2.0 is a breaking release. The graph output, the
+on-disk snapshot format, and the response cache are all incompatible
+with 1.x. Before pulling the new image:
+
+1. Rename `GITHUB_TOKEN` to `CRAWLER_GITHUB_TOKEN` (single) or
+   `CRAWLER_GITHUB_TOKEN_POOL` (comma-separated list for rotation) in
+   your `.env` / compose file. The legacy name still works as a
+   deprecated fallback for one release.
+2. Stop the running service.
+3. Clear `OPC_CACHE_DIR` and `OPC_DATA_DIR` (or accept that 2.0 will
+   refuse old snapshots with a warning and re-crawl on demand).
+4. Pull the new image / install the new package.
+5. Restart and re-crawl from seeds. Downstream consumers that read the
+   graph JSON or CSV exports must be updated to handle URL-keyed node
+   identifiers — see [`MIGRATION_v1_to_v2.md`](./MIGRATION_v1_to_v2.md)
+   for the field-by-field diff.
+
 #### Optional
 
 | Variable                       | Default                                | Description                                                                                                  |
