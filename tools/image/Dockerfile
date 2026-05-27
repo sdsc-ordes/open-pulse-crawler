@@ -10,7 +10,7 @@
 #
 # Run:
 #   docker run --rm -p 8000:8000 \
-#     -e API_TOKEN=...  -e GITHUB_TOKEN=...  open-pulse-crawler:local
+#     -e API_TOKEN=...  -e CRAWLER_GITHUB_TOKEN=...  open-pulse-crawler:local
 
 # ----- stage 1: build venv with uv ------------------------------------------
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS builder

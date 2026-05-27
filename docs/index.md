@@ -64,7 +64,7 @@ flowchart LR
 ## Quick start
 
 ```bash
-export GITHUB_TOKEN="ghp_…"
+export CRAWLER_GITHUB_TOKEN="ghp_…"
 uv pip install -e ".[viz]"
 open-pulse-crawler crawl torvalds sdsc-ordes/gimie --rounds 2 --visualize
 ```

@@ -25,7 +25,7 @@ trap cleanup EXIT
 # Ensure a .env file exists with the required variables.
 if [ ! -f .env ]; then
     cat > .env <<'ENVEOF'
-GITHUB_TOKEN=ghp_dummy
+CRAWLER_GITHUB_TOKEN=ghp_dummy
 API_TOKEN=integration-test-token
 ENVEOF
     CREATED_ENV=".env"

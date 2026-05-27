@@ -101,6 +101,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Gimie hybrid extraction is now configured via environment variables (`GIMIE_ENABLED`, `GIMIE_API_BASE`, `GIMIE_STORE_JSONLD`, `GIMIE_SKIP_EXISTING_JSONLD`), not the per-request `gimie_repos` flag. Operators decide whether the gimie path is on; clients submitting crawls don't need to know.
 - Cleaned up `docs/`: removed completion-report markdown (`*_COMPLETE`, `*_FIX_SUMMARY`, `*_IMPLEMENTATION`, `IMPROVEMENTS_SUMMARY`, `PLAN_*`, `QUICK_REFERENCE`, etc.) and the duplicate copies of files that already live under `docs/dev/dependency-graph/`. The remaining doc set is `API.md`, `DEPLOYMENT.md`, `CONCURRENCY.md`, `PROGRESS_TRACKING.md`, `TIMESTAMPS.md`, `VISUALIZATION.md`, plus `docs/dev/`. README's broken `RATE_LIMITING.md` link now points at `docs/CONCURRENCY.md`.
 - Refreshed `docs/API.md` to match the current API surface (job list / pause / resume / cancel / delete, live progress fields with ETA, env-driven gimie config) and corrected the Dockerfile path in `docs/DEPLOYMENT.md` (`tools/image/Dockerfile`).
+- Renamed the GitHub token environment variables to disambiguate single-token and pool deployments:
+  - `CRAWLER_GITHUB_TOKEN` — a single GitHub PAT.
+  - `CRAWLER_GITHUB_TOKEN_POOL` — comma-separated list of PATs for rotation. Wins over `CRAWLER_GITHUB_TOKEN` when both are set.
+  - The legacy `GITHUB_TOKEN` is still read as a deprecated fallback (logs a one-shot warning); migrate to the new names. Resolution lives in `open_pulse_crawler.token_env.resolve_github_tokens()` and is shared by the CLI, the REST/GraphQL API workers, and the tool scripts under `tools/scripts/`. Docs, `.env.dist`, the runtime Dockerfile, and the integration test bootstrap are updated to use the new names.
 
 ### Removed
 
