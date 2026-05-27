@@ -16,6 +16,8 @@ from github.Organization import Organization
 from github_dependents_info import GithubDependentsInfo
 import hashlib
 
+from .node_id import extract_full_name, extract_login
+
 logger = logging.getLogger(__name__)
 
 # Environment variable and default location for the API response cache.
@@ -435,9 +437,10 @@ class GitHubClient:
             
             return None
     
-    def get_user(self, username: str) -> Optional[NamedUser]:
-        """Get user by username with caching."""
-        cache_key = f"user:{username}"
+    def get_user(self, url: str) -> Optional[NamedUser]:
+        """Get user by canonical URL (e.g. https://github.com/torvalds) with caching."""
+        username = extract_login(url)
+        cache_key = f"user:{url}"
         
         if self.cache:
             cached = self.cache.get(cache_key)
@@ -514,9 +517,10 @@ class GitHubClient:
             logger.error(f"Failed to get user {username}: {e}")
             return None
     
-    def get_organization(self, org_name: str) -> Optional[Organization]:
-        """Get organization by name with caching."""
-        cache_key = f"org:{org_name}"
+    def get_organization(self, url: str) -> Optional[Organization]:
+        """Get organization by canonical URL (e.g. https://github.com/acme) with caching."""
+        org_name = extract_login(url)
+        cache_key = f"org:{url}"
         
         if self.cache:
             cached = self.cache.get(cache_key)
@@ -556,9 +560,10 @@ class GitHubClient:
             logger.error(f"Failed to get organization {org_name}: {e}")
             return None
     
-    def get_repository(self, repo_full_name: str) -> Optional[Repository]:
-        """Get repository by full name with caching."""
-        cache_key = f"repo:{repo_full_name}"
+    def get_repository(self, url: str) -> Optional[Repository]:
+        """Get repository by canonical URL (e.g. https://github.com/acme/widget) with caching."""
+        repo_full_name = extract_full_name(url)
+        cache_key = f"repo:{url}"
         
         if self.cache:
             cached = self.cache.get(cache_key)
@@ -606,16 +611,17 @@ class GitHubClient:
             logger.error(f"Failed to get repository {repo_full_name}: {e}")
             return None
 
-    def get_contributor_count(self, repo_full_name: str) -> Optional[int]:
-        """Return the total contributor count for a repo.
+    def get_contributor_count(self, url: str) -> Optional[int]:
+        """Return the total contributor count for a repo, addressed by canonical URL.
 
-        Reads from the existing ``repo:{full_name}`` cache entry first. Falls
+        Reads from the existing ``repo:{url}`` cache entry first. Falls
         back to a fresh ``get_contributors().totalCount`` lookup (one cheap
         ``per_page=1`` request) only on cache miss or when the cached entry
         predates this field. Returns ``None`` if both paths fail; callers
         should treat ``None`` as "unknown" and not skip the repo.
         """
-        cache_key = f"repo:{repo_full_name}"
+        repo_full_name = extract_full_name(url)
+        cache_key = f"repo:{url}"
 
         if self.cache:
             cached = self.cache.get(cache_key)
