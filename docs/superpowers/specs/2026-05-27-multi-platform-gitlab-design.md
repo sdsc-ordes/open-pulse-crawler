@@ -1,238 +1,194 @@
-# Multi-platform crawler — abstraction + GitLab (Spec 1)
+# Multi-platform crawler — abstraction + GitLab (Spec 1, targets v3.0.0)
 
-**Status:** Draft for review
-**Date:** 2026-05-27
-**Branch:** `feat/multi-platform-gitlab` (from `origin/develop`)
+**Status:** Draft for review · revised 2026-05-27 after rebase on v2.0.0
+**Branch:** `feat/multi-platform-gitlab` (from `origin/develop` post-v2.0.0)
 **Worktree:** `.worktrees/feat-multi-platform-gitlab/`
-**Sequence:** Spec 1 of 3 (this) → Spec 2 (Zenodo) → Spec 3 (HuggingFace)
+**Sequence:** Spec 1 of 3 — this → Zenodo (Spec 2) → HuggingFace (Spec 3)
+
+## Starting point: what v2.0.0 already shipped
+
+The URL-keyed refactor is already in develop:
+
+- `src/open_pulse_crawler/node_id.py` — canonical URL helpers (`canonical_url`, `extract_login`, `extract_full_name`, `extract_team_parts`, seed parsing) and a `NodeKind` enum (`USER_OR_ORG`, `REPO`, `TEAM`).
+- `models.py` — `UserModel`/`OrgModel`/`RepoModel`/`TeamModel`, each keyed by a canonical `url` and carrying a `platform: str = "github"` field on `BaseEntityModel`. `GRAPH_SCHEMA_VERSION = 2`.
+- URL-keyed `GraphData.users/orgs/repos/teams` dicts; URL-keyed BFS queue + visited set.
+- `token_env.py` resolves `CRAWLER_GITHUB_TOKEN_POOL` → `CRAWLER_GITHUB_TOKEN` → `GITHUB_TOKEN` (the last is legacy with a deprecation warning).
+- URL-keyed CSV/JSON output; v1 API contract aligned to the URL keys.
+
+What this spec adds on top is the platform abstraction, GitLab support, multi-instance config, typed subkind subclasses, and `/api/v2`.
 
 ## Goal
 
-Turn Open Pulse Crawler from a GitHub-only BFS crawler into a multi-platform
-crawler whose primary downstream use is a **cross-platform open-science graph**.
-Spec 1 ships:
-
-1. A `PlatformAdapter` abstraction with a generic, platform-agnostic BFS engine.
-2. The existing GitHub code, ported to the new abstraction with no behaviour
-   change (modulo the data-model rename).
-3. A `GitLabAdapter` supporting users, groups (incl. nested subgroups),
-   projects, ownership/membership/contributors, issue/MR activity, fork
-   parent/child, and project stars — across `gitlab.com`, `gitlab.epfl.ch`,
-   `gitlab.ethz.ch`, and `renkulab.io`.
+1. A `PlatformAdapter` abstraction with a platform-agnostic BFS engine.
+2. The existing GitHub code, ported behind the abstraction with no behaviour change.
+3. A `GitLabAdapter` for `gitlab.com`, `gitlab.epfl.ch`, `gitlab.ethz.ch`, `renkulab.io`: users, groups (incl. nested subgroups via `parent`), projects, ownership/membership/contributors, issue/MR activity, fork parent/child, project stars.
+4. Typed subkind subclasses on top of the v2 flat models so platform-specific fields land naturally.
+5. `/api/v2` (unified shape with `kind`+`subkind`) alongside a v1 host-guard shim.
 
 ## Non-goals (deferred)
 
-- **Zenodo adapter** — Spec 2 (separate brainstorming session).
+- **Zenodo adapter** — Spec 2.
 - **HuggingFace adapter** — Spec 3.
-- **Cross-platform identity resolution.** The data model carries a slot
-  (`external_identifiers` on every node), but no resolver ships here.
-- **GitLab SBOM / "used by".** No public GitLab equivalent of GitHub's
-  dependents view. Skipped rather than faked.
-- **Renku-specific concepts** (Renku datasets, project lineage). `renkulab.io`
-  is treated as a vanilla GitLab instance in v1.
-- **A real-time graph store / DB.** Output stays JSON + CSV + matplotlib.
+- **Cross-platform identity resolution.** Models carry an `external_identifiers` slot; populating it (ORCID, email, manual) is its own design.
+- **GitLab SBOM / "used by".** No public equivalent of GitHub's dependents view.
+- **Renku-specific concepts** (Renku datasets, project lineage). `renkulab.io` is treated as a vanilla GitLab instance in v1.
 
 ## Locked-in design choices
 
 | Topic | Decision |
 |---|---|
-| Use case | Cross-platform open-science graph (identities will eventually link). |
-| Sequencing | Abstraction + GitLab first; Zenodo next; HuggingFace last. |
-| Node identity | Canonical HTTPS URL is the primary key and JSON-LD `@id`. |
-| Configuration | Env vars keyed by instance host. |
+| Use case | Cross-platform open-science graph. |
+| Sequencing | GitLab in this spec; Zenodo next; HF last. |
+| Node identity | Canonical HTTPS URL (already shipped). |
+| Subkind hierarchy | **Add concrete subclasses on top of v2 flat models.** `GitLabUserModel(UserModel)`, `GitLabGroupModel(OrgModel)`, `GitLabProjectModel(RepoModel)`. `BaseEntityModel` gains a `subkind: str` Literal discriminator and an `extras: dict[str, Any]` escape hatch. |
+| Token config | **Migrate all platforms to host-keyed env vars** (`CRAWLER_TOKEN_POOL__<HOST>` / `CRAWLER_TOKEN__<HOST>`). `CRAWLER_GITHUB_TOKEN_POOL` / `CRAWLER_GITHUB_TOKEN` keep working in v3 with a one-shot deprecation warning; remove in v4. |
 | Architecture | Approach A — strangler-fig refactor with `PlatformAdapter` ABC. |
-| API compatibility | Ship `/api/v2` (unified shape); keep `/api/v1` as a compat shim for GitHub-only crawls; two-release deprecation window. |
-| Migration | Hard break — snapshot/cache schema version bumps; operators re-crawl. No migration script. |
+| API compatibility | Ship `/api/v2` (unified `kind`+`subkind` shape); `/api/v1` becomes a thin shim that 400s on non-GitHub seeds and emits the existing `users/orgs/repos/teams` shape for github-only crawls. Two-release deprecation window. |
+| Migration | Hard break across the v2→v3 boundary. Snapshot schema bumps to 3. Operators re-crawl. |
 
 ## 1. Architecture & module layout
 
 ```
 src/open_pulse_crawler/
-  platforms/
-    __init__.py          # PlatformAdapter registry (host → adapter)
-    base.py              # PlatformAdapter ABC + supporting types
+  node_id.py                    # EXISTING — canonical URL helpers (reuse)
+  platforms/                    # NEW
+    __init__.py                 # PlatformRegistry (host → adapter)
+    base.py                     # PlatformAdapter ABC + Edge + ExpandOpts + RateLimitInfo
     github/
-      adapter.py         # implements PlatformAdapter using existing PyGithub client
-      client.py          # = current github_client.py, narrowed
-      graphql.py         # = current graphql_client.py
+      __init__.py               # re-exports
+      adapter.py                # implements PlatformAdapter
+      client.py                 # = current github_client.py, moved
+      graphql.py                # = current graphql_client.py, moved
     gitlab/
-      adapter.py         # implements PlatformAdapter using python-gitlab
-      client.py          # rate-limit-aware wrapper around python-gitlab
-  models.py              # unified Pydantic models (URL-keyed, kind+subkind hierarchy)
-  crawler.py             # platform-agnostic BFS driver; talks only to adapters
-  uris.py                # URL normalization + classification helpers
-  config.py              # NEW: instance & token resolution per host
+      __init__.py
+      adapter.py
+      client.py                 # python-gitlab wrapper with token rotation
+  models.py                     # EXTENDED — add subkind, extras, GitLab subclasses
+  crawler.py                    # EXTENDED — dispatch via PlatformRegistry
+  config.py                     # NEW — host-keyed token + instance resolution (legacy GITHUB env compat)
+  token_env.py                  # KEPT — delegates to config.py for github.com
   api/
-    v1.py                # legacy shape compat shim (renamed from current api.py)
-    v2.py                # new unified shape
-    deps.py              # shared dependencies (auth, job store)
+    __init__.py                 # mounts both routers
+    v1.py                       # ex-api.py, kept as compat shim
+    v2.py                       # NEW — unified shape
+    deps.py                     # NEW — shared FastAPI deps (auth, job store)
 ```
 
-`dependency_utils.py`, `gimie_*`, `io_utils.py`, `visualization.py`, `gui.py`
-stay where they are but consume URL-keyed nodes.
-
-`PlatformAdapter` sketch (full method shapes are in §3):
+The `PlatformAdapter` ABC is the single seam. `dependency_utils.py`, `gimie_*`, `io_utils.py`, `visualization.py`, `gui.py` are unchanged structurally — they already speak URL keys.
 
 ```python
 class PlatformAdapter(ABC):
     platform: ClassVar[str]              # "github" | "gitlab"
     instance_host: str                   # "github.com" | "gitlab.epfl.ch"
-    def classify(self, uri: str) -> NodeKind: ...
+    def classify(self, uri: str) -> NodeKind | None: ...
     def fetch(self, uri: str) -> Node: ...
     def expand(self, node: Node, opts: ExpandOpts) -> Iterable[Edge]: ...
     def normalize_uri(self, raw: str) -> str: ...
     def rate_limit_state(self) -> RateLimitInfo: ...
 ```
 
-A `PlatformRegistry` maps `instance_host → adapter`. The BFS crawler resolves
-the adapter from each node's URL host.
+The BFS crawler resolves the adapter from each URL's host.
 
 ## 2. Data model
 
-Every node carries two type fields:
+### 2.1 Subkind subclasses on top of v2 flat models
 
-- `kind` — the **abstract bucket** the BFS engine reasons over: `Person`,
-  `Group`, `Repository`.
-- `subkind` — the **concrete platform-specific type**: `GitHubUser`,
-  `GitHubOrganization`, `GitHubRepository`, `GitLabUser`, `GitLabGroup`,
-  `GitLabProject`. Future: `ZenodoUser`/`Community`/`Record`,
-  `HuggingFaceUser`/`Organization`/`Model`/`Dataset`/`Space`.
-
-The graph stores subclass instances; Pydantic v2 discriminated unions (on
-`subkind`) reconstruct the right subclass from JSON. Downstream code can
-filter abstractly (`graph.of_kind(NodeKind.REPOSITORY)`) or concretely
-(`graph.of_subkind("GitLabProject")`).
-
-**No `Team` type.** GitHub Teams are not consumed downstream; the
-team-crawling code paths are removed during the refactor.
-
-### 2.1 Class hierarchy (Spec 1: GitHub + GitLab)
+`BaseEntityModel` (already in v2) is extended:
 
 ```python
-class NodeKind(str, Enum):
-    PERSON     = "Person"
-    GROUP      = "Group"
-    REPOSITORY = "Repository"
-
-class Node(BaseModel):
-    id: HttpUrl                       # canonical URL — primary key
-    kind: NodeKind                    # ClassVar on each subclass
-    subkind: str                      # ClassVar (Literal) on each subclass — Pydantic discriminator
-    platform: str                     # "github" | "gitlab"
-    instance: str                     # "github.com" | "gitlab.epfl.ch" | ...
-    name: str = ""
-    native_id: str = ""               # numeric id or slug from the source platform
+class BaseEntityModel(BaseModel):
     is_explored: bool = False
-    exploration_timestamp: str | None = None
-    external_identifiers: list[ExternalIdentifier] = []   # slot for future cross-platform linking
-    extras: dict[str, Any] = {}       # escape hatch for fields we deliberately don't model
+    exploration_timestamp: Optional[str] = None
+    platform: str = "github"
+    subkind: str                              # discriminator — set on each concrete subclass
+    extras: dict[str, Any] = Field(default_factory=dict)
+    external_identifiers: list[ExternalIdentifier] = Field(default_factory=list)
+```
 
-# --- Person ---
-class Person(Node):
-    kind: ClassVar[NodeKind] = NodeKind.PERSON
-    followers: list[HttpUrl] = []
-    following: list[HttpUrl] = []
-    starred_repositories: list[HttpUrl] = []
-    authored_repositories: list[HttpUrl] = []
-    forked_repositories: list[HttpUrl] = []
+Existing concrete classes (`UserModel`, `OrgModel`, `RepoModel`, `TeamModel`) become the GitHub-shaped concrete classes. Their `subkind` field is set:
 
-class GitHubUser(Person):
+```python
+class UserModel(BaseEntityModel):
     subkind: Literal["GitHubUser"] = "GitHubUser"
-    type: Literal["User", "Bot"] = "User"
-    watched_repositories: list[HttpUrl] = []      # GitHub-only
+    # ... existing fields unchanged
 
-class GitLabUser(Person):
+class OrgModel(BaseEntityModel):
+    subkind: Literal["GitHubOrganization"] = "GitHubOrganization"
+    # ... existing fields unchanged
+
+class RepoModel(BaseEntityModel):
+    subkind: Literal["GitHubRepository"] = "GitHubRepository"
+    # ... existing fields unchanged
+
+class TeamModel(BaseEntityModel):
+    subkind: Literal["GitHubTeam"] = "GitHubTeam"
+    # ... existing fields unchanged
+```
+
+GitLab-specific subclasses:
+
+```python
+class GitLabUserModel(UserModel):
     subkind: Literal["GitLabUser"] = "GitLabUser"
     state: Literal["active", "blocked", "deactivated"] = "active"
     public_email: str = ""
 
-# --- Group (GitHub Org, GitLab Group, future Zenodo Community / HF Org) ---
-class Group(Node):
-    kind: ClassVar[NodeKind] = NodeKind.GROUP
-    members: list[HttpUrl] = []
-    authored_repositories: list[HttpUrl] = []
-
-class GitHubOrganization(Group):
-    subkind: Literal["GitHubOrganization"] = "GitHubOrganization"
-    forked_repositories: list[HttpUrl] = []
-
-class GitLabGroup(Group):
+class GitLabGroupModel(OrgModel):
     subkind: Literal["GitLabGroup"] = "GitLabGroup"
-    parent: HttpUrl | None = None         # set for subgroups (URL of parent group)
+    parent: Optional[str] = None              # URL of parent group when subgroup
     visibility: Literal["private", "internal", "public"] = "public"
 
-# --- Repository ---
-class Repository(Node):
-    kind: ClassVar[NodeKind] = NodeKind.REPOSITORY
-    owner: HttpUrl | None = None          # Person or Group URL
-    contributors: list[HttpUrl] = []
-    contributor_count: int | None = None
-    is_fork: bool = False
-    forked_from: HttpUrl | None = None
-    issue_authors: list[HttpUrl] = []
-    pr_authors: list[HttpUrl] = []        # GitLab MR authors land here too
-    commenters: list[HttpUrl] = []
-    pr_reviewers: list[HttpUrl] = []      # GitLab MR reviewers land here too
-    stargazer_count: int | None = None
-
-class GitHubRepository(Repository):
-    subkind: Literal["GitHubRepository"] = "GitHubRepository"
-    dependents: list[HttpUrl] = []
-    dependencies: list[HttpUrl] = []
-
-class GitLabProject(Repository):
+class GitLabProjectModel(RepoModel):
     subkind: Literal["GitLabProject"] = "GitLabProject"
     visibility: Literal["private", "internal", "public"] = "public"
-    namespace: HttpUrl | None = None      # owner namespace (a user or a group)
+    namespace: Optional[str] = None           # owner namespace URL
 ```
 
-### 2.2 GraphData
+`GraphData.users`/`orgs`/`repos` remain `dict[str, UserModel]`/`dict[str, OrgModel]`/`dict[str, RepoModel]`. With Pydantic v2 discriminated unions on `subkind`, each dict holds the GitHub base class **or** the GitLab subclass interchangeably; JSON serialization round-trips through the right concrete class.
+
+Future Spec 2/3 sketches (slot reserved, not implemented now):
+
+```python
+class ZenodoUserModel(UserModel):       subkind: Literal["ZenodoUser"]
+class ZenodoCommunityModel(OrgModel):   subkind: Literal["ZenodoCommunity"]
+class ZenodoRecordModel(RepoModel):     subkind: Literal["ZenodoRecord"]
+class HuggingFaceUserModel(UserModel):  subkind: Literal["HuggingFaceUser"]
+class HuggingFaceOrgModel(OrgModel):    subkind: Literal["HuggingFaceOrganization"]
+class HuggingFaceModelModel(RepoModel): subkind: Literal["HuggingFaceModel"]
+class HuggingFaceDatasetModel(RepoModel): subkind: Literal["HuggingFaceDataset"]
+class HuggingFaceSpaceModel(RepoModel): subkind: Literal["HuggingFaceSpace"]
+```
+
+The user's earlier ask — "general but more specific" — maps directly: `OrgModel` is the abstract group bucket; `ZenodoCommunityModel`/`HuggingFaceOrgModel`/`GitLabGroupModel` are the concrete subkinds.
+
+### 2.2 GraphData additions (additive)
 
 ```python
 class GraphData(BaseModel):
-    nodes: dict[HttpUrl, Node] = {}       # discriminated by subkind on (de)serialize
+    schema_version: int = GRAPH_SCHEMA_VERSION   # bumps to 3
+    users: dict[str, UserModel] = {}             # accepts GitHubUser or GitLabUser
+    orgs:  dict[str, OrgModel] = {}              # accepts GitHubOrganization or GitLabGroup
+    repos: dict[str, RepoModel] = {}             # accepts GitHubRepository or GitLabProject
+    teams: dict[str, TeamModel] = {}             # GitHub-only in v1
 
-    def of_kind(self, kind: NodeKind) -> Iterator[Node]: ...
-    def of_subkind(self, subkind: str) -> Iterator[Node]: ...
-    def by_platform(self, platform: str) -> Iterator[Node]: ...
-    def by_instance(self, instance_host: str) -> Iterator[Node]: ...
-
-    # Deprecated legacy accessors (filtered iterators, DeprecationWarning):
-    def users(self):  ...   # of_kind(PERSON)
-    def orgs(self):   ...   # of_kind(GROUP), platform="github"
-    def repos(self):  ...   # of_kind(REPOSITORY)
+    # new convenience accessors (additive):
+    def of_subkind(self, subkind: str) -> Iterator[BaseEntityModel]: ...
+    def by_platform(self, platform: str) -> Iterator[BaseEntityModel]: ...
+    def by_instance(self, instance_host: str) -> Iterator[BaseEntityModel]: ...
 ```
 
-`teams` is not provided — `Team` is gone from the model.
+`schema_version` bumps to **3**. v2 snapshots are refused on load with: *"snapshot schema is from v2.x; please start a fresh crawl"*.
 
-### 2.3 Edges
+### 2.3 URL normalization
 
-The BFS engine emits explicit `Edge(src_uri, kind, dst_uri)` tuples via
-`adapter.expand()`. Per-node lists (`Repository.contributors`,
-`Group.members`, etc.) are also populated for back-compat with the current
-JSON shape. CSV export gains `source_id` / `target_id` URL columns and an
-`edge_kind` column.
+`node_id.canonical_url` already handles scheme/host lowercasing and trailing-slash stripping. The new per-adapter `normalize_uri()` adds:
 
-### 2.4 URL normalization (`uris.py`)
-
-1. Lowercase scheme + host. Reject non-`https`.
-2. Strip trailing slash, fragments, query strings.
-3. Path case is normalized **per adapter** (handled by `normalize_uri()`),
-   never by the generic normalizer. Both GitHub and GitLab logins are
-   case-insensitive in lookup but case-preserving in display; the adapter
-   resolves to the canonical case by API response, then caches that
-   mapping so subsequent inputs round-trip without an extra call.
-   Without this, `https://github.com/Torvalds` and `.../torvalds` would
-   become two distinct graph nodes for the same user.
-4. Per-adapter `classify(uri) → NodeKind`. The registry picks the adapter by host;
-   the adapter inspects the path to decide kind.
-5. GitHub forms: `https://github.com/<owner>` (User/Org), `https://github.com/<owner>/<repo>`.
-6. GitLab forms: `https://<host>/<full_path>` covers users, groups, subgroups,
-   and projects. Disambiguation is via API probing (see §3.2).
+- Per-platform login casing canonicalization (resolve via API call, cache the mapping). Without this, `https://github.com/Torvalds` and `.../torvalds` would be distinct keys.
+- Per-adapter `classify(uri) → NodeKind | None` walks the path.
 
 ## 3. Platform adapters
 
-### 3.1 PlatformAdapter ABC (`platforms/base.py`)
+### 3.1 `PlatformAdapter` ABC (`platforms/base.py`)
 
 ```python
 class ExpandOpts(BaseModel):
@@ -247,100 +203,62 @@ class ExpandOpts(BaseModel):
     pr_max: int = 100
 
 class Edge(BaseModel):
-    src: HttpUrl
-    kind: str            # "contributor_of", "member_of", "forked_from", ...
-    dst: HttpUrl
+    src: str
+    kind: str
+    dst: str
 
-class PlatformAdapter(ABC):
-    platform: ClassVar[str]
-    instance_host: str
-
-    @abstractmethod
-    def classify(self, uri: str) -> NodeKind: ...
-    @abstractmethod
-    def fetch(self, uri: str) -> Node: ...
-    @abstractmethod
-    def expand(self, node: Node, opts: ExpandOpts) -> Iterable[Edge]: ...
-    @abstractmethod
-    def normalize_uri(self, raw: str) -> str: ...
-    @abstractmethod
-    def rate_limit_state(self) -> RateLimitInfo: ...
+class RateLimitInfo(BaseModel):
+    remaining: int
+    limit: int
+    reset_at: float | None = None
 ```
 
-Adapters silently ignore options that don't apply to their platform (the GitLab
-adapter is a no-op for `crawl_dependents`).
+Adapters silently ignore options that don't apply (GitLab is a no-op for `crawl_dependents`).
 
 ### 3.2 GitLab adapter
 
-Uses [python-gitlab](https://python-gitlab.readthedocs.io). One adapter
-instance per configured instance host, each holding its own multi-token pool.
+Uses [python-gitlab](https://python-gitlab.readthedocs.io). One adapter per configured host with its own token pool.
 
-| Concept | Endpoint(s) | Stored on node / edges emitted |
+| Concept | Endpoint(s) | Stored / edges emitted |
 |---|---|---|
-| User fetch | `GET /users/:id_or_username` | `GitLabUser` (state, public_email, native_id) |
-| User expand | `users/:id/projects`, `users/:id/contributed_projects`, `users/:id/starred_projects` | `Person.authored_repositories`, `Person.starred_repositories`; contributed projects are *enqueued* (no per-Person field — the contribution edge is recorded on `Repository.contributors`, matching the GitHub model). |
-| Group fetch | `GET /groups/:full_path` | `GitLabGroup` (parent if subgroup, visibility, native_id) |
-| Group expand | `groups/:id/members/all` (inherited), `groups/:id/subgroups`, `groups/:id/projects?include_subgroups=false` | `members`, child→parent edges, `authored_repositories` |
-| Project fetch | `GET /projects/:url_encoded_path` | `GitLabProject` (visibility, namespace, forked_from, stargazer_count, native_id) |
+| User fetch | `GET /users/:id_or_username` | `GitLabUserModel` (state, public_email, native id) |
+| User expand | `users/:id/projects`, `users/:id/contributed_projects`, `users/:id/starred_projects` | `authored_repositories`, `starred_repositories`; contributed projects are *enqueued* (contribution edge is recorded on `RepoModel.contributors`, matching the GitHub model). |
+| Group fetch | `GET /groups/:full_path` | `GitLabGroupModel` (parent if subgroup, visibility) |
+| Group expand | `groups/:id/members/all` (inherited), `groups/:id/subgroups`, `groups/:id/projects?include_subgroups=false` | `members`, child→parent subgroup edges, `authored_repositories` |
+| Project fetch | `GET /projects/:url_encoded_path` | `GitLabProjectModel` (visibility, namespace, forked_from, stargazer_count) |
 | Project expand | `projects/:id/repository/contributors`, `projects/:id/forks`, `projects/:id/issues` (`crawl_issues`), `projects/:id/merge_requests` (`crawl_prs`), `projects/:id/starrers` (`crawl_stars`) | `contributors`, fork children, `issue_authors`, `pr_authors`, `pr_reviewers`, `commenters`, stargazer users |
 
-#### GitLab-specific quirks and resolutions
+Quirks and resolutions:
 
-1. **User-vs-group disambiguation at top-level path.** `https://gitlab.epfl.ch/foo`
-   could be either. The adapter probes `/users?username=foo` first, then
-   `/groups/foo`. Result is cached so a second visit is free. Yields
-   `GitLabUser` or `GitLabGroup`.
-2. **Nested-subgroup vs project ambiguity.** `https://gitlab.epfl.ch/a/b/c`
-   could be subgroup `a/b/c` *or* project `a/b/c`. Try
-   `/projects/{url-encoded path}` first; on 404, treat as group path. Cache.
-3. **Multi-instance auth.** Each instance has its own token pool. Rate limit
-   state is per-instance (GitLab's rate limit headers; same rotation model as
-   the GitHub side).
-4. **No "follow user" concept.** `Person.followers`/`following` stay empty for
-   `GitLabUser`. Already typed as empty default.
-5. **Star semantics.** `stargazer_count` is always captured. Enumerating
-   *which users* starred a project is gated behind `--crawl-stars` (off by
-   default) — mirrors the GitHub trade-off.
-6. **Self-hosted instances** (`gitlab.epfl.ch`, `gitlab.ethz.ch`, `renkulab.io`)
-   may run older GitLab versions with subtly different endpoints. The adapter
-   handles `404`s on optional endpoints (e.g., `starrers` exists from GitLab
-   13.5+) by emitting no edges and logging at debug.
+1. **User-vs-group at top-level path.** Probe `/users?username=foo` then `/groups/foo`. Cache the result. Yields `GitLabUser` or `GitLabGroup`.
+2. **Nested subgroup vs project.** `https://gitlab.epfl.ch/a/b/c` is either subgroup `a/b/c` or project `a/b/c`. Try `/projects/{url-encoded path}` first; on 404, treat as group path. Cache.
+3. **Multi-instance auth.** Each adapter holds its own token pool. Rate-limit state from python-gitlab's response headers.
+4. **No "follow user" concept.** `UserModel.followers`/`following` stay empty for `GitLabUserModel`.
+5. **Star semantics.** `stargazer_count` always captured; per-user star enumeration gated behind `--crawl-stars` (off by default).
+6. **Self-hosted older versions** (`gitlab.epfl.ch`, `gitlab.ethz.ch`, `renkulab.io`). Optional endpoints (e.g., `starrers` from GitLab 13.5+) return no edges with a debug log on 404 rather than failing.
 
-## 4. Crawler (`crawler.py`)
+## 4. Crawler
 
-The BFS driver stops knowing GitHub. It owns:
+The current `GitHubCrawler` becomes `Crawler` (or stays named for compat — the implementation plan picks the safer path: keep the class name, add a `registry: PlatformRegistry` constructor arg, dispatch by host). The existing concurrency model (ThreadPoolExecutor + semaphore + pause/cancel) is preserved.
 
-- URL-keyed queue and visited set
-- Round counters and per-round summaries
-- Per-batch concurrency (the existing `ThreadPoolExecutor` / semaphore model)
-- The pause/cancel flags
-- Progress reporting (tqdm + structured stats)
-
-Per-batch loop becomes:
+Per-batch loop:
 
 ```python
 adapter = registry.adapter_for(uri)
 node = adapter.fetch(uri)
-with graph_lock:
-    graph.nodes[node.id] = node
+graph.add(node)
 for edge in adapter.expand(node, opts):
-    with visited_lock:
-        if edge.dst not in visited:
-            enqueue(edge.dst)
+    enqueue_if_new(edge.dst if edge.src == node.url else edge.src)
     record_edge(edge)
 ```
-
-Rate-limit handling is adapter-local. The crawler only reads
-`adapter.rate_limit_state()` for progress reporting.
 
 ## 5. Configuration (`config.py`)
 
 ```bash
-# Enable instances (comma-separated). Hosts not listed here are not crawled.
+# Enable instances (comma-separated). Hosts not listed are not crawled.
 CRAWLER_PLATFORMS="github.com,gitlab.epfl.ch,gitlab.ethz.ch,renkulab.io"
 
-# Per-host token pool (multi-token rotation). Env-var transform:
-# lowercase the host, replace dots/hyphens with underscores, uppercase.
+# Per-host token pool. Env-var transform: lowercase host → replace dots/hyphens with underscores → uppercase.
 CRAWLER_TOKEN_POOL__GITHUB_COM="ghp_a,ghp_b"
 CRAWLER_TOKEN_POOL__GITLAB_EPFL_CH="glpat-x,glpat-y"
 CRAWLER_TOKEN_POOL__GITLAB_ETHZ_CH="glpat-z"
@@ -350,96 +268,74 @@ CRAWLER_TOKEN_POOL__RENKULAB_IO="glpat-r"
 CRAWLER_TOKEN__GITHUB_COM="ghp_x"
 ```
 
-**Legacy compatibility.** `CRAWLER_GITHUB_TOKEN_POOL`, `CRAWLER_GITHUB_TOKEN`,
-and `GITHUB_TOKEN` remain readable for two minor releases — mapped to
-`host=github.com` with a deprecation warning.
+**Legacy compatibility (v3 only):**
 
-The host→env-var transform is a single helper in `config.py` so it can't drift
-across adapters.
+- `CRAWLER_GITHUB_TOKEN_POOL` → mapped to `host=github.com`, emits one-shot DeprecationWarning.
+- `CRAWLER_GITHUB_TOKEN` → same.
+- `GITHUB_TOKEN` → same (continues from its v2 state).
+- All three drop in v4.
+
+`token_env.py` is preserved as a thin wrapper that calls into `config.py` for `github.com`. The env-var-name transform is a single helper in `config.py` so it can't drift across adapters.
 
 ## 6. REST API
 
-### 6.1 `/api/v2` (new — unified shape)
+### 6.1 `/api/v2` (new)
 
-- `POST /api/v2/crawl` — body accepts `seeds: list[str]` (URLs, `owner/repo`,
-  or bare logins resolved against `--default-host`). Returns the URL-keyed
-  graph in the unified shape.
+- `POST /api/v2/crawl` — body accepts `seeds: list[str]` (URLs, `owner/repo`, or bare logins resolved against `--default-host`). Returns URL-keyed graph in the unified shape.
 - `GET /api/v2/graph/{job_id}` — unified shape.
-- `GET /api/v2/nodes?kind=Repository&platform=gitlab&instance=gitlab.epfl.ch` —
-  filtered listing.
-- `GET /api/v2/health` — health check.
-- `GET /api/v2/platforms` — lists enabled instances and per-host token health.
+- `GET /api/v2/nodes?subkind=GitLabProject&instance=gitlab.epfl.ch` — filtered listing.
+- `GET /api/v2/health`.
+- `GET /api/v2/platforms` — lists enabled instances + per-host token health.
 
 ### 6.2 `/api/v1` (compat shim)
 
-1. Detects non-GitHub seeds early →
-   `400 {"error": "v1 supports github.com seeds only; use /api/v2"}`.
-2. Runs the crawl on the unified internals.
-3. Adapts the response to the legacy `{users, orgs, repos, teams}` shape by
-   filtering on `kind`. `teams` is returned as `{}` for two releases, then the
-   field is removed.
+1. Reject non-GitHub seeds early with `400 {"error": "v1 supports github.com seeds only; use /api/v2"}`.
+2. Run crawl on the unified internals.
+3. Return existing v2.0.0 response shape (`users/orgs/repos/teams` dicts of URL-keyed nodes). `subkind` field is **omitted** from v1 response for byte-identity with the v2.0.0 contract.
 
 ## 7. CLI
 
-The existing `crawl` command keeps its surface area. Changes:
+The existing `crawl` command keeps its surface:
 
-- Seeds accept the same forms as before; URLs are routed by host. Bare logins
-  and `owner/repo` default to `github.com` unless `--default-host
-  gitlab.epfl.ch` is passed.
-- `--platforms github.com,gitlab.epfl.ch` overrides `CRAWLER_PLATFORMS` for
-  ad-hoc runs.
-- New `--crawl-stars` flag (off by default) for stargazer-user crawling on
-  both platforms.
-- New `crawler doctor` subcommand: prints enabled hosts, configured token
-  counts (never values), and a per-pool token health check (one cheap API
-  call each).
+- Seeds accept the same forms; URLs route by host. Bare logins and `owner/repo` default to `github.com` unless `--default-host gitlab.epfl.ch` is passed.
+- `--platforms github.com,gitlab.epfl.ch` overrides `CRAWLER_PLATFORMS` for ad-hoc runs.
+- New `--crawl-stars` flag (off by default).
+- New `crawler doctor` subcommand: prints enabled hosts, configured token counts (never values), and a one-call health check per pool.
 
-## 8. Caching, state, and migration
+## 8. Caching, state, migration
 
-- Cache directory layout: `cache/<host>/<sha256(uri)>.json`. Per-host
-  isolation; same URI on two instances is distinct.
-- Cache TTL machinery (`OPC_CACHE_TTL_DAYS`, default 30 days) is unchanged.
-- Old GitHub-shaped cache is **not** migrated. Operators re-crawl.
-- State file (`--state-file`) bumps its schema version. Resuming an old state
-  file errors with: *"snapshot schema is from an earlier release; please
-  start a fresh crawl"*.
+- Cache directory layout: `cache/<host>/<sha256(uri)>.json`. Per-host isolation.
+- `OPC_CACHE_TTL_DAYS` (default 30) unchanged.
+- v2 cache and state files are not migrated. Operators re-crawl.
+- `GRAPH_SCHEMA_VERSION` bumps to **3**; v2 snapshots refused with a clear message.
 
 ## 9. Testing
 
-| Suite | What it covers |
+| Suite | Coverage |
 |---|---|
-| `tests/platforms/test_github_adapter.py` | Mock PyGithub; assert `fetch()` returns the right subclass; `expand()` emits the right edges for canned API responses. |
-| `tests/platforms/test_gitlab_adapter.py` | Mock python-gitlab; cover normal cases + user-vs-group disambiguation + subgroup-vs-project disambiguation + missing `starrers` endpoint. |
-| `tests/test_uris.py` | Table-driven URI normalization + classification across both adapters. |
-| `tests/test_crawler.py` | Migrated to drive BFS via a `FakePlatformAdapter`. Same behaviour assertions as today. |
-| `tests/test_api_v1_compat.py` | Snapshot-tests v1 byte-identical against a golden file for GitHub-only crawls; asserts 400 on non-GitHub seeds. |
-| `tests/test_api_v2.py` | Covers the new shape, filtered listings, and `platforms` endpoint. |
-| `tests/integration/test_gitlab_dryrun.py` | Tiny real crawl against `gitlab.com` with a public throwaway token; skipped when no token in env. |
-| Migration sanity | Test that a v0 cache/state file is rejected with the expected message rather than silently loaded. |
+| `tests/platforms/test_github_adapter.py` | Mock the existing GitHub client; assert `fetch()` returns the right model and `expand()` emits the right edges. |
+| `tests/platforms/test_gitlab_adapter.py` | Mock python-gitlab; cover user-vs-group, subgroup-vs-project, missing `/starrers` endpoint, stars-gating. |
+| `tests/test_config.py` | env-var transform + legacy fallback + deprecation warning. |
+| `tests/test_crawler.py` | Migrated to drive BFS via `FakePlatformAdapter`. Same behaviour assertions. |
+| `tests/test_api_v1_compat.py` | Byte-identical v2.0.0 shape for github-only crawls; 400 for non-github seeds. |
+| `tests/test_api_v2.py` | New shape, filtered listings, `platforms` endpoint. |
+| `tests/integration/test_gitlab_dryrun.py` | Tiny real crawl against `gitlab.com` with a public token; skipped when no token in env. |
+| Migration sanity | v2 snapshot is rejected with the expected message. |
 
-Self-hosted GitLab instances (`gitlab.epfl.ch`, `gitlab.ethz.ch`,
-`renkulab.io`) are **not** crawled in CI — they need institutional tokens.
-Manual-test recipes go in `docs/GITLAB.md`.
+Self-hosted GitLab instances are **not** crawled in CI. Manual-test recipes go in `docs/GITLAB.md`.
 
 ## 10. Effort estimate
 
-Rough sizing for the implementation plan that follows:
-
 | Block | Effort |
 |---|---|
-| (a) `PlatformAdapter` ABC + GitHub port (mechanical: rename + dict→subclass) | ~1 day |
-| (b) GitLab adapter + python-gitlab integration + disambiguation cases + multi-instance auth | ~1-2 days |
-| (c) `/api/v2` + v1 compat shim + CLI changes + `crawler doctor` | ~0.5 day |
-| (d) Tests + `docs/GITLAB.md` + CHANGELOG | ~0.5-1 day |
-| **Total** | **~3-4 days** of focused work |
+| (a) `PlatformAdapter` ABC + subkind subclasses + config + GitHub port | ~0.5-1 day |
+| (b) GitLab adapter + python-gitlab + disambiguation + multi-instance auth | ~1-2 days |
+| (c) `/api/v2` + v1 host-guard + CLI changes + `crawler doctor` | ~0.5 day |
+| (d) Tests + `docs/GITLAB.md` + CHANGELOG | ~0.5 day |
+| **Total** | **~2.5-4 days** |
 
 ## 11. Open questions for the implementation plan
 
-These are non-blocking for the spec but worth flagging for `writing-plans`:
-
-- Does `python-gitlab` async support match our existing thread-pool model, or
-  do we need a thin sync wrapper? (Affects the rate-limit semaphore design.)
-- Cache key for the user-vs-group disambiguation probe — store as a separate
-  `kind` cache file per host (e.g., `cache/<host>/_disambig/<sha256(path)>.json`)
-  or fold into the normal cache?
-- `crawler doctor`'s output format: plain text vs. JSON-when-piped?
+- python-gitlab vs current thread-pool: use sync API + thread pool for parity with REST client (matches the existing concurrency model).
+- Disambiguation-probe cache: in-memory per adapter instance for now (`_kind_cache`). If repeated runs make probes expensive, persist under `cache/<host>/_disambig/<sha256(path)>.json` later.
+- `crawler doctor` output: plain text by default; `--json` flag for machine-readable.
