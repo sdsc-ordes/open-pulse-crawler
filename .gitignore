@@ -2,6 +2,7 @@
 examples
 data
 .DS_Store
+.worktrees/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
