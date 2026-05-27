@@ -6,7 +6,6 @@ Usage:
     python tools/scripts/test_dependency_api.py DeepLabCut/DeepLabCut
 """
 
-import os
 import sys
 import json
 import requests
@@ -266,11 +265,12 @@ def main():
     owner, repo_name = repo_full.split('/', 1)
     
     # Get token
-    tokens = os.getenv('GITHUB_TOKEN', '').split(',')
-    token = tokens[0] if tokens and tokens[0] else None
-    
+    from open_pulse_crawler.token_env import resolve_github_tokens
+    tokens = resolve_github_tokens()
+    token = tokens[0] if tokens else None
+
     if not token:
-        print("❌ Error: GITHUB_TOKEN environment variable not set")
+        print("❌ Error: no GitHub token in environment (set CRAWLER_GITHUB_TOKEN)")
         sys.exit(1)
     
     print(f"\n🔍 Fetching dependency data for {owner}/{repo_name}...")

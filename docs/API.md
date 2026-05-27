@@ -340,7 +340,7 @@ curl -X DELETE "$API_BASE/crawl/$JOB_ID" -H "Authorization: Bearer $API_TOKEN"
 
 ```bash
 export API_TOKEN="my-secret"
-export GITHUB_TOKEN="ghp_..."
+export CRAWLER_GITHUB_TOKEN="ghp_..."
 export OPC_DATA_DIR="/var/lib/crawler/jobs"     # optional; per-job snapshots + resumable state
 export OPC_CACHE_DIR="$OPC_DATA_DIR/cache"      # optional; GitHub API response cache ("" disables)
 export OPC_CACHE_TTL_DAYS="30"                  # optional; cache entry expiry (0 = never expire)

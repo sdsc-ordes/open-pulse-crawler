@@ -557,12 +557,12 @@ def _run_crawl(
     try:
         from .crawler import GitHubCrawler
         from .github_client import GitHubClient, resolve_cache_dir
+        from .token_env import resolve_github_tokens, tokens_not_set_message
 
-        tokens_raw = os.environ.get("GITHUB_TOKEN", "")
-        tokens = [t.strip() for t in tokens_raw.split(",") if t.strip()]
+        tokens = resolve_github_tokens()
         if not tokens:
             record.status = JobStatus.FAILED
-            record.detail = "GITHUB_TOKEN environment variable is not set"
+            record.detail = tokens_not_set_message()
             record.completed_at = datetime.now(timezone.utc)
             return
 
@@ -659,12 +659,12 @@ def _run_crawl_graphql(
         from .crawler import GitHubCrawler
         from .github_client import resolve_cache_dir
         from .graphql_client import GitHubGraphQLClient
+        from .token_env import resolve_github_tokens, tokens_not_set_message
 
-        tokens_raw = os.environ.get("GITHUB_TOKEN", "")
-        tokens = [t.strip() for t in tokens_raw.split(",") if t.strip()]
+        tokens = resolve_github_tokens()
         if not tokens:
             record.status = JobStatus.FAILED
-            record.detail = "GITHUB_TOKEN environment variable is not set"
+            record.detail = tokens_not_set_message()
             record.completed_at = datetime.now(timezone.utc)
             return
 

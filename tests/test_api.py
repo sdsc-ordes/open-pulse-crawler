@@ -137,7 +137,15 @@ class TestCrawl:
     def test_missing_github_token_marks_job_failed(
         self, client: TestClient, auth_header: dict
     ):
-        with patch.dict(os.environ, {"GITHUB_TOKEN": ""}, clear=False):
+        with patch.dict(
+            os.environ,
+            {
+                "CRAWLER_GITHUB_TOKEN_POOL": "",
+                "CRAWLER_GITHUB_TOKEN": "",
+                "GITHUB_TOKEN": "",
+            },
+            clear=False,
+        ):
             start = client.post(
                 "/api/v1/crawl",
                 json={"seeds": ["torvalds"], "max_rounds": 1},
@@ -150,12 +158,12 @@ class TestCrawl:
             assert status_resp.status_code == 200
             body = status_resp.json()
             assert body["status"] == JobStatus.FAILED.value
-            assert "GITHUB_TOKEN" in (body.get("detail") or "")
+            assert "CRAWLER_GITHUB_TOKEN" in (body.get("detail") or "")
 
     def test_bad_github_credentials_marks_job_failed(
         self, client: TestClient, auth_header: dict
     ):
-        with patch.dict(os.environ, {"GITHUB_TOKEN": "ghp_valid_format_token"}, clear=False):
+        with patch.dict(os.environ, {"CRAWLER_GITHUB_TOKEN": "ghp_valid_format_token"}, clear=False):
             with patch("open_pulse_crawler.github_client.GitHubClient"):
                 with patch("open_pulse_crawler.crawler.GitHubCrawler") as crawler_cls:
                     crawler = crawler_cls.return_value
@@ -192,7 +200,7 @@ class TestCrawl:
             "batch_size": 4,
         }
 
-        with patch.dict(os.environ, {"GITHUB_TOKEN": "ghp_valid_format_token"}, clear=False):
+        with patch.dict(os.environ, {"CRAWLER_GITHUB_TOKEN": "ghp_valid_format_token"}, clear=False):
             with patch("open_pulse_crawler.github_client.GitHubClient"):
                 with patch("open_pulse_crawler.crawler.GitHubCrawler") as crawler_cls:
                     crawler = crawler_cls.return_value
@@ -230,7 +238,7 @@ class TestCrawl:
         with patch.dict(
             os.environ,
             {
-                "GITHUB_TOKEN": "ghp_valid_format_token",
+                "CRAWLER_GITHUB_TOKEN": "ghp_valid_format_token",
                 "OPC_DATA_DIR": str(tmp_path),
                 "GIMIE_ENABLED": "true",
                 "GIMIE_API_BASE": "http://example.invalid:1234",
@@ -511,7 +519,7 @@ class TestResume:
         from open_pulse_crawler.api import CrawlRequest, _persist_request, _state_path
 
         with patch.dict(
-            os.environ, {"OPC_DATA_DIR": str(tmp_path), "GITHUB_TOKEN": "ghp_fake"}
+            os.environ, {"OPC_DATA_DIR": str(tmp_path), "CRAWLER_GITHUB_TOKEN": "ghp_fake"}
         ):
             _persist_request(
                 "rj", CrawlRequest(seeds=["torvalds"], max_rounds=2), mode="rest"
@@ -543,7 +551,7 @@ class TestResume:
         from open_pulse_crawler.api import CrawlRequest, _persist_request, _state_path
 
         with patch.dict(
-            os.environ, {"OPC_DATA_DIR": str(tmp_path), "GITHUB_TOKEN": "ghp_fake"}
+            os.environ, {"OPC_DATA_DIR": str(tmp_path), "CRAWLER_GITHUB_TOKEN": "ghp_fake"}
         ):
             _persist_request(
                 "gj", CrawlRequest(seeds=["torvalds"], max_rounds=2), mode="graphql"

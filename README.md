@@ -78,16 +78,19 @@ Set your GitHub personal access token(s) in the environment:
 
 ```bash
 # Single token
-export GITHUB_TOKEN="ghp_your_token_here"
+export CRAWLER_GITHUB_TOKEN="ghp_your_token_here"
 
-# Multiple tokens (comma-separated for better rate limits)
-export GITHUB_TOKEN="ghp_token1,ghp_token2,ghp_token3"
+# Multiple tokens for rotation (comma-separated, better effective rate limit)
+export CRAWLER_GITHUB_TOKEN_POOL="ghp_token1,ghp_token2,ghp_token3"
 ```
+
+If both are set, `CRAWLER_GITHUB_TOKEN_POOL` wins. The legacy `GITHUB_TOKEN`
+variable is still read as a fallback for now but will log a deprecation warning.
 
 You can create a `.env` file in your project directory:
 
 ```bash
-GITHUB_TOKEN=ghp_your_token_here
+CRAWLER_GITHUB_TOKEN=ghp_your_token_here
 API_TOKEN=your_api_token_for_rest_api
 ```
 
@@ -113,7 +116,7 @@ survive a stop, failure, or container restart.
 Run locally:
 
 ```bash
-export GITHUB_TOKEN="ghp_..."
+export CRAWLER_GITHUB_TOKEN="ghp_..."
 export API_TOKEN="my-secret-api-token"
 uvicorn open_pulse_crawler.api:app --host 0.0.0.0 --port 8000
 ```

@@ -1,6 +1,5 @@
 """Command-line interface for the GitHub crawler."""
 
-import os
 import sys
 import logging
 from pathlib import Path
@@ -18,6 +17,7 @@ from .models import GraphData
 from .github_client import GitHubClient, resolve_cache_dir
 from .crawler import GitHubCrawler
 from .io_utils import parse_seed_file, export_to_json, export_to_csv, export_nodes_csv
+from .token_env import POOL_ENV, TOKEN_ENV, resolve_github_tokens, tokens_not_set_message
 from .visualization import visualize_graph, visualize_clusters as viz_clusters, VISUALIZATION_AVAILABLE
 
 app = typer.Typer(help="GitHub BFS Crawler - Discover GitHub users, organizations, and repositories")
@@ -40,32 +40,32 @@ def setup_logging(verbose: bool = False):
 
 
 def get_github_tokens() -> List[str]:
-    """Get GitHub tokens from environment variable or .env file."""
-    # Try to load from .env file if GITHUB_TOKEN is not already set
-    token_str = os.getenv('GITHUB_TOKEN', '')
-    if not token_str:
+    """Get GitHub tokens from environment (or `.env` in cwd / project root).
+
+    Resolution order: ``CRAWLER_GITHUB_TOKEN_POOL`` > ``CRAWLER_GITHUB_TOKEN``
+    > ``GITHUB_TOKEN`` (deprecated). See ``token_env`` for details.
+    """
+    tokens = resolve_github_tokens()
+    if not tokens:
         # Look for .env file in current directory and project root
         env_file = Path('.env')
         if not env_file.exists():
-            # Try finding .env in the project root (where pyproject.toml is)
             project_root = Path(__file__).parent.parent.parent
             env_file = project_root / '.env'
-        
+
         if env_file.exists():
             load_dotenv(env_file)
-            token_str = os.getenv('GITHUB_TOKEN', '')
-            if token_str:
-                console.print(f"[green]✓[/green] Loaded GITHUB_TOKEN from {env_file}")
-    
-    if not token_str:
-        console.print("[red]Error: GITHUB_TOKEN environment variable not set[/red]")
-        console.print("Set it with: export GITHUB_TOKEN='your_token_here'")
-        console.print("For multiple tokens, use comma separation: export GITHUB_TOKEN='token1,token2,token3'")
-        console.print("Or create a .env file in your project root with: GITHUB_TOKEN=your_token_here")
+            tokens = resolve_github_tokens()
+            if tokens:
+                console.print(f"[green]✓[/green] Loaded GitHub token(s) from {env_file}")
+
+    if not tokens:
+        console.print(f"[red]Error: {tokens_not_set_message()}[/red]")
+        console.print(f"Set a single token:  export {TOKEN_ENV}='your_token_here'")
+        console.print(f"Or a rotation pool:  export {POOL_ENV}='token1,token2,token3'")
+        console.print(f"Or create a .env file in your project root with: {TOKEN_ENV}=your_token_here")
         sys.exit(1)
-    
-    # Split by comma and strip whitespace
-    tokens = [t.strip() for t in token_str.split(',') if t.strip()]
+
     return tokens
 
 

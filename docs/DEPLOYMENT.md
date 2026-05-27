@@ -50,9 +50,12 @@ cp .env.dist .env
 Set at least:
 
 ```bash
-GITHUB_TOKEN=ghp_your_token_here
+CRAWLER_GITHUB_TOKEN=ghp_your_token_here
 API_TOKEN=your-api-token
 ```
+
+For multi-token rotation, use `CRAWLER_GITHUB_TOKEN_POOL` (comma-separated)
+instead of `CRAWLER_GITHUB_TOKEN`.
 
 Optional:
 
@@ -134,7 +137,7 @@ docker build -f tools/image/Dockerfile -t open-pulse-crawler .
 docker run -d \
   --name opc-api \
   -p 8000:8000 \
-  -e GITHUB_TOKEN="ghp_..." \
+  -e CRAWLER_GITHUB_TOKEN="ghp_..." \
   -e API_TOKEN="my-secret-api-token" \
   -e OPC_DATA_DIR="/var/lib/crawler/jobs" \
   -v opc-jobs:/var/lib/crawler/jobs \
@@ -152,10 +155,15 @@ lost when the container restarts — see [API.md → Persistence](./API.md#persi
 
 #### Required
 
-| Variable       | Description                                       |
-| -------------- | ------------------------------------------------- |
-| `GITHUB_TOKEN` | GitHub personal access token(s), comma-separated. |
-| `API_TOKEN`    | Bearer token required for protected endpoints.    |
+| Variable                      | Description                                                                                                       |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `CRAWLER_GITHUB_TOKEN`        | GitHub personal access token (single).                                                                            |
+| `CRAWLER_GITHUB_TOKEN_POOL`   | Comma-separated list of GitHub tokens for rotation. Wins over `CRAWLER_GITHUB_TOKEN` when both are set.           |
+| `API_TOKEN`                   | Bearer token required for protected endpoints.                                                                    |
+
+Exactly one of `CRAWLER_GITHUB_TOKEN` or `CRAWLER_GITHUB_TOKEN_POOL` is required.
+The legacy `GITHUB_TOKEN` variable is still read as a deprecated fallback and
+logs a warning when used.
 
 #### Optional
 
@@ -268,5 +276,5 @@ uv pip install -e ".[dev]"
 uvicorn open_pulse_crawler.api:app --host 0.0.0.0 --port 8000
 ```
 
-Set `GITHUB_TOKEN` and `API_TOKEN` in your environment or a `.env` file before
-starting the server.
+Set `CRAWLER_GITHUB_TOKEN` (or `CRAWLER_GITHUB_TOKEN_POOL` for rotation) and
+`API_TOKEN` in your environment or a `.env` file before starting the server.

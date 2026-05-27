@@ -35,11 +35,14 @@
 ## Critical Patterns
 
 ### 1. Token Management
-GitHub tokens are loaded from `GITHUB_TOKEN` env var (comma-separated for multiple tokens):
+GitHub tokens are resolved via `open_pulse_crawler.token_env.resolve_github_tokens()`:
 ```python
-tokens = os.getenv('GITHUB_TOKEN', '').split(',')
+from open_pulse_crawler.token_env import resolve_github_tokens
+tokens = resolve_github_tokens()
 ```
-- Falls back to `.env` file in project root
+Priority: `CRAWLER_GITHUB_TOKEN_POOL` (comma-separated list) → `CRAWLER_GITHUB_TOKEN`
+(single) → `GITHUB_TOKEN` (deprecated, warns once).
+- Falls back to `.env` file in project root (CLI only)
 - Client rotates tokens when rate limits approach buffer threshold (default: 50 requests remaining)
 
 ### 2. Concurrent Node Processing
@@ -146,7 +149,7 @@ black src/ tests/
 ruff check src/
 
 # Run crawler
-export GITHUB_TOKEN="ghp_token1,ghp_token2"
+export CRAWLER_GITHUB_TOKEN_POOL="ghp_token1,ghp_token2"
 open-pulse-crawler crawl caviri --rounds 2 --cache-dir cache --visualize
 
 # Run with custom concurrency settings

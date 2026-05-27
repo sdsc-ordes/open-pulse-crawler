@@ -10,7 +10,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import os
 import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -21,13 +20,14 @@ import httpx
 from open_pulse_crawler.crawler import GitHubCrawler
 from open_pulse_crawler.gimie_client import clear_stale_jsonld_error_files
 from open_pulse_crawler.github_client import GitHubClient
+from open_pulse_crawler.token_env import resolve_github_tokens, tokens_not_set_message
 
 
 def _parse_github_tokens() -> List[str]:
-    token_str = os.getenv("GITHUB_TOKEN", "").strip()
-    if not token_str:
-        raise SystemExit("Missing GITHUB_TOKEN env var (single token or comma-separated tokens).")
-    return [t.strip() for t in token_str.split(",") if t.strip()]
+    tokens = resolve_github_tokens()
+    if not tokens:
+        raise SystemExit(tokens_not_set_message())
+    return tokens
 
 
 def _repo_full_name_to_parts(repo_full_name: str) -> Tuple[str, str]:

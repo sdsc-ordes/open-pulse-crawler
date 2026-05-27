@@ -7,7 +7,7 @@ Compares the API cost against the REST equivalent (one paginated list
 call per resource: ~1 + N + 1 + N + N REST calls for the same data).
 
 Usage:
-    GITHUB_TOKEN=... python tools/scripts/test_graphql_repo_activity.py \\
+    CRAWLER_GITHUB_TOKEN=... python tools/scripts/test_graphql_repo_activity.py \\
         sdsc-ordes/gimie --issue-max 25 --pr-max 25
 """
 
@@ -15,12 +15,13 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 import time
 from typing import Any, Dict, List, Set
 
 import httpx
+
+from open_pulse_crawler.token_env import resolve_github_tokens
 
 GRAPHQL_URL = "https://api.github.com/graphql"
 
@@ -178,9 +179,10 @@ def main() -> None:
         parser.error("repo must be in owner/name form")
     owner, name = args.repo.split("/", 1)
 
-    token = os.environ.get("GITHUB_TOKEN", "").strip().split(",")[0].strip()
-    if not token:
-        parser.error("GITHUB_TOKEN not set")
+    tokens = resolve_github_tokens()
+    if not tokens:
+        parser.error("No GitHub token in environment (set CRAWLER_GITHUB_TOKEN)")
+    token = tokens[0]
 
     body = run(owner, name, args.issue_max, args.pr_max, token)
     summarize(body)
