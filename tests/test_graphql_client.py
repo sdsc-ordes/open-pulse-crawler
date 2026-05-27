@@ -33,15 +33,18 @@ def _rest_response(payload, status_code: int = 200):
 
 
 def _rate_limited_response():
-    """A response from a hard-exhausted token: HTTP 200 with a RATE_LIMITED
-    GraphQL error and no `data` (hence no `rateLimit` block)."""
+    """A response from a hard-exhausted token: HTTP 200 with a rate-limit
+    GraphQL error and no `data` (hence no `rateLimit` block). Uses the
+    `RATE_LIMIT` type spelling GitHub returns in practice."""
     resp = MagicMock()
     resp.status_code = 200
     resp.text = ""
     resp.headers = {}
     resp.json.return_value = {
         "data": None,
-        "errors": [{"type": "RATE_LIMITED", "message": "API rate limit exceeded"}],
+        "errors": [
+            {"type": "RATE_LIMIT", "message": "API rate limit exceeded for user ID 1"}
+        ],
     }
     return resp
 
@@ -577,3 +580,26 @@ def test_graphql_gives_up_when_all_tokens_stay_rate_limited():
 
     assert body is None
     assert post.call_count == 4  # bounded at 2 * len(tokens)
+
+
+def test_is_rate_limited_detects_type_and_message_variants():
+    """Rate-limit detection must not depend on the exact error `type` string.
+
+    GitHub's spelling varies (`RATE_LIMITED` vs `RATE_LIMIT`) and some
+    rate-limit errors carry no `type` at all — the message is the anchor.
+    """
+    f = GitHubGraphQLClient._is_rate_limited
+    assert f(200, {"errors": [{"type": "RATE_LIMITED", "message": "x"}]}) is True
+    assert f(200, {"errors": [{"type": "RATE_LIMIT", "message": "x"}]}) is True
+    assert (
+        f(200, {"errors": [{"message": "API rate limit exceeded for user ID 1"}]})
+        is True
+    )
+    assert f(403, None) is True
+    assert f(429, None) is True
+    # Non-rate-limit errors must not trip it.
+    assert (
+        f(200, {"errors": [{"type": "NOT_FOUND", "message": "Could not resolve"}]})
+        is False
+    )
+    assert f(200, {"data": {"user": {}}, "errors": None}) is False
