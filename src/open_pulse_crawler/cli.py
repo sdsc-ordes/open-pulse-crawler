@@ -1,6 +1,5 @@
 """Command-line interface for the GitHub crawler."""
 
-import os
 import sys
 import logging
 from pathlib import Path
@@ -15,9 +14,10 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from dotenv import load_dotenv
 
 from .models import GraphData
-from .github_client import GitHubClient
+from .github_client import GitHubClient, resolve_cache_dir
 from .crawler import GitHubCrawler
 from .io_utils import parse_seed_file, export_to_json, export_to_csv, export_nodes_csv
+from .token_env import POOL_ENV, TOKEN_ENV, resolve_github_tokens, tokens_not_set_message
 from .visualization import visualize_graph, visualize_clusters as viz_clusters, VISUALIZATION_AVAILABLE
 
 app = typer.Typer(help="GitHub BFS Crawler - Discover GitHub users, organizations, and repositories")
@@ -40,38 +40,38 @@ def setup_logging(verbose: bool = False):
 
 
 def get_github_tokens() -> List[str]:
-    """Get GitHub tokens from environment variable or .env file."""
-    # Try to load from .env file if GITHUB_TOKEN is not already set
-    token_str = os.getenv('GITHUB_TOKEN', '')
-    if not token_str:
+    """Get GitHub tokens from environment (or `.env` in cwd / project root).
+
+    Resolution order: ``CRAWLER_GITHUB_TOKEN_POOL`` > ``CRAWLER_GITHUB_TOKEN``
+    > ``GITHUB_TOKEN`` (deprecated). See ``token_env`` for details.
+    """
+    tokens = resolve_github_tokens()
+    if not tokens:
         # Look for .env file in current directory and project root
         env_file = Path('.env')
         if not env_file.exists():
-            # Try finding .env in the project root (where pyproject.toml is)
             project_root = Path(__file__).parent.parent.parent
             env_file = project_root / '.env'
-        
+
         if env_file.exists():
             load_dotenv(env_file)
-            token_str = os.getenv('GITHUB_TOKEN', '')
-            if token_str:
-                console.print(f"[green]✓[/green] Loaded GITHUB_TOKEN from {env_file}")
-    
-    if not token_str:
-        console.print("[red]Error: GITHUB_TOKEN environment variable not set[/red]")
-        console.print("Set it with: export GITHUB_TOKEN='your_token_here'")
-        console.print("For multiple tokens, use comma separation: export GITHUB_TOKEN='token1,token2,token3'")
-        console.print("Or create a .env file in your project root with: GITHUB_TOKEN=your_token_here")
+            tokens = resolve_github_tokens()
+            if tokens:
+                console.print(f"[green]✓[/green] Loaded GitHub token(s) from {env_file}")
+
+    if not tokens:
+        console.print(f"[red]Error: {tokens_not_set_message()}[/red]")
+        console.print(f"Set a single token:  export {TOKEN_ENV}='your_token_here'")
+        console.print(f"Or a rotation pool:  export {POOL_ENV}='token1,token2,token3'")
+        console.print(f"Or create a .env file in your project root with: {TOKEN_ENV}=your_token_here")
         sys.exit(1)
-    
-    # Split by comma and strip whitespace
-    tokens = [t.strip() for t in token_str.split(',') if t.strip()]
+
     return tokens
 
 
 @app.command()
 def crawl(
-    seeds: List[str] = typer.Argument(
+    seeds: Optional[List[str]] = typer.Argument(
         None,
         help="Initial seed nodes (users, orgs, or repos). Can be usernames, org/repo, or full GitHub URLs."
     ),
@@ -95,7 +95,13 @@ def crawl(
     cache_dir: Optional[Path] = typer.Option(
         None,
         "--cache-dir", "-c",
-        help="Directory for caching API responses"
+        help="Directory for caching API responses "
+             "(default: $OPC_CACHE_DIR or data/open-pulse-crawler/cache)"
+    ),
+    no_cache: bool = typer.Option(
+        False,
+        "--no-cache",
+        help="Disable API response caching (overrides --cache-dir and $OPC_CACHE_DIR)"
     ),
     state_file: Optional[Path] = typer.Option(
         None,
@@ -127,6 +133,11 @@ def crawl(
         "--visualize-clusters",
         help="Generate separate visualizations for each disconnected cluster"
     ),
+    exclude_bots: bool = typer.Option(
+        False,
+        "--exclude-bots",
+        help="Exclude bots from visualization"
+    ),
     show_unexplored: bool = typer.Option(
         False,
         "--show-unexplored",
@@ -136,6 +147,57 @@ def crawl(
         False,
         "--incremental-export",
         help="Export graph data after each round (in addition to final export)"
+    ),
+    crawl_dependencies: bool = typer.Option(
+        False,
+        "--crawl-dependencies",
+        help="Crawl repository dependencies (downstream) via SBOM"
+    ),
+    crawl_dependents: bool = typer.Option(
+        False,
+        "--crawl-dependents",
+        help="Crawl repository dependents (upstream) via GitHub 'Used by' graph"
+    ),
+    min_stars: int = typer.Option(
+        0,
+        "--min-stars",
+        help="Minimum stars for filtering dependents/dependencies"
+    ),
+    max_dependents: Optional[int] = typer.Option(
+        None,
+        "--max-dependents",
+        help="Maximum number of dependents to fetch (default: None = all)"
+    ),
+    crawl_issues: bool = typer.Option(
+        False,
+        "--crawl-issues",
+        help="Fetch issue authors and conversation commenters per repo (opt-in, can be expensive on busy repos)"
+    ),
+    crawl_prs: bool = typer.Option(
+        False,
+        "--crawl-prs",
+        help="Fetch PR authors, conversation commenters, and reviewers per repo (opt-in, can be expensive on busy repos)"
+    ),
+    issue_max: int = typer.Option(
+        100,
+        "--issue-max",
+        help="Maximum number of issues to scan per repo when --crawl-issues is enabled (most recent first)",
+        min=1
+    ),
+    pr_max: int = typer.Option(
+        100,
+        "--pr-max",
+        help="Maximum number of PRs to scan per repo when --crawl-prs is enabled (most recent first)",
+        min=1
+    ),
+    max_contributors: Optional[int] = typer.Option(
+        None,
+        "--max-contributors",
+        help=(
+            "Optional per-repo contributor limit: take up to N contributors "
+            "per repo (a repo with more is truncated to the top N, never "
+            "skipped). Default: no cap — every contributor is taken."
+        ),
     ),
     verbose: bool = typer.Option(
         False,
@@ -168,7 +230,28 @@ def crawl(
         help="Number of nodes to process concurrently (default: matches --max-concurrent)",
         min=1,
         max=50
-    )
+    ),
+    # ── Optional gimie hybrid repo discovery ──────────────────────────────
+    gimie_repos: bool = typer.Option(
+        False,
+        "--gimie-repos",
+        help="Populate repositories from gimie JSON-LD (keep user/org from GitHub API).",
+    ),
+    gimie_api_base: str = typer.Option(
+        "http://host.docker.internal:1234",
+        "--gimie-api-base",
+        help="Base URL for the gimie JSON-LD API.",
+    ),
+    gimie_store_jsonld: bool = typer.Option(
+        False,
+        "--gimie-store-jsonld",
+        help="Store raw gimie JSON-LD payloads under output-dir/jsonld/ during crawl.",
+    ),
+    gimie_skip_existing_jsonld: bool = typer.Option(
+        False,
+        "--gimie-skip-existing-jsonld",
+        help="Skip HTTP when a payload already exists under output-dir/jsonld/ (crawler output only).",
+    ),
 ):
     """
     Crawl GitHub to discover users, organizations, and repositories.
@@ -203,10 +286,29 @@ def crawl(
     tokens = get_github_tokens()
     console.print(f"[green]✓[/green] Loaded {len(tokens)} GitHub token(s)")
     
-    # Setup cache directory
-    if cache_dir:
-        cache_dir.mkdir(parents=True, exist_ok=True)
+    # Resolve cache directory: --cache-dir wins, else $OPC_CACHE_DIR / default.
+    # --no-cache disables caching outright.
+    if no_cache:
+        cache_dir = None
+        console.print("[yellow]●[/yellow] API response caching disabled (--no-cache)")
+    else:
+        cache_dir = resolve_cache_dir(cache_dir)
+        if cache_dir:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            console.print(f"[green]✓[/green] Cache directory: {cache_dir}")
     
+    # ── gimie hybrid repo option wiring ─────────────────────────────────────
+    jsonld_dir: Optional[Path] = None
+    if gimie_repos:
+        if gimie_store_jsonld:
+            jsonld_dir = output_dir / "jsonld"
+
+    # ── gimie hybrid repo option wiring ─────────────────────────────────────
+    jsonld_dir: Optional[Path] = None
+    if gimie_repos:
+        if gimie_store_jsonld:
+            jsonld_dir = output_dir / "jsonld"
+
     # Initialize client and crawler
     client = GitHubClient(
         tokens, 
@@ -216,10 +318,23 @@ def crawl(
         rate_limit_buffer=rate_limit_buffer
     )
     crawler = GitHubCrawler(
-        client, 
-        max_rounds=rounds, 
+        client,
+        max_rounds=rounds,
         state_file=state_file,
-        batch_size=batch_size
+        batch_size=batch_size,
+        crawl_dependencies=crawl_dependencies,
+        crawl_dependents=crawl_dependents,
+        crawl_issues=crawl_issues,
+        crawl_prs=crawl_prs,
+        issue_max=issue_max,
+        pr_max=pr_max,
+        min_stars=min_stars,
+        max_dependents=max_dependents,
+        max_contributors=max_contributors,
+        gimie_repos=gimie_repos,
+        gimie_api_base=gimie_api_base,
+        gimie_store_jsonld_dir=jsonld_dir,
+        gimie_skip_existing_jsonld=gimie_skip_existing_jsonld,
     )
     
     # Setup incremental export callback if requested
@@ -357,22 +472,27 @@ def crawl(
     # Export results
     console.print("\n[bold blue]Exporting results...[/bold blue]\n")
     
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
     
     # JSON export
     if not no_json:
-        json_path = output_dir / f"graph_{timestamp}.json"
+        json_path = output_dir / f"{timestamp}.graph.json"
         export_to_json(crawler.graph, json_path)
         console.print(f"[green]✓[/green] JSON: {json_path}")
     
     # CSV export
     if not no_csv:
-        edges_csv_path = output_dir / f"edges_{timestamp}.csv"
+        edges_csv_path = output_dir / f"{timestamp}.edges.csv"
         export_to_csv(crawler.graph, edges_csv_path, crawler.seed_nodes)
         console.print(f"[green]✓[/green] CSV (edges): {edges_csv_path}")
         
-        nodes_csv_path = output_dir / f"nodes_{timestamp}.csv"
-        export_nodes_csv(crawler.graph, nodes_csv_path, crawler.seed_nodes)
+        nodes_csv_path = output_dir / f"{timestamp}.nodes.csv"
+        export_nodes_csv(
+            crawler.graph,
+            nodes_csv_path,
+            crawler.seed_nodes,
+            discovered_nodes=crawler.discovered_nodes,
+        )
         console.print(f"[green]✓[/green] CSV (nodes): {nodes_csv_path}")
     
     # Visualization
@@ -382,21 +502,21 @@ def crawl(
             console.print("Install with: pip install networkx matplotlib")
         else:
             if visualize:
-                viz_path = output_dir / f"graph_{timestamp}.png"
+                viz_path = output_dir / f"{timestamp}.graph.png"
                 console.print(f"[blue]Generating main visualization...[/blue]")
                 try:
                     discovered = crawler.discovered_nodes if show_unexplored else None
-                    visualize_graph(crawler.graph, viz_path, crawler.seed_nodes, crawler.visited, discovered)
+                    visualize_graph(crawler.graph, viz_path, crawler.seed_nodes, crawler.visited, discovered, exclude_bots=exclude_bots)
                     console.print(f"[green]✓[/green] Visualization: {viz_path}")
                 except Exception as e:
                     console.print(f"[red]✗[/red] Visualization failed: {e}")
             
             if visualize_clusters:
-                clusters_dir = output_dir / f"clusters_{timestamp}"
+                clusters_dir = output_dir / f"{timestamp}.clusters"
                 console.print(f"[blue]Generating cluster visualizations...[/blue]")
                 try:
                     discovered = crawler.discovered_nodes if show_unexplored else None
-                    viz_clusters(crawler.graph, clusters_dir, crawler.seed_nodes, crawler.visited, discovered)
+                    viz_clusters(crawler.graph, clusters_dir, crawler.seed_nodes, crawler.visited, discovered, exclude_bots=exclude_bots)
                     console.print(f"[green]✓[/green] Cluster visualizations: {clusters_dir}/")
                 except Exception as e:
                     console.print(f"[red]✗[/red] Cluster visualization failed: {e}")

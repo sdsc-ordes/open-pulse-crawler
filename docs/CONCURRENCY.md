@@ -152,11 +152,22 @@ More tokens = more API quota = higher concurrency possible:
 
 ```bash
 # With 5 tokens, can safely use higher concurrency
-export GITHUB_TOKEN="token1,token2,token3,token4,token5"
+export CRAWLER_GITHUB_TOKEN_POOL="token1,token2,token3,token4,token5"
 open-pulse-crawler crawl seeds.txt \
   --batch-size 15 \
   --max-concurrent 10
 ```
+
+#### Rotation behavior
+
+The client rotates across the pool on two complementary paths:
+
+* **Proactive:** after a successful query that reports `rateLimit.remaining == 0`, the client switches to the next token before the next request — so the spent token never gets a chance to issue a request it would only reject.
+* **Reactive:** if the active token is already exhausted at the start of a query, the response (`HTTP 403/429`, or a GraphQL `RATE_LIMIT`/`RATE_LIMITED` error, or any error whose message contains "rate limit") triggers a rotate-and-retry. Only after every token in the pool has been tried and is exhausted does the client sleep until the window resets.
+
+The active token index, the per-token remaining budget, and the rolling `token_switches` / `rate_limit_waits` counters are reported in `client.get_stats()` and surface in the CLI's end-of-crawl summary.
+
+The legacy single-variable `GITHUB_TOKEN` (comma-separated) is still read as a deprecated fallback and logs a one-shot warning on first read — migrate to `CRAWLER_GITHUB_TOKEN_POOL` for rotation or `CRAWLER_GITHUB_TOKEN` for a single token.
 
 ## Performance Tips
 
@@ -280,5 +291,4 @@ with self.visited_lock:  # Lock acquired once
 ## See Also
 
 - [Progress Tracking](./PROGRESS_TRACKING.md)
-- [Quick Reference](./QUICK_REFERENCE.md)
-- [Architecture](./PROGRESS_ARCHITECTURE.md)
+- [REST API reference](./API.md)

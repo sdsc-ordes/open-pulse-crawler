@@ -121,13 +121,13 @@ visualize_clusters(
 - Shows all clusters positioned in a grid layout
 - Prevents overlap between disconnected components
 - Title indicates the number of clusters
-- Example: `graph_20241002_123456.png`
+- Example: `20241002123456.graph.png`
 
 ### Cluster Visualizations
 - Saved in a timestamped subdirectory
 - One file per cluster: `cluster_01.png`, `cluster_02.png`, etc.
 - Largest clusters numbered first
-- Example directory: `clusters_20241002_123456/`
+- Example directory: `20241002123456.clusters/`
 
 ## Technical Details
 

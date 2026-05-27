@@ -8,43 +8,149 @@ import threading
 from typing import List, Optional, Dict, Any
 from pathlib import Path
 import json
+import re
 from github import Github, GithubException, RateLimitExceededException
 from github.Repository import Repository
 from github.NamedUser import NamedUser
 from github.Organization import Organization
+from github_dependents_info import GithubDependentsInfo
 import hashlib
+
+from .node_id import extract_full_name, extract_login
 
 logger = logging.getLogger(__name__)
 
+# Environment variable and default location for the API response cache.
+CACHE_DIR_ENV = "OPC_CACHE_DIR"
+DEFAULT_CACHE_DIR = "data/open-pulse-crawler/cache"
+
+# Cache-entry time-to-live. A cached API response older than the TTL is
+# treated as a miss and refetched, so the cache self-refreshes instead of
+# serving indefinitely-stale data. Configurable via OPC_CACHE_TTL_DAYS.
+CACHE_TTL_ENV = "OPC_CACHE_TTL_DAYS"
+DEFAULT_CACHE_TTL_DAYS = 30
+
+
+def resolve_cache_ttl() -> Optional[float]:
+    """Resolve the cache-entry TTL, in seconds, from `OPC_CACHE_TTL_DAYS`.
+
+    Unset or blank -> the 30-day default. A value of `0` (or negative)
+    disables expiry — cache entries are kept indefinitely. Returns `None`
+    for "no expiry", otherwise a positive number of seconds.
+    """
+    raw = os.environ.get(CACHE_TTL_ENV)
+    if raw is None or not raw.strip():
+        days: float = DEFAULT_CACHE_TTL_DAYS
+    else:
+        try:
+            days = float(raw.strip())
+        except ValueError:
+            logger.warning(
+                "Invalid %s=%r; falling back to the %d-day default.",
+                CACHE_TTL_ENV, raw, DEFAULT_CACHE_TTL_DAYS,
+            )
+            days = DEFAULT_CACHE_TTL_DAYS
+    if days <= 0:
+        return None
+    return days * 86400.0
+
+
+def resolve_cache_dir(
+    explicit: Optional[Path] = None,
+    default: Optional[Path] = None,
+) -> Optional[Path]:
+    """Resolve the API response cache directory.
+
+    Precedence:
+      1. `explicit` argument (e.g. a CLI `--cache-dir` value), when given.
+      2. The `OPC_CACHE_DIR` environment variable.
+      3. The `default` argument, when the caller supplies a context-specific
+         one (the API passes a path under `OPC_DATA_DIR`, which is writable
+         in the container — unlike the repo-relative CLI default).
+      4. The repo-relative default `data/open-pulse-crawler/cache`.
+
+    Setting `OPC_CACHE_DIR` to an empty string disables caching (returns
+    `None`). Caching is also resilient at runtime: an unwritable directory
+    disables the cache rather than failing the crawl (see `APICache`).
+    """
+    if explicit is not None:
+        return Path(explicit)
+    env_value = os.environ.get(CACHE_DIR_ENV)
+    if env_value is not None:
+        env_value = env_value.strip()
+        return Path(env_value) if env_value else None
+    if default is not None:
+        return Path(default)
+    return Path(DEFAULT_CACHE_DIR)
+
 
 class APICache:
-    """Simple file-based cache for API responses."""
-    
-    def __init__(self, cache_dir: Path):
+    """Simple file-based cache for API responses.
+
+    Caching is an optimization — a crawl must never fail because the cache
+    directory can't be created (e.g. an unwritable path inside a container).
+    If the directory can't be made, the cache disables itself: ``get`` always
+    misses and ``set`` is a no-op, so the crawl runs uncached.
+
+    Entries expire: ``get`` treats a cache file older than ``ttl_seconds`` as
+    a miss, so the caller refetches and ``set`` overwrites the stale file.
+    ``ttl_seconds=None`` disables expiry (entries are kept indefinitely).
+    """
+
+    def __init__(self, cache_dir: Path, ttl_seconds: Optional[float] = None):
         self.cache_dir = cache_dir
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-    
+        # Age (seconds) beyond which a cached entry is stale. None = no expiry.
+        self.ttl_seconds = ttl_seconds
+        self.enabled = True
+        try:
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            self.enabled = False
+            logger.warning(
+                "Cache directory '%s' is not usable (%s); continuing without "
+                "caching. Set OPC_CACHE_DIR to a writable path, or to an empty "
+                "string to disable caching without this warning.",
+                cache_dir,
+                exc,
+            )
+
     def _get_cache_key(self, endpoint: str, params: str) -> str:
         """Generate cache key from endpoint and params."""
         content = f"{endpoint}:{params}"
         return hashlib.md5(content.encode()).hexdigest()
-    
+
     def get(self, endpoint: str, params: str = "") -> Optional[Any]:
-        """Get cached response."""
+        """Get cached response, or ``None`` on a miss or a stale (expired) entry."""
+        if not self.enabled:
+            return None
         key = self._get_cache_key(endpoint, params)
         cache_file = self.cache_dir / f"{key}.json"
-        
-        if cache_file.exists():
+
+        if not cache_file.exists():
+            return None
+
+        # TTL: an entry older than ttl_seconds is a miss — the caller refetches
+        # and set() overwrites the stale file. Keyed on the file's mtime.
+        if self.ttl_seconds is not None:
             try:
-                with open(cache_file, 'r') as f:
-                    return json.load(f)
-            except Exception as e:
-                logger.warning(f"Failed to read cache file {cache_file}: {e}")
+                age = time.time() - cache_file.stat().st_mtime
+            except OSError:
                 return None
-        return None
+            if age > self.ttl_seconds:
+                logger.debug("Cache entry %s expired (age %.0fs)", cache_file, age)
+                return None
+
+        try:
+            with open(cache_file, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            logger.warning(f"Failed to read cache file {cache_file}: {e}")
+            return None
     
     def set(self, endpoint: str, params: str, data: Any):
         """Store response in cache."""
+        if not self.enabled:
+            return
         key = self._get_cache_key(endpoint, params)
         cache_file = self.cache_dir / f"{key}.json"
         
@@ -91,8 +197,12 @@ class GitHubClient:
         self.last_request_time = 0
         self.request_lock = threading.Lock()
         
-        # Cache setup
-        self.cache = APICache(cache_dir) if cache_dir else None
+        # Cache setup. Entries expire per OPC_CACHE_TTL_DAYS (default 30).
+        self.cache = (
+            APICache(cache_dir, ttl_seconds=resolve_cache_ttl())
+            if cache_dir
+            else None
+        )
         
         # Statistics
         self.stats = {
@@ -327,9 +437,10 @@ class GitHubClient:
             
             return None
     
-    def get_user(self, username: str) -> Optional[NamedUser]:
-        """Get user by username with caching."""
-        cache_key = f"user:{username}"
+    def get_user(self, url: str) -> Optional[NamedUser]:
+        """Get user by canonical URL (e.g. https://github.com/torvalds) with caching."""
+        username = extract_login(url)
+        cache_key = f"user:{url}"
         
         if self.cache:
             cached = self.cache.get(cache_key)
@@ -356,8 +467,38 @@ class GitHubClient:
                     orgs_data = [org.login for org in orgs]
                 except Exception as e:
                     logger.warning(f"Failed to get organizations for caching user {username}: {e}")
-                
-                # Cache basic user info + repos + orgs
+
+                # Fetch and cache user's followers and following lists
+                followers_data = []
+                try:
+                    followers = self._make_request(user.get_followers)
+                    followers_data = [f.login for f in followers]
+                except Exception as e:
+                    logger.warning(f"Failed to get followers for caching user {username}: {e}")
+
+                following_data = []
+                try:
+                    following = self._make_request(user.get_following)
+                    following_data = [f.login for f in following]
+                except Exception as e:
+                    logger.warning(f"Failed to get following for caching user {username}: {e}")
+
+                # Fetch and cache starred and watched (subscriptions) repo lists
+                starred_data = []
+                try:
+                    starred = self._make_request(user.get_starred)
+                    starred_data = [r.full_name for r in starred]
+                except Exception as e:
+                    logger.warning(f"Failed to get starred for caching user {username}: {e}")
+
+                watching_data = []
+                try:
+                    subs = self._make_request(user.get_subscriptions)
+                    watching_data = [r.full_name for r in subs]
+                except Exception as e:
+                    logger.warning(f"Failed to get subscriptions for caching user {username}: {e}")
+
+                # Cache basic user info + repos + orgs + follow lists + star/watch lists
                 user_data = {
                     'login': user.login,
                     'name': user.name or '',
@@ -365,6 +506,10 @@ class GitHubClient:
                     'type': user.type,
                     'repos': repos_data,
                     'orgs': orgs_data,
+                    'followers': followers_data,
+                    'following': following_data,
+                    'starred': starred_data,
+                    'watching': watching_data,
                 }
                 self.cache.set(cache_key, '', user_data)
             return user
@@ -372,9 +517,10 @@ class GitHubClient:
             logger.error(f"Failed to get user {username}: {e}")
             return None
     
-    def get_organization(self, org_name: str) -> Optional[Organization]:
-        """Get organization by name with caching."""
-        cache_key = f"org:{org_name}"
+    def get_organization(self, url: str) -> Optional[Organization]:
+        """Get organization by canonical URL (e.g. https://github.com/acme) with caching."""
+        org_name = extract_login(url)
+        cache_key = f"org:{url}"
         
         if self.cache:
             cached = self.cache.get(cache_key)
@@ -414,9 +560,10 @@ class GitHubClient:
             logger.error(f"Failed to get organization {org_name}: {e}")
             return None
     
-    def get_repository(self, repo_full_name: str) -> Optional[Repository]:
-        """Get repository by full name with caching."""
-        cache_key = f"repo:{repo_full_name}"
+    def get_repository(self, url: str) -> Optional[Repository]:
+        """Get repository by canonical URL (e.g. https://github.com/acme/widget) with caching."""
+        repo_full_name = extract_full_name(url)
+        cache_key = f"repo:{url}"
         
         if self.cache:
             cached = self.cache.get(cache_key)
@@ -427,15 +574,26 @@ class GitHubClient:
         try:
             repo = self._make_request(self.current_client.get_repo, repo_full_name)
             if repo and self.cache:
-                # Fetch and cache contributors along with basic repo info
+                # Fetch and cache contributors along with basic repo info.
+                # ``totalCount`` is kept as metadata. Every contributor login
+                # is cached — the crawler decides how many to use (all by
+                # default, or the top N when ``max_contributors`` is set).
+                # GitHub itself caps the contributors endpoint at ~500 for
+                # very large repos, so this list is naturally bounded.
                 contributors_data = []
+                contributors_total: Optional[int] = None
                 try:
                     contributors = self._make_request(repo.get_contributors)
-                    # Limit to top 10 contributors for caching
-                    contributors_data = [c.login for i, c in enumerate(contributors) if i < 10]
+                    try:
+                        contributors_total = contributors.totalCount
+                    except Exception as e:
+                        logger.debug(
+                            f"Failed to read contributor totalCount for {repo_full_name}: {e}"
+                        )
+                    contributors_data = [c.login for c in contributors]
                 except Exception as e:
                     logger.warning(f"Failed to get contributors for caching repo {repo_full_name}: {e}")
-                
+
                 repo_data = {
                     'full_name': repo.full_name,
                     'name': repo.name,
@@ -445,11 +603,51 @@ class GitHubClient:
                     'is_fork': repo.fork,
                     'parent': repo.parent.full_name if repo.parent else None,
                     'contributors': contributors_data,
+                    'contributor_count': contributors_total,
                 }
                 self.cache.set(cache_key, '', repo_data)
             return repo
         except Exception as e:
             logger.error(f"Failed to get repository {repo_full_name}: {e}")
+            return None
+
+    def get_contributor_count(self, url: str) -> Optional[int]:
+        """Return the total contributor count for a repo, addressed by canonical URL.
+
+        Reads from the existing ``repo:{url}`` cache entry first. Falls
+        back to a fresh ``get_contributors().totalCount`` lookup (one cheap
+        ``per_page=1`` request) only on cache miss or when the cached entry
+        predates this field. Returns ``None`` if both paths fail; callers
+        should treat ``None`` as "unknown" and not skip the repo.
+        """
+        repo_full_name = extract_full_name(url)
+        cache_key = f"repo:{url}"
+
+        if self.cache:
+            cached = self.cache.get(cache_key)
+            if isinstance(cached, dict):
+                count = cached.get('contributor_count')
+                if isinstance(count, int):
+                    self.stats['cache_hits'] += 1
+                    return count
+
+        try:
+            repo = self._make_request(self.current_client.get_repo, repo_full_name)
+            if repo is None:
+                return None
+            contributors = self._make_request(repo.get_contributors)
+            count = int(contributors.totalCount)
+            # Best-effort write-through so the next call hits cache. We only
+            # write when there's no existing entry, to avoid clobbering richer
+            # data populated by ``get_repository``.
+            if self.cache and self.cache.get(cache_key) is None:
+                self.cache.set(cache_key, '', {
+                    'full_name': repo_full_name,
+                    'contributor_count': count,
+                })
+            return count
+        except Exception as e:
+            logger.warning(f"Failed to get contributor count for {repo_full_name}: {e}")
             return None
     
     def get_stats(self) -> Dict[str, Any]:
