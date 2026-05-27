@@ -16,7 +16,7 @@ from github.Organization import Organization
 from github_dependents_info import GithubDependentsInfo
 import hashlib
 
-from .node_id import extract_full_name, extract_login
+from ...node_id import extract_full_name, extract_login
 
 logger = logging.getLogger(__name__)
 

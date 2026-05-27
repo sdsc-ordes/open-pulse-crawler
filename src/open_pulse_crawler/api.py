@@ -576,7 +576,7 @@ def _run_crawl(
 
     try:
         from .crawler import GitHubCrawler
-        from .github_client import GitHubClient, resolve_cache_dir
+        from .platforms.github import GitHubClient, resolve_cache_dir
         from .token_env import resolve_github_tokens, tokens_not_set_message
 
         tokens = resolve_github_tokens()
@@ -677,8 +677,7 @@ def _run_crawl_graphql(
 
     try:
         from .crawler import GitHubCrawler
-        from .github_client import resolve_cache_dir
-        from .graphql_client import GitHubGraphQLClient
+        from .platforms.github import GitHubGraphQLClient, resolve_cache_dir
         from .token_env import resolve_github_tokens, tokens_not_set_message
 
         tokens = resolve_github_tokens()

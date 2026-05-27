@@ -14,7 +14,7 @@ from .models import (
     GraphData, UserModel, OrgModel, RepoModel, TeamModel,
     GitHubItemType,
 )
-from .github_client import GitHubClient
+from .platforms.github import GitHubClient
 from .dependency_utils import fetch_dependencies_sbom, fetch_dependents
 from .gimie_client import GimieJsonLdClient
 from .gimie_jsonld import parse_gimie_repo_jsonld

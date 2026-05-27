@@ -164,7 +164,7 @@ class TestCrawl:
         self, client: TestClient, auth_header: dict
     ):
         with patch.dict(os.environ, {"CRAWLER_GITHUB_TOKEN": "ghp_valid_format_token"}, clear=False):
-            with patch("open_pulse_crawler.github_client.GitHubClient"):
+            with patch("open_pulse_crawler.platforms.github.client.GitHubClient"):
                 with patch("open_pulse_crawler.crawler.GitHubCrawler") as crawler_cls:
                     crawler = crawler_cls.return_value
                     crawler.add_seeds.return_value = None
@@ -201,7 +201,7 @@ class TestCrawl:
         }
 
         with patch.dict(os.environ, {"CRAWLER_GITHUB_TOKEN": "ghp_valid_format_token"}, clear=False):
-            with patch("open_pulse_crawler.github_client.GitHubClient"):
+            with patch("open_pulse_crawler.platforms.github.client.GitHubClient"):
                 with patch("open_pulse_crawler.crawler.GitHubCrawler") as crawler_cls:
                     crawler = crawler_cls.return_value
                     crawler.add_seeds.return_value = None
@@ -248,7 +248,7 @@ class TestCrawl:
             },
             clear=False,
         ):
-            with patch("open_pulse_crawler.github_client.GitHubClient"):
+            with patch("open_pulse_crawler.platforms.github.client.GitHubClient"):
                 with patch("open_pulse_crawler.crawler.GitHubCrawler") as crawler_cls:
                     crawler = crawler_cls.return_value
                     crawler.add_seeds.return_value = None
@@ -526,7 +526,7 @@ class TestResume:
             )
             _state_path("rj").write_text("{}")  # presence is all the endpoint checks
 
-            with patch("open_pulse_crawler.github_client.GitHubClient"), patch(
+            with patch("open_pulse_crawler.platforms.github.client.GitHubClient"), patch(
                 "open_pulse_crawler.crawler.GitHubCrawler"
             ) as crawler_cls:
                 crawler = crawler_cls.return_value
@@ -558,7 +558,7 @@ class TestResume:
             )
             _state_path("gj").write_text("{}")
 
-            with patch("open_pulse_crawler.graphql_client.GitHubGraphQLClient") as gql_cls, patch(
+            with patch("open_pulse_crawler.platforms.github.graphql.GitHubGraphQLClient") as gql_cls, patch(
                 "open_pulse_crawler.crawler.GitHubCrawler"
             ) as crawler_cls:
                 crawler = crawler_cls.return_value

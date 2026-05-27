@@ -296,7 +296,7 @@ class GitHubGraphQLClient:
 
         # File cache: reuse the same APICache so subsequent runs can skip HTTP.
         # Entries expire per OPC_CACHE_TTL_DAYS (default 30).
-        from .github_client import (  # local import to avoid circular dep
+        from .client import (  # local import to avoid circular dep
             APICache,
             resolve_cache_ttl,
         )
@@ -663,7 +663,7 @@ class GitHubGraphQLClient:
 
     def get_user(self, url: str) -> Optional[Dict[str, Any]]:
         """Get user by canonical URL (e.g. https://github.com/torvalds)."""
-        from .node_id import extract_login
+        from ...node_id import extract_login
         username = extract_login(url)
         cache_key = f"gql_user:{url}"
         if self.cache:
@@ -781,7 +781,7 @@ class GitHubGraphQLClient:
 
     def get_organization(self, url: str) -> Optional[Dict[str, Any]]:
         """Get organization by canonical URL (e.g. https://github.com/acme)."""
-        from .node_id import extract_login
+        from ...node_id import extract_login
         org_name = extract_login(url)
         cache_key = f"gql_org:{url}"
         if self.cache:
@@ -847,7 +847,7 @@ class GitHubGraphQLClient:
 
     def get_repository(self, url: str) -> Optional[Dict[str, Any]]:
         """Get repository by canonical URL (e.g. https://github.com/acme/widget)."""
-        from .node_id import extract_full_name
+        from ...node_id import extract_full_name
         repo_full_name = extract_full_name(url)
         cache_key = f"gql_repo:{url}:{int(self.crawl_issues)}:{int(self.crawl_prs)}:{self.issue_max}:{self.pr_max}"
         if self.cache:

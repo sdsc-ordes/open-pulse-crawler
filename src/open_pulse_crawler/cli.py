@@ -14,7 +14,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from dotenv import load_dotenv
 
 from .models import GraphData
-from .github_client import GitHubClient, resolve_cache_dir
+from .platforms.github import GitHubClient, resolve_cache_dir
 from .crawler import GitHubCrawler
 from .io_utils import parse_seed_file, export_to_json, export_to_csv, export_nodes_csv
 from .token_env import POOL_ENV, TOKEN_ENV, resolve_github_tokens, tokens_not_set_message
