@@ -1,15 +1,18 @@
 """Pydantic models for graph entities.
 
 Nodes (user, org, repo, team) are keyed by their canonical public URL
-across the codebase — see :mod:`open_pulse_crawler.node_id`. Each model
-keeps the platform-native shorthand (``login`` for user/org,
-``full_name`` for repo/team) alongside the canonical ``url`` so that
-display layers, API callers, and the crawler can still pull the bare
-identifier when needed.
+in :class:`GraphData` — see :mod:`open_pulse_crawler.node_id`. Each
+model keeps the platform-native shorthand (``login`` for user/org,
+``full_name`` for repo/team) alongside the canonical ``url`` so display
+layers, API callers, and the crawler can still pull the bare identifier
+when they need it.
 
-Edge fields (followers, contributors, dependencies, members, ...) hold
-URL strings, not bare logins, so a graph that mixes platforms can be
-keyed and indexed uniformly.
+Edge-list fields (``followers``, ``contributors``, ``dependencies``,
+``members``, ...) keep storing the bare platform shorthand (logins or
+``owner/repo`` strings) rather than URLs — this is a pragmatic choice
+to keep the internal representation compact. The boundary that produces
+the public CSV / JSON-LD output converts these to URLs at write time so
+consumers join on a uniform key.
 """
 
 from __future__ import annotations
@@ -61,19 +64,19 @@ class UserModel(BaseEntityModel):
     id: int = 0
     type: GitHubItemType = GitHubItemType.USER
 
-    # Repos the user owns (URLs).
+    # Repos the user owns (full_name strings).
     authored_repositories: List[str] = Field(default_factory=list)
-    # Repos the user has forked (URLs).
+    # Repos the user has forked (full_name strings).
     forked_repositories: List[str] = Field(default_factory=list)
 
-    # Users who follow this user (URLs).
+    # Users who follow this user (login strings).
     followers: List[str] = Field(default_factory=list)
-    # Users this user follows (URLs).
+    # Users this user follows (login strings).
     following: List[str] = Field(default_factory=list)
 
-    # Repos the user has starred (URLs).
+    # Repos the user has starred (full_name strings).
     starred_repositories: List[str] = Field(default_factory=list)
-    # Repos the user is subscribed to (URLs).
+    # Repos the user is subscribed to (full_name strings).
     watched_repositories: List[str] = Field(default_factory=list)
 
     @model_validator(mode="before")
@@ -105,11 +108,11 @@ class OrgModel(BaseEntityModel):
     name: str = ""
     id: int = 0
     type: GitHubItemType = GitHubItemType.ORGANIZATION
-    members: List[str] = Field(default_factory=list)  # user URLs
+    members: List[str] = Field(default_factory=list)  # login strings
 
-    # Org-owned repos that are original (URLs).
+    # Org-owned repos that are original (full_name strings).
     authored_repositories: List[str] = Field(default_factory=list)
-    # Org-owned repos that are forks (URLs).
+    # Org-owned repos that are forks (full_name strings).
     forked_repositories: List[str] = Field(default_factory=list)
 
     @model_validator(mode="before")
@@ -134,7 +137,7 @@ class RepoModel(BaseEntityModel):
     name: str = ""
     id: int = 0
     type: GitHubItemType = GitHubItemType.REPOSITORY
-    contributors: List[str] = Field(default_factory=list)  # user URLs
+    contributors: List[str] = Field(default_factory=list)  # login strings
     # Owner login (kept for display + API calls). The owner's URL is the
     # parent of ``self.url``; callers can build it via node_id.user_url
     # if they need it.
@@ -142,14 +145,14 @@ class RepoModel(BaseEntityModel):
 
     # Fork information
     is_fork: bool = False
-    # URL of the upstream repo this is a fork of; None for non-forks.
+    # ``owner/repo`` of the upstream repo this is a fork of; None for non-forks.
     forked_from: Optional[str] = None
 
-    # Dependency information (URLs).
+    # Dependency information (full_name strings).
     dependents: List[str] = Field(default_factory=list)
     dependencies: List[str] = Field(default_factory=list)
 
-    # Issue / PR activity edges (user URLs).
+    # Issue / PR activity edges (login strings).
     issue_authors: List[str] = Field(default_factory=list)
     pr_authors: List[str] = Field(default_factory=list)
     # Conversation commenters across issues and PRs (both fetched via the issues API).
@@ -197,11 +200,11 @@ class TeamModel(BaseEntityModel):
     description: str = ""
     privacy: str = ""
 
-    # URL of the parent team when this is a child team.
+    # ``org/slug`` of the parent team when this is a child team.
     parent: Optional[str] = None
 
-    members: List[str] = Field(default_factory=list)  # user URLs
-    repositories: List[str] = Field(default_factory=list)  # repo URLs
+    members: List[str] = Field(default_factory=list)  # login strings
+    repositories: List[str] = Field(default_factory=list)  # full_name strings
 
     @model_validator(mode="before")
     @classmethod

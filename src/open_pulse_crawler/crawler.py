@@ -12,12 +12,49 @@ import threading
 
 from .models import (
     GraphData, UserModel, OrgModel, RepoModel, TeamModel,
-    GitHubItemType
+    GitHubItemType, GRAPH_SCHEMA_VERSION,
 )
 from .github_client import GitHubClient
 from .dependency_utils import fetch_dependencies_sbom, fetch_dependents
 from .gimie_client import GimieJsonLdClient
 from .gimie_jsonld import parse_gimie_repo_jsonld
+from .node_id import (
+    NodeKind,
+    extract_full_name,
+    extract_login,
+    parse_seed as parse_seed_url,
+    repo_url,
+    team_url,
+    user_url,
+)
+
+
+# Bumped alongside models.GRAPH_SCHEMA_VERSION whenever the on-disk
+# state.json layout changes incompatibly. Old state files are refused
+# on load with a clear error.
+STATE_SCHEMA_VERSION = 2
+
+
+def _kind_to_url(kind: str, identifier: str) -> str:
+    """Convert a (kind, bare-identifier) pair into a canonical URL.
+
+    ``kind`` is one of the strings the crawler queues with: ``"user"``,
+    ``"org"``, ``"user_or_org"``, ``"repo"``, or ``"team"``. The
+    identifier shape matches the kind — login for users / orgs,
+    ``owner/repo`` for repos, ``org/slug`` for teams.
+
+    Idempotent on values that are already canonical URLs, so call sites
+    can pass either form during transition.
+    """
+    if identifier.startswith("https://") or identifier.startswith("http://"):
+        return parse_seed_url(identifier)[1]
+    if kind == "repo":
+        return repo_url(identifier)
+    if kind == "team":
+        org, slug = identifier.split("/", 1)
+        return team_url(org, slug)
+    # user, org, user_or_org all map to a one-segment login URL.
+    return user_url(identifier)
 
 logger = logging.getLogger(__name__)
 
@@ -140,36 +177,36 @@ class GitHubCrawler:
         """
         return self.max_contributors
 
-    def _track_discovered_node(self, node_type: str, identifier: str, parent_id: str = None, parent_type: str = None):
+    def _track_discovered_node(self, node_type: str, url: str, parent_url: str = None, parent_type: str = None):
         """
         Track a discovered but not-yet-explored node for visualization purposes.
         This does NOT add it to the main graph (only explored nodes go there).
         Thread-safe with visited_lock.
-        
+
         Args:
-            node_type: Type of node ('user', 'org', 'repo')
-            identifier: Unique identifier for the node
-            parent_id: ID of the parent node that discovered this node
-            parent_type: Type of parent node ('user', 'org', 'repo')
+            node_type: Type of node ('user', 'org', 'repo').
+            url: Canonical URL of the node — the same key under which it
+                will live in :class:`GraphData` once explored.
+            parent_url: URL of the parent node that discovered this node.
+            parent_type: Type of parent node ('user', 'org', 'repo').
         """
-        # Only track if not already visited and not already in graph
-        if identifier not in self.visited:
-            # Check if already in graph (explored)
-            is_in_graph = (
-                (node_type == 'user' and identifier in self.graph.users) or
-                (node_type == 'org' and identifier in self.graph.orgs) or
-                (node_type == 'repo' and identifier in self.graph.repos)
-            )
-            
-            if not is_in_graph and identifier not in self.discovered_nodes:
-                self.discovered_nodes[identifier] = (node_type, parent_id, parent_type)
+        if url in self.visited:
+            return
+        is_in_graph = (
+            (node_type == 'user' and url in self.graph.users) or
+            (node_type == 'org' and url in self.graph.orgs) or
+            (node_type == 'repo' and url in self.graph.repos)
+        )
+        if not is_in_graph and url not in self.discovered_nodes:
+            self.discovered_nodes[url] = (node_type, parent_url, parent_type)
     
     def save_state(self):
         """Save crawler state to file."""
         if not self.state_file:
             return
-        
+
         state = {
+            'schema_version': STATE_SCHEMA_VERSION,
             'current_round': self.current_round,
             'visited': list(self.visited),
             'seed_nodes': list(self.seed_nodes),
@@ -177,35 +214,48 @@ class GitHubCrawler:
             'graph': self.graph.model_dump(),
             'round_stats': self.round_stats,
         }
-        
+
         try:
             with open(self.state_file, 'w') as f:
                 json.dump(state, f, indent=2)
             logger.info(f"State saved to {self.state_file}")
         except Exception as e:
             logger.error(f"Failed to save state: {e}")
-    
+
     def load_state(self) -> bool:
-        """
-        Load crawler state from file.
-        
+        """Load crawler state from file.
+
+        Refuses to load files written under an earlier ``schema_version``
+        — that's the agreed hard break for the URL-keyed-nodes cutover
+        (see node_id + models.GRAPH_SCHEMA_VERSION). The caller decides
+        whether to re-crawl from seeds or fail.
+
         Returns:
-            True if state was loaded successfully
+            True if state was loaded successfully.
         """
         if not self.state_file or not self.state_file.exists():
             return False
-        
+
         try:
             with open(self.state_file, 'r') as f:
                 state = json.load(f)
-            
+
+            file_version = state.get('schema_version', 1)
+            if file_version != STATE_SCHEMA_VERSION:
+                logger.error(
+                    "State file %s has schema_version=%s but this build "
+                    "requires version %s. Re-crawl from seeds.",
+                    self.state_file, file_version, STATE_SCHEMA_VERSION,
+                )
+                return False
+
             self.current_round = state.get('current_round', 0)
             self.visited = set(state.get('visited', []))
             self.seed_nodes = set(state.get('seed_nodes', []))
             self.queue = deque(state.get('queue', []))
             self.graph = GraphData(**state.get('graph', {}))
             self.round_stats = state.get('round_stats', [])
-            
+
             logger.info(f"State loaded from {self.state_file}")
             logger.info(f"Resuming from round {self.current_round}")
             return True
@@ -214,45 +264,35 @@ class GitHubCrawler:
             return False
     
     def _parse_seed(self, seed: str) -> Tuple[str, str]:
+        """Parse a seed string into (kind, canonical_url).
+
+        Accepts a bare login, ``owner/repo``, or a full GitHub URL.
+        Delegates to :func:`open_pulse_crawler.node_id.parse_seed` for
+        normalization; the returned ``kind`` is mapped onto the
+        crawler's own type strings (``"user_or_org"`` / ``"repo"`` /
+        ``"team"``) for compatibility with the queue tuple shape.
         """
-        Parse seed input to determine type and identifier.
-        
-        Args:
-            seed: Can be username, org/repo, or full GitHub URL
-        
-        Returns:
-            Tuple of (type, identifier) where type is 'user', 'org', or 'repo'
-        """
-        seed = seed.strip()
-        
-        # Remove https://github.com/ prefix if present
-        if seed.startswith('https://github.com/'):
-            seed = seed[19:].rstrip('/')
-        elif seed.startswith('http://github.com/'):
-            seed = seed[18:].rstrip('/')
-        
-        # Check if it's a repo (contains /)
-        if '/' in seed:
-            return ('repo', seed)
-        else:
-            # Could be user or org, we'll check later
-            return ('user_or_org', seed)
-    
+        kind, url = parse_seed_url(seed)
+        if kind == NodeKind.REPO:
+            return ('repo', url)
+        if kind == NodeKind.TEAM:
+            return ('team', url)
+        return ('user_or_org', url)
+
     def add_seeds(self, seeds: List[str]):
-        """Add initial seed nodes to the queue."""
+        """Add initial seed nodes to the queue (keyed by canonical URL)."""
         for seed in seeds:
-            seed_type, identifier = self._parse_seed(seed)
-            
-            if identifier not in self.visited:
-                self.queue.append((seed_type, identifier, 0))  # (type, id, round)
-                self.seed_nodes.add(identifier)
-        
+            seed_type, url = self._parse_seed(seed)
+            if url not in self.visited:
+                self.queue.append((seed_type, url, 0))  # (type, url, round)
+                self.seed_nodes.add(url)
         logger.info(f"Added {len(seeds)} seed nodes")
     
-    def _process_user(self, username: str) -> Optional[UserModel]:
-        """Process a user and return UserModel."""
+    def _process_user(self, user_url_value: str) -> Optional[UserModel]:
+        """Process a user (by canonical URL) and return UserModel."""
+        username = extract_login(user_url_value)
         try:
-            user_obj = self.client.get_user(username)
+            user_obj = self.client.get_user(user_url_value)
             if not user_obj:
                 return None
             
@@ -300,16 +340,18 @@ class GitHubCrawler:
                 user.starred_repositories.extend(user_obj.get('starred', []))
                 user.watched_repositories.extend(user_obj.get('watching', []))
 
-                # Add all items to queue in a single lock acquisition
+                # Add all items to queue in a single lock acquisition (URLs).
                 with self.visited_lock:
                     for repo_name in repos_to_queue:
-                        if repo_name not in self.visited:
-                            self.queue.append(('repo', repo_name, self.current_round + 1))
-                            self._track_discovered_node('repo', repo_name, username, 'user')
+                        ru = repo_url(repo_name)
+                        if ru not in self.visited:
+                            self.queue.append(('repo', ru, self.current_round + 1))
+                            self._track_discovered_node('repo', ru, user_url_value, 'user')
                     for org_login in orgs_to_queue:
-                        if org_login not in self.visited:
-                            self.queue.append(('org', org_login, self.current_round + 1))
-                            self._track_discovered_node('org', org_login, username, 'user')
+                        ou = user_url(org_login)
+                        if ou not in self.visited:
+                            self.queue.append(('org', ou, self.current_round + 1))
+                            self._track_discovered_node('org', ou, user_url_value, 'user')
             else:
                 # Check if this is actually an organization
                 if user_obj.type == 'Organization':
@@ -372,26 +414,29 @@ class GitHubCrawler:
                 except Exception as e:
                     logger.warning(f"Failed to get subscriptions for user {username}: {e}")
 
-                # Add all items to queue in a single lock acquisition
+                # Add all items to queue in a single lock acquisition (URLs).
                 with self.visited_lock:
                     for repo_name in repos_to_queue:
-                        if repo_name not in self.visited:
-                            self.queue.append(('repo', repo_name, self.current_round + 1))
-                            self._track_discovered_node('repo', repo_name, username, 'user')
+                        ru = repo_url(repo_name)
+                        if ru not in self.visited:
+                            self.queue.append(('repo', ru, self.current_round + 1))
+                            self._track_discovered_node('repo', ru, user_url_value, 'user')
                     for org_login in orgs_to_queue:
-                        if org_login not in self.visited:
-                            self.queue.append(('org', org_login, self.current_round + 1))
-                            self._track_discovered_node('org', org_login, username, 'user')
-            
+                        ou = user_url(org_login)
+                        if ou not in self.visited:
+                            self.queue.append(('org', ou, self.current_round + 1))
+                            self._track_discovered_node('org', ou, user_url_value, 'user')
+
             return user
         except Exception as e:
             logger.error(f"Error processing user {username}: {e}")
             return None
     
-    def _process_organization(self, org_name: str) -> Optional[OrgModel]:
-        """Process an organization and return OrgModel."""
+    def _process_organization(self, org_url_value: str) -> Optional[OrgModel]:
+        """Process an organization (by canonical URL) and return OrgModel."""
+        org_name = extract_login(org_url_value)
         try:
-            org_obj = self.client.get_organization(org_name)
+            org_obj = self.client.get_organization(org_url_value)
             if not org_obj:
                 return None
             
@@ -426,16 +471,18 @@ class GitHubCrawler:
                 for team_data in org_obj.get('teams', []) or []:
                     self._build_team_from_dict(org_name, team_data)
 
-                # Add all items to queue in a single lock acquisition
+                # Add all items to queue in a single lock acquisition (URLs).
                 with self.visited_lock:
                     for member_login in members_to_queue:
-                        if member_login not in self.visited:
-                            self.queue.append(('user', member_login, self.current_round + 1))
-                            self._track_discovered_node('user', member_login, org_name, 'org')
+                        mu = user_url(member_login)
+                        if mu not in self.visited:
+                            self.queue.append(('user', mu, self.current_round + 1))
+                            self._track_discovered_node('user', mu, org_url_value, 'org')
                     for repo_name in repos_to_queue:
-                        if repo_name not in self.visited:
-                            self.queue.append(('repo', repo_name, self.current_round + 1))
-                            self._track_discovered_node('repo', repo_name, org_name, 'org')
+                        ru = repo_url(repo_name)
+                        if ru not in self.visited:
+                            self.queue.append(('repo', ru, self.current_round + 1))
+                            self._track_discovered_node('repo', ru, org_url_value, 'org')
             else:
                 org = OrgModel(
                     login=org_obj.login,
@@ -474,16 +521,18 @@ class GitHubCrawler:
                 # for external orgs and is logged at debug level.
                 self._fetch_org_teams(org_obj, org_name)
 
-                # Add all items to queue in a single lock acquisition
+                # Add all items to queue in a single lock acquisition (URLs).
                 with self.visited_lock:
                     for member_login in members_to_queue:
-                        if member_login not in self.visited:
-                            self.queue.append(('user', member_login, self.current_round + 1))
-                            self._track_discovered_node('user', member_login, org_name, 'org')
+                        mu = user_url(member_login)
+                        if mu not in self.visited:
+                            self.queue.append(('user', mu, self.current_round + 1))
+                            self._track_discovered_node('user', mu, org_url_value, 'org')
                     for repo_name in repos_to_queue:
-                        if repo_name not in self.visited:
-                            self.queue.append(('repo', repo_name, self.current_round + 1))
-                            self._track_discovered_node('repo', repo_name, org_name, 'org')
+                        ru = repo_url(repo_name)
+                        if ru not in self.visited:
+                            self.queue.append(('repo', ru, self.current_round + 1))
+                            self._track_discovered_node('repo', ru, org_url_value, 'org')
 
             return org
         except Exception as e:
@@ -572,8 +621,9 @@ class GitHubCrawler:
             except Exception as e:
                 logger.warning(f"Failed to process team in org {org_name}: {e}")
     
-    def _process_repository(self, repo_full_name: str) -> Optional[RepoModel]:
-        """Process a repository and return RepoModel."""
+    def _process_repository(self, repo_url_value: str) -> Optional[RepoModel]:
+        """Process a repository (by canonical URL) and return RepoModel."""
+        repo_full_name = extract_full_name(repo_url_value)
         try:
             # ── Optional gimie hybrid repo processing ─────────────────────
             if self.gimie_repos and self.gimie_client is not None:
@@ -689,14 +739,15 @@ class GitHubCrawler:
 
                         with self.visited_lock:
                             for item_type, identifier in items_to_queue:
-                                if identifier not in self.visited:
+                                url = _kind_to_url(item_type, identifier)
+                                if url not in self.visited:
                                     self.queue.append(
-                                        (item_type, identifier, self.current_round + 1)
+                                        (item_type, url, self.current_round + 1)
                                     )
                                     self._track_discovered_node(
                                         item_type,
-                                        identifier,
-                                        repo_full_name,
+                                        url,
+                                        repo_url_value,
                                         "repo",
                                     )
 
@@ -709,7 +760,7 @@ class GitHubCrawler:
                     )
 
             # ── Default GitHub API processing ──────────────────────────────
-            repo_obj = self.client.get_repository(repo_full_name)
+            repo_obj = self.client.get_repository(repo_url_value)
             if not repo_obj:
                 return None
             
@@ -823,12 +874,13 @@ class GitHubCrawler:
                     except Exception as e:
                         logger.warning(f"Failed to crawl dependents for {repo_full_name}: {e}")
 
-                # Add all items to queue in a single lock acquisition
+                # Add all items to queue in a single lock acquisition (URLs).
                 with self.visited_lock:
                     for item_type, identifier in items_to_queue:
-                        if identifier not in self.visited:
-                            self.queue.append((item_type, identifier, self.current_round + 1))
-                            self._track_discovered_node(item_type, identifier, repo_full_name, 'repo')
+                        url = _kind_to_url(item_type, identifier)
+                        if url not in self.visited:
+                            self.queue.append((item_type, url, self.current_round + 1))
+                            self._track_discovered_node(item_type, url, repo_url_value, 'repo')
             else:
                 repo = RepoModel(
                     full_name=repo_obj.full_name,
@@ -941,12 +993,13 @@ class GitHubCrawler:
                 if self.crawl_prs:
                     self._fetch_repo_prs(repo_obj, repo)
 
-                # Add all items to queue in a single lock acquisition
+                # Add all items to queue in a single lock acquisition (URLs).
                 with self.visited_lock:
                     for item_type, identifier in items_to_queue:
-                        if identifier not in self.visited:
-                            self.queue.append((item_type, identifier, self.current_round + 1))
-                            self._track_discovered_node(item_type, identifier, repo_full_name, 'repo')
+                        url = _kind_to_url(item_type, identifier)
+                        if url not in self.visited:
+                            self.queue.append((item_type, url, self.current_round + 1))
+                            self._track_discovered_node(item_type, url, repo_url_value, 'repo')
 
             return repo
         except Exception as e:
