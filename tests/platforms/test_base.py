@@ -103,3 +103,19 @@ def test_registry_hosts_returns_sorted_list():
     r.register(FA("github.com"))
     r.register(FA("gitlab.com"))
     assert r.hosts() == ["github.com", "gitlab.com", "gitlab.epfl.ch"]
+
+
+def test_registry_rejects_duplicate_host_registration():
+    class FA(PlatformAdapter):
+        platform = "fake"
+        def __init__(self, host): self.instance_host = host
+        def classify(self, uri): return None
+        def fetch(self, uri): return None
+        def expand(self, node, opts): return iter([])
+        def normalize_uri(self, raw): return raw
+        def rate_limit_state(self): return RateLimitInfo(remaining=1, limit=1)
+
+    r = PlatformRegistry()
+    r.register(FA("example.com"))
+    with pytest.raises(ValueError, match="already registered"):
+        r.register(FA("EXAMPLE.COM"))  # case-insensitive — same host

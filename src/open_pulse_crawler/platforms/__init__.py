@@ -17,8 +17,15 @@ class PlatformRegistry:
         self._adapters: dict[str, PlatformAdapter] = {}
 
     def register(self, adapter: PlatformAdapter) -> None:
-        """Add an adapter. The key is `adapter.instance_host`, lowercased."""
-        self._adapters[adapter.instance_host.lower()] = adapter
+        """Add an adapter. Host is stored lowercased.
+
+        Raises ValueError if an adapter is already registered for the host;
+        duplicate registration is almost always a config bug, not intent.
+        """
+        host = adapter.instance_host.lower()
+        if host in self._adapters:
+            raise ValueError(f"adapter already registered for host {host!r}")
+        self._adapters[host] = adapter
 
     def adapter_for(self, uri: str) -> PlatformAdapter:
         """Return the adapter responsible for `uri`'s host."""
