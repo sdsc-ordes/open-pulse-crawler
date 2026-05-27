@@ -5,10 +5,11 @@
 **Open Pulse Crawler** is a GitHub network discovery tool using breadth-first search (BFS) to map relationships between users, organizations, and repositories. The crawler discovers entities layer-by-layer from seed nodes, tracking relationships like "owner of", "member of", "contributor of", and fork relationships.
 
 **Core Architecture**: The system follows a pipeline pattern:
-1. **Seeds** (users/orgs/repos) → **Queue** → **BFS Crawler** → **Graph Data** → **Exporters** (JSON/CSV/PNG)
+1. **Seeds** (users/orgs/repos, accepted as login / `owner/repo` / full URL) → normalized to canonical URL → **Queue** → **BFS Crawler** → **Graph Data** → **Exporters** (JSON/CSV/PNG)
 2. The `GitHubClient` handles API calls with multi-token rotation, rate limiting, and file-based caching
-3. Pydantic models (`UserModel`, `OrgModel`, `RepoModel`) enforce type safety throughout
-4. The `GraphData` container maintains all discovered entities and relationships
+3. Pydantic models (`UserModel`, `OrgModel`, `RepoModel`, `TeamModel`) enforce type safety throughout. Each carries `url: str` (the canonical identifier — see `node_id.py`) and `platform: str = "github"` alongside the platform-native shorthand (`login`, `full_name`, ...).
+4. The `GraphData` container holds entities in URL-keyed dicts (`users` / `orgs` / `repos` / `teams`). Edge-list fields on each model keep storing bare shorthand internally; the CSV/JSON exporter converts to canonical URLs at write time.
+5. Schema version (`models.GRAPH_SCHEMA_VERSION = 2`, `crawler.STATE_SCHEMA_VERSION = 2`) gates whether older snapshots / state files are readable. Snapshots from v1.x are refused on load.
 
 ## Development Environment
 
@@ -21,12 +22,15 @@
 ## Key Files and Responsibilities
 
 ### Core Engine (`src/open_pulse_crawler/`)
-- **`models.py`**: Pydantic models for Users, Orgs, Repos, and GraphData container
-- **`github_client.py`**: GitHub API wrapper with multi-token rotation, rate limiting (semaphore + delay), and MD5-keyed file caching
-- **`crawler.py`**: BFS implementation using `deque` for queue, processes nodes in rounds, tracks visited nodes
-- **`cli.py`**: Typer-based CLI with Rich formatting, loads tokens from env or `.env` file
-- **`io_utils.py`**: Parsers and exporters for seeds, JSON, CSV (edges + nodes)
-- **`visualization.py`**: NetworkX + Matplotlib graph rendering with modern dark theme, cluster detection
+- **`node_id.py`**: Canonical URL form + seed parser. Every other module imports the helpers (`user_url`, `repo_url`, `team_url`, `parse_seed`, `extract_login`, `extract_full_name`, ...) from here.
+- **`models.py`**: Pydantic models (UserModel, OrgModel, RepoModel, TeamModel) and the URL-keyed `GraphData` container. `model_validator(mode="before")` auto-fills `url` from `login` / `full_name` (or vice versa) on construction.
+- **`token_env.py`**: Resolves `CRAWLER_GITHUB_TOKEN_POOL` → `CRAWLER_GITHUB_TOKEN` → `GITHUB_TOKEN` (deprecated). Shared by CLI, API workers, and tool scripts.
+- **`github_client.py`** / **`graphql_client.py`**: GitHub API wrappers. Public methods (`get_user`, `get_organization`, `get_repository`, ...) take canonical URLs; logins / `owner/repo` are extracted internally for the GitHub call. Cache keys are URL-based.
+- **`crawler.py`**: BFS implementation. Queue tuples are `(kind, url, round)`; `visited` / `seed_nodes` / `discovered_nodes` hold URLs. `_kind_to_url` converts the bare identifiers collected in `items_to_queue` to URLs at the queue boundary.
+- **`cli.py`**: Typer-based CLI with Rich formatting, loads tokens via `token_env`. Accepts mixed seed forms; normalization to URL happens in the crawler's `_parse_seed`.
+- **`io_utils.py`**: Parsers and exporters. The CSV writer is the boundary that converts model edge-list shorthand (logins / `owner/repo`) to canonical URLs.
+- **`api.py`**: FastAPI service. Snapshot writer/reader records and checks `schema_version`.
+- **`visualization.py`**: NetworkX + Matplotlib graph rendering with modern dark theme, cluster detection (NetworkX is type-agnostic — URLs are just strings to it).
 
 ### Entry Points
 - **CLI**: `open-pulse-crawler crawl [seeds] --rounds N --seed-file seeds.txt`

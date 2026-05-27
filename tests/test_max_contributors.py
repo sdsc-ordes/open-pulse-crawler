@@ -49,13 +49,15 @@ def test_takes_up_to_max_contributors():
     cached = _cached_repo(["a", "b", "c", "d", "e"], contributor_count=135)
     crawler = GitHubCrawler(client=_fake_client(cached), max_contributors=3, batch_size=1)
 
-    repo = crawler._process_repository("o/r")
+    repo = crawler._process_repository("https://github.com/o/r")
 
     assert repo is not None
     assert repo.contributors == ["a", "b", "c"]  # top 3 — NOT 0
     enq = _users_enqueued(crawler)
-    assert {"a", "b", "c"}.issubset(enq)
-    assert "d" not in enq and "e" not in enq
+    # Crawler converts contributor logins to canonical user URLs at queue time.
+    expected = {f"https://github.com/{c}" for c in ("a", "b", "c")}
+    assert expected.issubset(enq)
+    assert "https://github.com/d" not in enq and "https://github.com/e" not in enq
     assert repo.contributor_count == 135  # full count still recorded as metadata
 
 
@@ -64,18 +66,19 @@ def test_high_contributor_repo_is_never_skipped():
     cached = _cached_repo(["x", "y"], contributor_count=5000)
     crawler = GitHubCrawler(client=_fake_client(cached), max_contributors=80, batch_size=1)
 
-    repo = crawler._process_repository("o/r")
+    repo = crawler._process_repository("https://github.com/o/r")
 
     assert repo is not None
     assert repo.contributors == ["x", "y"]  # everything available (< cap), never 0
-    assert {"x", "y"}.issubset(_users_enqueued(crawler))
+    expected = {f"https://github.com/{c}" for c in ("x", "y")}
+    assert expected.issubset(_users_enqueued(crawler))
 
 
 def test_fewer_contributors_than_cap_takes_all():
     cached = _cached_repo(["alice", "bob"], contributor_count=2)
     crawler = GitHubCrawler(client=_fake_client(cached), max_contributors=200, batch_size=1)
 
-    repo = crawler._process_repository("o/r")
+    repo = crawler._process_repository("https://github.com/o/r")
 
     assert repo.contributors == ["alice", "bob"]
 
@@ -86,10 +89,11 @@ def test_no_cap_when_unset():
     cached = _cached_repo(contributors, contributor_count=20)
     crawler = GitHubCrawler(client=_fake_client(cached), max_contributors=None, batch_size=1)
 
-    repo = crawler._process_repository("o/r")
+    repo = crawler._process_repository("https://github.com/o/r")
 
     assert repo.contributors == contributors  # all 20, no truncation
-    assert set(contributors).issubset(_users_enqueued(crawler))
+    expected = {f"https://github.com/{c}" for c in contributors}
+    assert expected.issubset(_users_enqueued(crawler))
 
 
 def test_contributor_limit_helper():
@@ -106,8 +110,8 @@ def test_owner_edge_survives_truncation():
     cached["owner_type"] = "Organization"
     crawler = GitHubCrawler(client=_fake_client(cached), max_contributors=5, batch_size=1)
 
-    repo = crawler._process_repository("mega/proj")
+    repo = crawler._process_repository("https://github.com/mega/proj")
 
     assert repo is not None
-    org_logins = [ident for kind, ident, _round in crawler.queue if kind == "org"]
-    assert "mega" in org_logins
+    org_urls = [ident for kind, ident, _round in crawler.queue if kind == "org"]
+    assert "https://github.com/mega" in org_urls

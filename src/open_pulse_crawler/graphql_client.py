@@ -652,8 +652,11 @@ class GitHubGraphQLClient:
 
     # ── Public API: get_user / get_organization / get_repository ────────────
 
-    def get_user(self, username: str) -> Optional[Dict[str, Any]]:
-        cache_key = f"gql_user:{username}"
+    def get_user(self, url: str) -> Optional[Dict[str, Any]]:
+        """Get user by canonical URL (e.g. https://github.com/torvalds)."""
+        from .node_id import extract_login
+        username = extract_login(url)
+        cache_key = f"gql_user:{url}"
         if self.cache:
             cached = self.cache.get(cache_key)
             if cached is not None:
@@ -767,8 +770,11 @@ class GitHubGraphQLClient:
             self.cache.set(cache_key, "", out)
         return out
 
-    def get_organization(self, org_name: str) -> Optional[Dict[str, Any]]:
-        cache_key = f"gql_org:{org_name}"
+    def get_organization(self, url: str) -> Optional[Dict[str, Any]]:
+        """Get organization by canonical URL (e.g. https://github.com/acme)."""
+        from .node_id import extract_login
+        org_name = extract_login(url)
+        cache_key = f"gql_org:{url}"
         if self.cache:
             cached = self.cache.get(cache_key)
             if cached is not None:
@@ -830,8 +836,11 @@ class GitHubGraphQLClient:
             self.cache.set(cache_key, "", out)
         return out
 
-    def get_repository(self, repo_full_name: str) -> Optional[Dict[str, Any]]:
-        cache_key = f"gql_repo:{repo_full_name}:{int(self.crawl_issues)}:{int(self.crawl_prs)}:{self.issue_max}:{self.pr_max}"
+    def get_repository(self, url: str) -> Optional[Dict[str, Any]]:
+        """Get repository by canonical URL (e.g. https://github.com/acme/widget)."""
+        from .node_id import extract_full_name
+        repo_full_name = extract_full_name(url)
+        cache_key = f"gql_repo:{url}:{int(self.crawl_issues)}:{int(self.crawl_prs)}:{self.issue_max}:{self.pr_max}"
         if self.cache:
             cached = self.cache.get(cache_key)
             if cached is not None:

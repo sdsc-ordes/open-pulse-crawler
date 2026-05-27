@@ -65,7 +65,9 @@ nav:
   - Home: index.md
   - REST API: API.md
   - Deployment: DEPLOYMENT.md
+  - Migration from v1: MIGRATION_v1_to_v2.md
   - Concepts:
+      - Node identifiers: NODE_IDS.md
       - Concurrency & rate limiting: CONCURRENCY.md
       - Progress tracking: PROGRESS_TRACKING.md
       - Timestamps: TIMESTAMPS.md

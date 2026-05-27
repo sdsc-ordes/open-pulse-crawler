@@ -13,6 +13,7 @@ A powerful GitHub crawler based on breadth-first search (BFS) strategy to discov
 - 📝 **Rich Logging**: Timestamped logs with progress tracking and statistics
 - 📉 **Progress Tracking**: Real-time progress bars with percentage, ETA, and statistics using tqdm
 - 🎯 **Relationship Mapping**: Tracks ownership, contribution, forks, follows, stars, watches, org teams, and issue/PR activity
+- 🔗 **URL-keyed nodes**: Every user / org / repo / team is identified by its canonical public URL (e.g. `https://github.com/torvalds`) — designed for future multi-platform crawling (GitLab next)
 - 🔗 **Dependency Graph**: Crawl repository dependencies (SBOM) and dependents ("Used by")
 - ⚡ **GraphQL Mode**: Optional GraphQL-backed crawl that collapses dozens of REST calls into a single query per entity
 - 🚦 **Intelligent Rate Limiting**: Adaptive rate limit management with semaphores, delays, and multi-token rotation
@@ -122,6 +123,20 @@ uvicorn open_pulse_crawler.api:app --host 0.0.0.0 --port 8000
 ```
 
 See `docs/API.md` for endpoint details and example payloads.
+
+### Node identifiers
+
+Every node in the exported graph (user, organization, repository, team) is
+keyed by its canonical public URL — for example
+`https://github.com/torvalds`, `https://github.com/torvalds/linux`, or
+`https://github.com/orgs/acme/teams/core`. This is the single ID used as
+the dict key in the JSON output, the `id` column in the nodes CSV, and the
+`source`/`target` columns in the edges CSV.
+
+Seed input still accepts short forms — `torvalds`, `owner/repo`, or a full
+GitHub URL — and they are normalized to the canonical form internally.
+Snapshots written under the old (login-keyed) format are not readable;
+operators upgrading from a previous release should re-crawl.
 
 ## Docker and GUI
 

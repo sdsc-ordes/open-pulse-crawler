@@ -51,7 +51,8 @@ def test_export_json():
             data = json.load(f)
         
         assert "users" in data
-        assert "testuser" in data["users"]
+        # GraphData is keyed by canonical URL.
+        assert "https://github.com/testuser" in data["users"]
     finally:
         temp_path.unlink()
 
@@ -113,10 +114,13 @@ def test_export_csv_follows_edges():
             for r in rows
             if r['property'] == 'follows'
         }
-        assert ("alice", "bob") in follow_edges
-        assert ("bob", "alice") in follow_edges
+        alice_url = "https://github.com/alice"
+        bob_url = "https://github.com/bob"
+        ghost_url = "https://github.com/ghost"
+        assert (alice_url, bob_url) in follow_edges
+        assert (bob_url, alice_url) in follow_edges
         # "ghost" is not in the graph, so the edge must be dropped.
-        assert ("alice", "ghost") not in follow_edges
+        assert (alice_url, ghost_url) not in follow_edges
         assert all(r['source_type'] == 'user' and r['target_type'] == 'user'
                    for r in rows if r['property'] == 'follows')
     finally:
@@ -145,9 +149,12 @@ def test_export_csv_star_and_watch_edges():
 
         starred = {(r['source'], r['target']) for r in rows if r['property'] == 'starred'}
         watching = {(r['source'], r['target']) for r in rows if r['property'] == 'watching'}
-        assert ("alice", "org/a") in starred
-        assert ("alice", "org/a") in watching
-        assert ("alice", "org/ghost") not in starred  # repo not in graph
+        alice_url = "https://github.com/alice"
+        repo_a_url = "https://github.com/org/a"
+        repo_ghost_url = "https://github.com/org/ghost"
+        assert (alice_url, repo_a_url) in starred
+        assert (alice_url, repo_a_url) in watching
+        assert (alice_url, repo_ghost_url) not in starred  # repo not in graph
     finally:
         temp_path.unlink()
 
@@ -177,13 +184,17 @@ def test_export_csv_issue_pr_edges():
         with open(temp_path) as fp:
             rows = list(csv.DictReader(fp))
         triples = {(r['source'], r['target'], r['property']) for r in rows}
-        assert ("alice", "org/repo", "issue_author") in triples
-        assert ("bob", "org/repo", "pr_author") in triples
-        assert ("alice", "org/repo", "commented_on") in triples
-        assert ("alice", "org/repo", "pr_reviewer") in triples
+        alice_url = "https://github.com/alice"
+        bob_url = "https://github.com/bob"
+        ghost_url = "https://github.com/ghost"
+        repo_url_ = "https://github.com/org/repo"
+        assert (alice_url, repo_url_, "issue_author") in triples
+        assert (bob_url, repo_url_, "pr_author") in triples
+        assert (alice_url, repo_url_, "commented_on") in triples
+        assert (alice_url, repo_url_, "pr_reviewer") in triples
         # Users not in the graph are dropped.
-        assert ("ghost", "org/repo", "issue_author") not in triples
-        assert ("ghost", "org/repo", "commented_on") not in triples
+        assert (ghost_url, repo_url_, "issue_author") not in triples
+        assert (ghost_url, repo_url_, "commented_on") not in triples
     finally:
         temp_path.unlink()
 
@@ -224,14 +235,19 @@ def test_export_csv_team_edges():
             rows = list(csv.DictReader(fp))
 
         triples = {(r['source'], r['target'], r['property']) for r in rows}
-        assert ("acme", "acme/core", "has_team") in triples
-        assert ("acme", "acme/eng", "has_team") in triples
+        acme_url = "https://github.com/acme"
+        core_url = "https://github.com/orgs/acme/teams/core"
+        eng_url = "https://github.com/orgs/acme/teams/eng"
+        widget_url = "https://github.com/acme/widget"
+        missing_url = "https://github.com/acme/missing"
+        assert (acme_url, core_url, "has_team") in triples
+        assert (acme_url, eng_url, "has_team") in triples
         # member_of edges are intentionally not emitted (org/team membership
         # is too incomplete a signal — see CHANGELOG).
         assert not any(p == "member_of" for _, _, p in triples)
-        assert ("acme/core", "acme/widget", "has_access") in triples
-        assert ("acme/core", "acme/missing", "has_access") not in triples  # repo not in graph
-        assert ("acme/eng", "acme/core", "parent_of") in triples
+        assert (core_url, widget_url, "has_access") in triples
+        assert (core_url, missing_url, "has_access") not in triples  # repo not in graph
+        assert (eng_url, core_url, "parent_of") in triples
     finally:
         temp_path.unlink()
 
@@ -250,7 +266,7 @@ def test_export_nodes_csv_includes_teams():
             rows = list(csv.DictReader(fp))
         team_rows = [r for r in rows if r['type'] == 'team']
         assert len(team_rows) == 1
-        assert team_rows[0]['id'] == 'acme/core'
+        assert team_rows[0]['id'] == 'https://github.com/orgs/acme/teams/core'
         assert team_rows[0]['name'] == 'Core'
     finally:
         temp_path.unlink()
@@ -270,17 +286,18 @@ def test_export_nodes_csv():
         temp_path = Path(f.name)
     
     try:
-        export_nodes_csv(graph, temp_path, {"user1"})
+        # Seed set carries URLs (the crawler normalizes seeds to URLs).
+        export_nodes_csv(graph, temp_path, {"https://github.com/user1"})
         assert temp_path.exists()
-        
+
         # Read back and verify
         import csv
         with open(temp_path) as f:
             reader = csv.DictReader(f)
             rows = list(reader)
-        
+
         assert len(rows) == 2
-        user_row = [r for r in rows if r['id'] == 'user1'][0]
+        user_row = [r for r in rows if r['id'] == 'https://github.com/user1'][0]
         assert user_row['is_seed'] == 'True'
     finally:
         temp_path.unlink()
