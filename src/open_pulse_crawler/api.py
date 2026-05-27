@@ -26,7 +26,7 @@ from pydantic import BaseModel, Field
 
 from . import __version__
 from .auth import verify_token
-from .models import GraphData
+from .models import GRAPH_SCHEMA_VERSION, GraphData
 
 logger = logging.getLogger(__name__)
 
@@ -430,12 +430,19 @@ def _request_path(job_id: str) -> Path:
 def _write_snapshot(
     job_id: str, graph: GraphData, status_value: JobStatus, rounds_completed: int
 ) -> Optional[str]:
-    """Atomically write the current graph + metadata to disk. Best-effort."""
+    """Atomically write the current graph + metadata to disk. Best-effort.
+
+    The payload records ``schema_version`` at the top level so ``_read_snapshot``
+    can refuse files written by an older release without re-instantiating
+    GraphData (which would silently coerce login keys into a URL-keyed dict
+    and produce mangled output).
+    """
     try:
         job_dir = _snapshot_dir(job_id)
         job_dir.mkdir(parents=True, exist_ok=True)
         path = job_dir / "graph.snapshot.json"
         payload = {
+            "schema_version": GRAPH_SCHEMA_VERSION,
             "job_id": job_id,
             "status": status_value.value,
             "rounds_completed": rounds_completed,
@@ -452,12 +459,25 @@ def _write_snapshot(
 
 
 def _read_snapshot(job_id: str) -> Optional[Dict[str, Any]]:
-    """Read a graph snapshot from disk. Returns the full payload dict or None."""
+    """Read a graph snapshot from disk. Returns the full payload dict or None.
+
+    Snapshots written under an earlier ``schema_version`` are refused —
+    the URL-keyed-nodes cutover is a hard break (see models.GRAPH_SCHEMA_VERSION).
+    """
     try:
         path = _snapshot_dir(job_id) / "graph.snapshot.json"
         if not path.exists():
             return None
-        return json.loads(path.read_text())
+        payload = json.loads(path.read_text())
+        snap_version = payload.get("schema_version", 1)
+        if snap_version != GRAPH_SCHEMA_VERSION:
+            logger.warning(
+                "Snapshot for job %s has schema_version=%s but this build "
+                "requires version %s. Ignoring; re-crawl from seeds.",
+                job_id, snap_version, GRAPH_SCHEMA_VERSION,
+            )
+            return None
+        return payload
     except Exception as exc:
         logger.warning("Failed to read graph snapshot for %s: %s", job_id, exc)
         return None
