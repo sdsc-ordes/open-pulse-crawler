@@ -374,7 +374,7 @@ class TestGraphPartial:
         assert body["partial"] is True
         assert body["status"] == "running"
         assert body["rounds_completed"] == 2
-        assert "alice" in body["graph"]["users"]
+        assert "https://github.com/alice" in body["graph"]["users"]
 
     def test_partial_failed_job_reads_snapshot(
         self, client: TestClient, auth_header: dict, tmp_path
@@ -395,7 +395,7 @@ class TestGraphPartial:
         body = resp.json()
         assert body["partial"] is True
         assert body["status"] == "failed"
-        assert "o/r" in body["graph"]["repos"]
+        assert "https://github.com/o/r" in body["graph"]["repos"]
 
     def test_restart_recovery_job_not_in_memory(
         self, client: TestClient, auth_header: dict, tmp_path
@@ -415,7 +415,7 @@ class TestGraphPartial:
         body = resp.json()
         assert body["partial"] is True
         assert body["rounds_completed"] == 3
-        assert "acme" in body["graph"]["orgs"]
+        assert "https://github.com/acme" in body["graph"]["orgs"]
 
     def test_restart_recovery_requires_partial_flag(
         self, client: TestClient, auth_header: dict, tmp_path
@@ -461,7 +461,7 @@ class TestGraphPartial:
         assert snap is not None
         assert snap["status"] == "running"
         assert snap["rounds_completed"] == 2
-        assert "acme" in snap["graph"]["orgs"]
+        assert "https://github.com/acme" in snap["graph"]["orgs"]
 
     def test_read_snapshot_missing_returns_none(self, tmp_path):
         from open_pulse_crawler.api import _read_snapshot
