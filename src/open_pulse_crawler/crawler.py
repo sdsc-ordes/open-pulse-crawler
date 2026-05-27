@@ -12,7 +12,7 @@ import threading
 
 from .models import (
     GraphData, UserModel, OrgModel, RepoModel, TeamModel,
-    GitHubItemType, GRAPH_SCHEMA_VERSION,
+    GitHubItemType,
 )
 from .github_client import GitHubClient
 from .dependency_utils import fetch_dependencies_sbom, fetch_dependents
