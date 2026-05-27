@@ -18,7 +18,7 @@ consumers join on a uniform key.
 from __future__ import annotations
 
 from enum import Enum
-from typing import Dict, List, Optional
+from typing import Annotated, Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -43,6 +43,13 @@ class GitHubItemType(str, Enum):
     UNKNOWN = "Unknown"
 
 
+class ExternalIdentifier(BaseModel):
+    """A typed external identifier (e.g. ORCID, ROR) attached to a node."""
+
+    scheme: str
+    value: str
+
+
 class BaseEntityModel(BaseModel):
     """Base model for all graph entities."""
 
@@ -51,11 +58,17 @@ class BaseEntityModel(BaseModel):
     # Canonical platform identifier. Defaults to "github" until the
     # GitLab adapter lands; per-host dispatch flips this on construction.
     platform: str = "github"
+    # Typed cross-references to other identifier systems (ORCID, ROR, ...).
+    external_identifiers: List[ExternalIdentifier] = Field(default_factory=list)
+    # Free-form bag for platform-specific or experimental fields that don't
+    # warrant a first-class column yet.
+    extras: Dict[str, Any] = Field(default_factory=dict)
 
 
 class UserModel(BaseEntityModel):
     """A user on the source platform."""
 
+    subkind: Literal["GitHubUser"] = "GitHubUser"
     # Canonical URL — primary key in GraphData.users.
     url: str
     # Platform-native login, kept alongside the URL for display + API calls.
@@ -103,6 +116,7 @@ class UserModel(BaseEntityModel):
 class OrgModel(BaseEntityModel):
     """An organization on the source platform."""
 
+    subkind: Literal["GitHubOrganization"] = "GitHubOrganization"
     url: str
     login: str
     name: str = ""
@@ -132,6 +146,7 @@ class OrgModel(BaseEntityModel):
 class RepoModel(BaseEntityModel):
     """A repository on the source platform."""
 
+    subkind: Literal["GitHubRepository"] = "GitHubRepository"
     url: str
     full_name: str
     name: str = ""
@@ -187,6 +202,7 @@ class RepoModel(BaseEntityModel):
 class TeamModel(BaseEntityModel):
     """A team within an organization on the source platform."""
 
+    subkind: Literal["GitHubTeam"] = "GitHubTeam"
     url: str
     # full_name is "org_login/team_slug" — kept for display / log lines.
     full_name: str
@@ -231,9 +247,52 @@ class TeamModel(BaseEntityModel):
         return data
 
 
-# Schema version bumped when the graph contract changed to URL-keyed
-# nodes. Snapshots written under earlier versions are not readable.
-GRAPH_SCHEMA_VERSION = 2
+# --- GitLab subclasses ------------------------------------------------------
+#
+# These inherit every GitHub-shaped field and override ``subkind`` so the
+# Pydantic v2 discriminated union below can pick the right concrete class
+# when deserializing a mixed-platform GraphData snapshot.
+
+
+class GitLabUserModel(UserModel):
+    """A user on a GitLab instance."""
+
+    subkind: Literal["GitLabUser"] = "GitLabUser"
+    state: Literal["active", "blocked", "deactivated"] = "active"
+    public_email: str = ""
+
+
+class GitLabGroupModel(OrgModel):
+    """A group on a GitLab instance (the GitLab analogue of a GitHub org)."""
+
+    subkind: Literal["GitLabGroup"] = "GitLabGroup"
+    # URL of parent group when this is a subgroup; None for top-level groups.
+    parent: Optional[str] = None
+    visibility: Literal["private", "internal", "public"] = "public"
+
+
+class GitLabProjectModel(RepoModel):
+    """A project on a GitLab instance (the GitLab analogue of a GitHub repo)."""
+
+    subkind: Literal["GitLabProject"] = "GitLabProject"
+    visibility: Literal["private", "internal", "public"] = "public"
+    # Owner namespace URL (a user or group); None when not yet resolved.
+    namespace: Optional[str] = None
+
+
+# Schema version bumped when the graph contract changed. v2 added URL-keyed
+# nodes; v3 adds the ``subkind`` discriminator + ``extras`` /
+# ``external_identifiers`` slots so GitLab subclasses can coexist with the
+# GitHub-shaped concrete models in the same dicts.
+GRAPH_SCHEMA_VERSION = 3
+
+
+# Discriminated unions on ``subkind`` let the same dict hold either the
+# GitHub concrete class or its GitLab counterpart. Pydantic v2 picks the
+# right class on deserialization by reading the literal subkind tag.
+UserNode = Annotated[Union[UserModel, GitLabUserModel], Field(discriminator="subkind")]
+OrgNode = Annotated[Union[OrgModel, GitLabGroupModel], Field(discriminator="subkind")]
+RepoNode = Annotated[Union[RepoModel, GitLabProjectModel], Field(discriminator="subkind")]
 
 
 class GraphData(BaseModel):
@@ -243,9 +302,9 @@ class GraphData(BaseModel):
     """
 
     schema_version: int = GRAPH_SCHEMA_VERSION
-    users: Dict[str, UserModel] = Field(default_factory=dict)
-    orgs: Dict[str, OrgModel] = Field(default_factory=dict)
-    repos: Dict[str, RepoModel] = Field(default_factory=dict)
+    users: Dict[str, UserNode] = Field(default_factory=dict)
+    orgs: Dict[str, OrgNode] = Field(default_factory=dict)
+    repos: Dict[str, RepoNode] = Field(default_factory=dict)
     teams: Dict[str, TeamModel] = Field(default_factory=dict)
 
     # --- mutation helpers ----------------------------------------------------
@@ -293,3 +352,33 @@ class GraphData(BaseModel):
 
     def get_team(self, url: str) -> Optional[TeamModel]:
         return self.teams.get(url)
+
+    # --- multi-platform convenience accessors --------------------------------
+
+    def of_subkind(self, subkind: str):
+        """Yield every node across all dicts whose ``subkind`` matches."""
+        for d in (self.users, self.orgs, self.repos, self.teams):
+            for n in d.values():
+                if n.subkind == subkind:
+                    yield n
+
+    def by_platform(self, platform: str):
+        """Yield every node across all dicts on the given platform."""
+        for d in (self.users, self.orgs, self.repos, self.teams):
+            for n in d.values():
+                if n.platform == platform:
+                    yield n
+
+    def by_instance(self, instance_host: str):
+        """Yield every node whose URL host matches ``instance_host``.
+
+        ``instance`` is not yet a first-class field on Node — defer that to
+        the task that introduces multi-instance routing. For now we derive
+        the host from the canonical URL.
+        """
+        from urllib.parse import urlparse
+
+        for d in (self.users, self.orgs, self.repos, self.teams):
+            for n in d.values():
+                if urlparse(n.url).netloc.lower() == instance_host:
+                    yield n
