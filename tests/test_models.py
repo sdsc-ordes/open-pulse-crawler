@@ -81,8 +81,9 @@ def test_team_model_and_graph():
 
     graph = GraphData()
     graph.add_team(team)
-    assert graph.has_team("acme/core")
-    assert graph.get_team("acme/core").slug == "core"
+    team_key = "https://github.com/orgs/acme/teams/core"
+    assert graph.has_team(team_key)
+    assert graph.get_team(team_key).slug == "core"
 
 
 def test_org_model():
@@ -115,21 +116,21 @@ def test_graph_data():
     """Test GraphData operations."""
     graph = GraphData()
     
-    # Add user
+    # Add user — GraphData is keyed by canonical URL.
     user = UserModel(login="user1", id=1)
     graph.add_user(user)
-    assert graph.has_user("user1")
-    assert graph.get_user("user1").login == "user1"
-    
+    assert graph.has_user("https://github.com/user1")
+    assert graph.get_user("https://github.com/user1").login == "user1"
+
     # Add org
     org = OrgModel(login="org1", id=2)
     graph.add_org(org)
-    assert graph.has_org("org1")
-    
+    assert graph.has_org("https://github.com/org1")
+
     # Add repo
     repo = RepoModel(full_name="user1/repo1", id=3, owner="user1")
     graph.add_repo(repo)
-    assert graph.has_repo("user1/repo1")
+    assert graph.has_repo("https://github.com/user1/repo1")
     
     # Check counts
     assert len(graph.users) == 1

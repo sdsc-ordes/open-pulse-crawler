@@ -60,17 +60,23 @@ def test_crawler_process_repository_uses_gimie_hybrid_when_enabled():
             gimie_skip_existing_jsonld=True,
         )
 
-        repo = crawler._process_repository("sdsc-ordes/gimie")
+        repo = crawler._process_repository("https://github.com/sdsc-ordes/gimie")
         assert repo is not None
         assert repo.full_name == "sdsc-ordes/gimie"
         assert repo.owner == "sdsc-ordes"
         assert "cmdoret" in repo.contributors
 
         queued_ids = [identifier for _, identifier, _ in crawler.queue]
-        assert "sdsc-ordes" in queued_ids
-        assert "cmdoret" in queued_ids
+        # Queue carries canonical URLs after the refactor.
+        sdsc_url = "https://github.com/sdsc-ordes"
+        cmdoret_url = "https://github.com/cmdoret"
+        assert sdsc_url in queued_ids
+        assert cmdoret_url in queued_ids
 
-        queued_owner_types = [node_type for node_type, identifier, _ in crawler.queue if identifier == "sdsc-ordes"]
+        queued_owner_types = [
+            node_type for node_type, identifier, _ in crawler.queue
+            if identifier == sdsc_url
+        ]
         assert "org" in queued_owner_types
 
 

@@ -105,6 +105,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `CRAWLER_GITHUB_TOKEN` — a single GitHub PAT.
   - `CRAWLER_GITHUB_TOKEN_POOL` — comma-separated list of PATs for rotation. Wins over `CRAWLER_GITHUB_TOKEN` when both are set.
   - The legacy `GITHUB_TOKEN` is still read as a deprecated fallback (logs a one-shot warning); migrate to the new names. Resolution lives in `open_pulse_crawler.token_env.resolve_github_tokens()` and is shared by the CLI, the REST/GraphQL API workers, and the tool scripts under `tools/scripts/`. Docs, `.env.dist`, the runtime Dockerfile, and the integration test bootstrap are updated to use the new names.
+- **BREAKING — URL-keyed graph nodes.** Every node in the graph is now keyed by its canonical public URL (e.g. `https://github.com/torvalds`, `https://github.com/torvalds/linux`, `https://github.com/orgs/acme/teams/core`) — the foundation for multi-platform crawling (GitHub today, GitLab next).
+  - `GraphData.users` / `.orgs` / `.repos` / `.teams` dicts are now keyed by canonical URL instead of `login` / `full_name`. Each model gains a `url: str` field (the canonical identifier) and a `platform: str = "github"` field; `login` / `full_name` / `owner` / `slug` are retained for display + API calls.
+  - The GitHub clients' public methods (`get_user`, `get_organization`, `get_repository`, `get_contributor_count` on both the REST `GitHubClient` and the GraphQL `GitHubGraphQLClient`) now take a canonical URL. Cache keys are URL-based.
+  - CSV edge export (`source`/`target`) and node export (`id` column) emit canonical URLs. The JSON export's node dict keys are canonical URLs.
+  - Snapshot + state schema version bumped to `2`. Snapshots and crawler `state.json` written under earlier versions are refused on read — operators must re-crawl (no migration script ships).
+  - Seed input is unchanged: the CLI and `POST /api/v1/crawl` still accept any of `torvalds` / `owner/repo` / `https://github.com/...` and normalize to canonical URL form internally. URL normalization (lowercase host, no trailing slash, path case preserved) lives in the new `open_pulse_crawler.node_id` module.
+  - **Multi-platform groundwork only — Phase 1 is GitHub-only.** A future PR introduces the per-host `PlatformAdapter` dispatch and the first non-GitHub adapter.
 
 ### Removed
 

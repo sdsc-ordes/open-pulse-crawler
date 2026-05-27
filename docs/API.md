@@ -246,9 +246,18 @@ the last per-round disk snapshot.
 {
   "job_id": "d290f1ee-6c54-4b01-90e6-d701748f0851",
   "graph": {
-    "users": { "torvalds": { "login": "torvalds", "...": "..." } },
+    "schema_version": 2,
+    "users": {
+      "https://github.com/torvalds": {
+        "url": "https://github.com/torvalds",
+        "platform": "github",
+        "login": "torvalds",
+        "...": "..."
+      }
+    },
     "orgs": {},
-    "repos": {}
+    "repos": {},
+    "teams": {}
   },
   "partial": false,
   "status": "completed",

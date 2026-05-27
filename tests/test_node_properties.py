@@ -35,7 +35,7 @@ def test_crawler_sets_properties():
 
     crawler = GitHubCrawler(client=mock_client)
 
-    user_model = crawler._process_user("some-user")
+    user_model = crawler._process_user("https://github.com/some-user")
 
     assert user_model is not None
     assert user_model.is_explored is True
@@ -53,12 +53,18 @@ def test_export_nodes_csv_content(tmp_path):
     )
     graph.add_user(user)
 
+    # discovered_nodes is keyed by canonical URL post-refactor (the crawler
+    # writes URLs into this dict via _track_discovered_node).
     discovered_nodes = {
-        "unexplored-user": ("user", "explored-user", "user"),
-        "some-org/repo": ("repo", "explored-user", "user"),
+        "https://github.com/unexplored-user": (
+            "user", "https://github.com/explored-user", "user"
+        ),
+        "https://github.com/some-org/repo": (
+            "repo", "https://github.com/explored-user", "user"
+        ),
     }
 
-    seed_nodes = {"explored-user"}
+    seed_nodes = {"https://github.com/explored-user"}
 
     output_file = tmp_path / "nodes.csv"
 
@@ -75,13 +81,13 @@ def test_export_nodes_csv_content(tmp_path):
 
     assert len(rows) == 3
 
-    row1 = next(r for r in rows if r['id'] == 'explored-user')
+    row1 = next(r for r in rows if r['id'] == 'https://github.com/explored-user')
     assert row1['is_explored'] == 'True'
     assert row1['exploration_timestamp'] == '2023-01-01T12:00:00'
 
-    row2 = next(r for r in rows if r['id'] == 'unexplored-user')
+    row2 = next(r for r in rows if r['id'] == 'https://github.com/unexplored-user')
     assert row2['is_explored'] == 'False'
     assert row2['exploration_timestamp'] == ''
 
-    row3 = next(r for r in rows if r['id'] == 'some-org/repo')
+    row3 = next(r for r in rows if r['id'] == 'https://github.com/some-org/repo')
     assert row3['is_explored'] == 'False'
