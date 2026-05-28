@@ -650,6 +650,40 @@ class GitHubClient:
             logger.warning(f"Failed to get contributor count for {repo_full_name}: {e}")
             return None
     
+    # -- Rate-limit accessors used by the PlatformAdapter -----------------
+    # ``GitHubAdapter.rate_limit_state`` reads these flat attributes to
+    # build a ``RateLimitInfo`` snapshot. They reflect the *current* token
+    # so the value matches what the next request will draw against.
+
+    @property
+    def rate_limit_remaining(self) -> int:
+        """Remaining core-API requests on the current token, or ``0`` on error."""
+        try:
+            return int(self.current_client.get_rate_limit().resources.core.remaining)
+        except Exception as e:
+            logger.debug(f"rate_limit_remaining lookup failed: {e}")
+            return 0
+
+    @property
+    def rate_limit_limit(self) -> int:
+        """Total core-API request limit on the current token, or ``0`` on error."""
+        try:
+            return int(self.current_client.get_rate_limit().resources.core.limit)
+        except Exception as e:
+            logger.debug(f"rate_limit_limit lookup failed: {e}")
+            return 0
+
+    @property
+    def rate_limit_reset_at(self) -> Optional[float]:
+        """Unix timestamp at which the current token's quota resets, or ``None``."""
+        try:
+            return float(
+                self.current_client.get_rate_limit().resources.core.reset.timestamp()
+            )
+        except Exception as e:
+            logger.debug(f"rate_limit_reset_at lookup failed: {e}")
+            return None
+
     def get_stats(self) -> Dict[str, Any]:
         """Get client statistics including rate limit info for all tokens."""
         stats = self.stats.copy()
