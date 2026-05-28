@@ -42,11 +42,13 @@ color_map = {
 }
 
 # Per-subkind override colors. Falls through to color_map when subkind is unknown.
+# GitHub entries reuse the legacy cyan/gold/green palette so GitHub-only crawls
+# render identically to pre-v3. GitLab entries are distinct purples/browns/pinks.
 SUBKIND_COLOR = {
-    "GitHubUser":         "#1f77b4",
-    "GitHubOrganization": "#ff7f0e",
-    "GitHubRepository":   "#2ca02c",
-    "GitHubTeam":         "#bcbd22",
+    "GitHubUser":         "#00d9ff",   # cyan — same as color_map['user']
+    "GitHubOrganization": "#ffcc00",   # gold — same as color_map['org']
+    "GitHubRepository":   "#00ff88",   # green — same as color_map['repo']
+    "GitHubTeam":         "#bcbd22",   # olive — teams previously had no dedicated color
     "GitLabUser":         "#9467bd",
     "GitLabGroup":        "#8c564b",
     "GitLabProject":      "#e377c2",
