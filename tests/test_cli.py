@@ -177,3 +177,64 @@ def test_normalize_seeds_default_github_unchanged():
         "https://github.com/torvalds",
         "https://github.com/torvalds/linux",
     ]
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Zenodo adapter registration (Task 8)
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def test_doctor_lists_zenodo_with_anonymous_status(monkeypatch):
+    monkeypatch.setenv("CRAWLER_PLATFORMS", "zenodo.org,sandbox.zenodo.org")
+    monkeypatch.delenv("CRAWLER_TOKEN__ZENODO_ORG", raising=False)
+    monkeypatch.delenv("CRAWLER_TOKEN_POOL__ZENODO_ORG", raising=False)
+    monkeypatch.delenv("CRAWLER_TOKEN__SANDBOX_ZENODO_ORG", raising=False)
+    monkeypatch.delenv("CRAWLER_TOKEN_POOL__SANDBOX_ZENODO_ORG", raising=False)
+
+    r = runner.invoke(app, ["doctor", "--json"])
+    assert r.exit_code == 0
+    import json
+    payload = json.loads(r.stdout)
+    hosts = {p["host"] for p in payload}
+    assert "zenodo.org" in hosts
+    assert "sandbox.zenodo.org" in hosts
+    # Anonymous-mode = no tokens but adapter still functional.
+    for p in payload:
+        if p["host"].endswith("zenodo.org"):
+            assert p["tokens"] == 0
+
+
+def test_build_registry_registers_zenodo_adapter_for_zenodo_org(monkeypatch):
+    """When CRAWLER_PLATFORMS includes zenodo.org, the CLI builds a Zenodo
+    adapter even without a token."""
+    from open_pulse_crawler.cli import _build_registry
+    monkeypatch.delenv("CRAWLER_TOKEN__ZENODO_ORG", raising=False)
+    monkeypatch.delenv("CRAWLER_TOKEN_POOL__ZENODO_ORG", raising=False)
+    registry, github_client, missing = _build_registry(["zenodo.org"])
+    assert "zenodo.org" in missing  # no token → reported as missing
+    # …but the adapter IS registered for anonymous use:
+    adapter = registry.adapter_for("https://zenodo.org/records/1")
+    from open_pulse_crawler.platforms.zenodo.adapter import ZenodoAdapter
+    assert isinstance(adapter, ZenodoAdapter)
+
+
+def test_build_registry_registers_zenodo_adapter_with_token(monkeypatch):
+    """Authenticated Zenodo path also produces a ZenodoAdapter."""
+    from open_pulse_crawler.cli import _build_registry
+    monkeypatch.setenv("CRAWLER_TOKEN__ZENODO_ORG", "zen-pat-test")
+    registry, github_client, missing = _build_registry(["zenodo.org"])
+    assert "zenodo.org" not in missing
+    adapter = registry.adapter_for("https://zenodo.org/records/1")
+    from open_pulse_crawler.platforms.zenodo.adapter import ZenodoAdapter
+    assert isinstance(adapter, ZenodoAdapter)
+
+
+def test_build_registry_registers_zenodo_adapter_for_sandbox(monkeypatch):
+    """sandbox.zenodo.org gets its own Zenodo adapter."""
+    from open_pulse_crawler.cli import _build_registry
+    monkeypatch.delenv("CRAWLER_TOKEN__SANDBOX_ZENODO_ORG", raising=False)
+    registry, github_client, missing = _build_registry(["sandbox.zenodo.org"])
+    adapter = registry.adapter_for("https://sandbox.zenodo.org/records/1")
+    from open_pulse_crawler.platforms.zenodo.adapter import ZenodoAdapter
+    assert isinstance(adapter, ZenodoAdapter)
+    assert adapter.instance_host == "sandbox.zenodo.org"

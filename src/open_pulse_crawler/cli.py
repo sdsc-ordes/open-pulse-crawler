@@ -115,6 +115,15 @@ def _build_registry(
                 # unusable for crawling. Skip github.com without tokens; the
                 # legacy code path will report the missing token clearly.
                 continue
+            if host in ("zenodo.org", "sandbox.zenodo.org") or host.endswith(".zenodo.org"):
+                # Anonymous Zenodo: the public REST API is usable without a
+                # token (lower rate limits). Register the adapter so the host
+                # is reachable; ``missing`` still surfaces the gap via doctor.
+                from .platforms.zenodo.client import ZenodoClient
+                from .platforms.zenodo.adapter import ZenodoAdapter
+                zen_client = ZenodoClient(host=host, tokens=[])
+                reg.register(ZenodoAdapter(zen_client, instance_host=host))
+                continue
             # Anonymous mode for GitLab instances: public projects/users/groups
             # remain readable. `GitLabClient` handles `tokens=[]` by building
             # an unauthenticated `gitlab.Gitlab` instance.
@@ -130,6 +139,11 @@ def _build_registry(
                 rate_limit_buffer=rate_limit_buffer,
             )
             reg.register(GitHubAdapter(github_client, instance_host="github.com"))
+        elif host in ("zenodo.org", "sandbox.zenodo.org") or host.endswith(".zenodo.org"):
+            from .platforms.zenodo.client import ZenodoClient
+            from .platforms.zenodo.adapter import ZenodoAdapter
+            zen_client = ZenodoClient(host=host, tokens=tokens)
+            reg.register(ZenodoAdapter(zen_client, instance_host=host))
         else:
             gl_client = GitLabClient(host=host, tokens=tokens)
             reg.register(GitLabAdapter(gl_client, instance_host=host))
