@@ -236,3 +236,42 @@ class TestParseSeed:
             NodeKind.USER_OR_ORG,
             "https://gitlab.com/torvalds",
         )
+
+
+# --- Zenodo DOI URL rewriting (Spec 2) ----------------------------
+from open_pulse_crawler.node_id import (
+    rewrite_zenodo_doi_url, is_zenodo_doi_url,
+)
+
+
+def test_rewrite_prod_doi_url():
+    assert rewrite_zenodo_doi_url(
+        "https://doi.org/10.5281/zenodo.7234562"
+    ) == "https://zenodo.org/records/7234562"
+
+
+def test_rewrite_sandbox_doi_url():
+    assert rewrite_zenodo_doi_url(
+        "https://doi.org/10.5072/zenodo.9999"
+    ) == "https://sandbox.zenodo.org/records/9999"
+
+
+def test_rewrite_tolerates_trailing_slash():
+    assert rewrite_zenodo_doi_url(
+        "https://doi.org/10.5281/zenodo.7234562/"
+    ) == "https://zenodo.org/records/7234562"
+
+
+def test_rewrite_non_zenodo_doi_returns_none():
+    assert rewrite_zenodo_doi_url("https://doi.org/10.1234/some-other.xyz") is None
+
+
+def test_rewrite_non_doi_url_returns_none():
+    assert rewrite_zenodo_doi_url("https://zenodo.org/records/7234562") is None
+
+
+def test_is_zenodo_doi_url():
+    assert is_zenodo_doi_url("https://doi.org/10.5281/zenodo.42")
+    assert is_zenodo_doi_url("https://doi.org/10.5072/zenodo.42")
+    assert not is_zenodo_doi_url("https://doi.org/10.1234/something")
+    assert not is_zenodo_doi_url("https://zenodo.org/records/42")
