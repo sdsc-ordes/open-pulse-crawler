@@ -37,7 +37,7 @@ import argparse
 import sys
 import time
 from pathlib import Path
-from typing import Iterable, List
+from typing import Any, Dict, Iterable, List, Optional
 
 import gitlab
 
@@ -93,6 +93,9 @@ DEFAULT_HOSTS = [
     "git.dcc.sib.swiss",          # SIB, Data Coordination Centre
     "gitlab.idiap.ch",            # Idiap Research Institute
     "gitlab.renkulab.io",         # SDSC / RenkuLab (legacy; retiring)
+    # --- Zenodo (Spec 2) ---
+    "zenodo.org",
+    # NOTE: sandbox.zenodo.org excluded from defaults — operator-opt-in via --hosts.
 ]
 DEFAULT_OUTPUT = Path("data/explore")
 DEFAULT_LIMIT_PER_HOST = 1000
@@ -108,7 +111,13 @@ def _build_gitlab(host: str) -> gitlab.Gitlab:
 
 
 def _total_public_projects(host: str) -> int | None:
-    """Best-effort total project count via ``X-Total`` (None when not surfaced)."""
+    """Best-effort total project count via ``X-Total`` (None when not surfaced).
+
+    Returns ``None`` for Zenodo hosts — their ``/api/records`` endpoint uses
+    keyset pagination and does not surface an ``X-Total`` header.
+    """
+    if host in ("zenodo.org", "sandbox.zenodo.org") or host.endswith(".zenodo.org"):
+        return None  # Zenodo uses keyset pagination; no global count header
     import httpx
 
     tokens = resolve_tokens(host)
@@ -130,13 +139,62 @@ def _total_public_projects(host: str) -> int | None:
         return None
 
 
-def fetch_public_project_urls(host: str, limit: int) -> Iterable[str]:
-    """Yield up to ``limit`` public project web URLs from ``host``.
+def _fetch_zenodo_urls(host: str, limit: int) -> Iterable[str]:
+    """Yield up to ``limit`` Zenodo record URLs by paginating ``/api/records``.
 
-    Uses ``/api/v4/projects?visibility=public`` with ``per_page=100`` and
-    page-by-page iteration so we can stop cleanly once ``limit`` is hit
-    without buffering the whole instance in memory.
+    Uses Zenodo's keyset pagination (``links.next``) — the same pattern the
+    ``ZenodoClient`` uses internally.
     """
+    import httpx
+
+    tokens = resolve_tokens(host)
+    headers = {"Accept": "application/json"}
+    if tokens:
+        headers["Authorization"] = f"Bearer {tokens[0]}"
+
+    url = f"https://{host}/api/records"
+    params: Optional[Dict[str, Any]] = {"size": min(100, limit)}
+    yielded = 0
+    with httpx.Client(timeout=httpx.Timeout(15.0, connect=8.0), follow_redirects=True) as session:
+        while yielded < limit:
+            try:
+                r = session.get(url, params=params, headers=headers)
+                r.raise_for_status()
+            except Exception as exc:
+                sys.stderr.write(
+                    f"  ! {host}: page failed ({type(exc).__name__}: {exc}); stopping.\n"
+                )
+                return
+            body = r.json()
+            hits = body.get("hits", {}).get("hits", [])
+            if not hits:
+                return
+            for hit in hits:
+                rec_id = hit.get("id")
+                if rec_id is None:
+                    continue
+                yield f"https://{host}/records/{rec_id}"
+                yielded += 1
+                if yielded >= limit:
+                    return
+            next_url = body.get("links", {}).get("next")
+            if not next_url:
+                return
+            url = next_url
+            params = None   # next URL has params baked in
+            time.sleep(0.05)
+
+
+def fetch_public_project_urls(host: str, limit: int) -> Iterable[str]:
+    """Yield up to ``limit`` public project / record URLs from ``host``.
+
+    Dispatches between GitLab's ``/api/v4/projects`` and Zenodo's
+    ``/api/records`` based on the host name. GitLab uses page-by-page
+    iteration; Zenodo uses keyset pagination via ``links.next``.
+    """
+    if host in ("zenodo.org", "sandbox.zenodo.org") or host.endswith(".zenodo.org"):
+        yield from _fetch_zenodo_urls(host, limit)
+        return
     gl = _build_gitlab(host)
     yielded = 0
     page = 1
