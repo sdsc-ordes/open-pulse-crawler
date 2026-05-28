@@ -156,19 +156,34 @@ class GitLabClient:
     # ---- group iterators -------------------------------------------------------
 
     def iter_group_members(self, group_id: Any) -> List[Any]:
-        """All members of `group_id`, including inherited (parent-group) members."""
-        group = self._gl.groups.get(group_id)
-        return list(group.members_all.list(get_all=True))
+        """All members of `group_id`, including inherited (parent-group) members.
+
+        Member lists are often gated even when the group itself is public
+        (gitlab.renkulab.io returns 401 on members_all for HSLU's public
+        group). Degrade to ``[]`` so the caller's expand() still emits
+        project/subgroup edges that ARE public.
+        """
+        try:
+            group = self._gl.groups.get(group_id)
+            return list(group.members_all.list(get_all=True))
+        except gitlab.GitlabError as exc:
+            return self._degrade_on_forbidden(self.host, f"groups/{group_id}/members/all", exc)
 
     def iter_subgroups(self, group_id: Any) -> List[Any]:
         """Immediate subgroups of `group_id`."""
-        group = self._gl.groups.get(group_id)
-        return list(group.subgroups.list(get_all=True))
+        try:
+            group = self._gl.groups.get(group_id)
+            return list(group.subgroups.list(get_all=True))
+        except gitlab.GitlabError as exc:
+            return self._degrade_on_forbidden(self.host, f"groups/{group_id}/subgroups", exc)
 
     def iter_group_projects(self, group_id: Any) -> List[Any]:
         """Projects owned by `group_id` (does not descend into subgroups)."""
-        group = self._gl.groups.get(group_id)
-        return list(group.projects.list(get_all=True))
+        try:
+            group = self._gl.groups.get(group_id)
+            return list(group.projects.list(get_all=True))
+        except gitlab.GitlabError as exc:
+            return self._degrade_on_forbidden(self.host, f"groups/{group_id}/projects", exc)
 
     # ---- user iterators --------------------------------------------------------
 
@@ -206,11 +221,7 @@ class GitLabClient:
         try:
             results = self._gl.http_list(sub_path, get_all=True)
             return list(results)
-        except (
-            gitlab.GitlabHttpError,
-            gitlab.GitlabListError,
-            gitlab.GitlabGetError,
-        ) as exc:
+        except gitlab.GitlabError as exc:
             return self._degrade_on_forbidden(self.host, endpoint, exc)
 
     def iter_user_projects(self, user_id: Any) -> List[Any]:

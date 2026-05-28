@@ -131,6 +131,36 @@ _CRAWL_V2_REQUEST_EXAMPLES = {
             "max_contributors": 100,
         },
     },
+    "renku_hslu_group": {
+        "summary": "Renku group (HSLU Predictive Modeling)",
+        "description": (
+            "Crawl an `gitlab.renkulab.io` group. The seed is the group "
+            "page; round 1 discovers its owned projects (2 in this case) "
+            "and round 2 fans out to their forks. Member listing requires "
+            "auth and is gracefully skipped when anonymous — the public "
+            "project edges still land. No token required."
+        ),
+        "value": {
+            "seeds": ["https://gitlab.renkulab.io/HSLU-Predictive-Modeling"],
+            "max_rounds": 2,
+        },
+    },
+    "renku_hslu_project": {
+        "summary": "Renku project + fork tree (HSLU course)",
+        "description": (
+            "Crawl a single Renku project and follow its fork tree. The "
+            "HSLU Predictive Modeling course's main repo has ~74 student "
+            "forks, all discovered in round 1 via "
+            "`/projects/:id/forks`. Useful demo of fork-graph crawling on "
+            "a self-hosted GitLab. Anonymous reads work."
+        ),
+        "value": {
+            "seeds": [
+                "https://gitlab.renkulab.io/HSLU-Predictive-Modeling/hslu-predictive-modeling",
+            ],
+            "max_rounds": 2,
+        },
+    },
 }
 
 

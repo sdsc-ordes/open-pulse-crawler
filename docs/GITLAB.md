@@ -98,6 +98,21 @@ opc crawl --platforms gitlab.ethz.ch \
   https://gitlab.ethz.ch/vermeul
 ```
 
+### gitlab.renkulab.io — Renku group + fork tree (anonymous)
+
+```bash
+# Group seed — discovers owned projects (members are gated, gracefully skipped).
+opc crawl --platforms gitlab.renkulab.io \
+  --default-host gitlab.renkulab.io --rounds 2 \
+  https://gitlab.renkulab.io/HSLU-Predictive-Modeling
+
+# Project seed — follows the fork tree. The HSLU course repo has ~74
+# student forks, all discovered in round 1.
+opc crawl --platforms gitlab.renkulab.io \
+  --default-host gitlab.renkulab.io --rounds 2 \
+  https://gitlab.renkulab.io/HSLU-Predictive-Modeling/hslu-predictive-modeling
+```
+
 ### gitlab.epfl.ch — group + project mix
 
 ```bash
