@@ -124,6 +124,14 @@ def _build_registry(
                 zen_client = ZenodoClient(host=host, tokens=[])
                 reg.register(ZenodoAdapter(zen_client, instance_host=host))
                 continue
+            if host == "infoscience.epfl.ch" or host.endswith(".infoscience.epfl.ch"):
+                # Anonymous Infoscience: public items/persons/orgunits are
+                # readable without auth. ``missing`` still surfaces the gap.
+                from .platforms.infoscience.client import InfoscienceClient
+                from .platforms.infoscience.adapter import InfoscienceAdapter
+                isc = InfoscienceClient(host=host, tokens=[])
+                reg.register(InfoscienceAdapter(isc, instance_host=host))
+                continue
             # Anonymous mode for GitLab instances: public projects/users/groups
             # remain readable. `GitLabClient` handles `tokens=[]` by building
             # an unauthenticated `gitlab.Gitlab` instance.
@@ -144,6 +152,11 @@ def _build_registry(
             from .platforms.zenodo.adapter import ZenodoAdapter
             zen_client = ZenodoClient(host=host, tokens=tokens)
             reg.register(ZenodoAdapter(zen_client, instance_host=host))
+        elif host == "infoscience.epfl.ch" or host.endswith(".infoscience.epfl.ch"):
+            from .platforms.infoscience.client import InfoscienceClient
+            from .platforms.infoscience.adapter import InfoscienceAdapter
+            isc = InfoscienceClient(host=host, tokens=tokens)
+            reg.register(InfoscienceAdapter(isc, instance_host=host))
         else:
             gl_client = GitLabClient(host=host, tokens=tokens)
             reg.register(GitLabAdapter(gl_client, instance_host=host))

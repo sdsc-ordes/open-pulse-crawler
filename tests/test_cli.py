@@ -238,3 +238,28 @@ def test_build_registry_registers_zenodo_adapter_for_sandbox(monkeypatch):
     from open_pulse_crawler.platforms.zenodo.adapter import ZenodoAdapter
     assert isinstance(adapter, ZenodoAdapter)
     assert adapter.instance_host == "sandbox.zenodo.org"
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Infoscience adapter registration (Task 8)
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def test_build_registry_registers_infoscience_adapter(monkeypatch):
+    from open_pulse_crawler.cli import _build_registry
+    monkeypatch.delenv("CRAWLER_TOKEN__INFOSCIENCE_EPFL_CH", raising=False)
+    registry, github_client, missing = _build_registry(["infoscience.epfl.ch"])
+    assert "infoscience.epfl.ch" in missing  # no token → reported
+    adapter = registry.adapter_for("https://infoscience.epfl.ch/handle/20.500.14299/1")
+    from open_pulse_crawler.platforms.infoscience.adapter import InfoscienceAdapter
+    assert isinstance(adapter, InfoscienceAdapter)
+
+
+def test_build_registry_registers_infoscience_with_token(monkeypatch):
+    from open_pulse_crawler.cli import _build_registry
+    monkeypatch.setenv("CRAWLER_TOKEN__INFOSCIENCE_EPFL_CH", "dspace-tok-test")
+    registry, github_client, missing = _build_registry(["infoscience.epfl.ch"])
+    assert "infoscience.epfl.ch" not in missing
+    adapter = registry.adapter_for("https://infoscience.epfl.ch/handle/20.500.14299/1")
+    from open_pulse_crawler.platforms.infoscience.adapter import InfoscienceAdapter
+    assert isinstance(adapter, InfoscienceAdapter)
