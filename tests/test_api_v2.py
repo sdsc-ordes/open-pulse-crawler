@@ -82,3 +82,15 @@ def test_v2_crawl_openapi_examples_include_zenodo():
     # `cross_platform_escape_full` exercises the full community→GitHub-orgs path.
     assert "cross_platform_zenodo_github_gammapy" in examples
     assert "cross_platform_escape_full" in examples
+
+
+def test_v2_crawl_openapi_examples_include_infoscience():
+    from fastapi.testclient import TestClient
+    from open_pulse_crawler.api import app
+    client = TestClient(app)
+    spec = client.get("/api/v1/openapi.json").json()
+    crawl_path = spec["paths"]["/api/v2/crawl"]
+    body = crawl_path["post"]["requestBody"]["content"]["application/json"]
+    examples = body.get("examples", {})
+    assert "infoscience_publication_handle" in examples
+    assert "infoscience_person_authored_chain" in examples

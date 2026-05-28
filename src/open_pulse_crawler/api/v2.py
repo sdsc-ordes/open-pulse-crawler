@@ -249,6 +249,30 @@ _CRAWL_V2_REQUEST_EXAMPLES = {
             "max_rounds": 2,
         },
     },
+    "infoscience_publication_handle": {
+        "summary": "Infoscience publication via handle URL",
+        "description": (
+            "Single EPFL publication. Round 0 fetches the item; round 1 walks "
+            "`authored_by` → InfosciencePerson nodes and `affiliated_with` → "
+            "InfoscienceOrgUnit nodes via DSpace-CRIS authority fields."
+        ),
+        "value": {
+            "seeds": ["https://infoscience.epfl.ch/handle/20.500.14299/182247"],
+            "max_rounds": 2,
+        },
+    },
+    "infoscience_person_authored_chain": {
+        "summary": "EPFL researcher → all their publications",
+        "description": (
+            "Seed an InfosciencePerson; round 1 emits `authored` edges to every "
+            "publication attributable to them via author.authority. Pair with "
+            "`CRAWLER_PLATFORMS=infoscience.epfl.ch` (anonymous reads suffice)."
+        ),
+        "value": {
+            "seeds": ["https://infoscience.epfl.ch/handle/20.500.14299/99923"],
+            "max_rounds": 2,
+        },
+    },
 }
 
 
