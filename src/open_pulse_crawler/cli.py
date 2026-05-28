@@ -1,5 +1,6 @@
 """Command-line interface for the GitHub crawler."""
 
+import json
 import sys
 import logging
 from pathlib import Path
@@ -13,8 +14,13 @@ from rich.table import Table
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from dotenv import load_dotenv
 
+from .config import enabled_instances, resolve_tokens
 from .models import GraphData
+from .platforms import PlatformRegistry
 from .platforms.github import GitHubClient, resolve_cache_dir
+from .platforms.github.adapter import GitHubAdapter
+from .platforms.gitlab.adapter import GitLabAdapter
+from .platforms.gitlab.client import GitLabClient
 from .crawler import GitHubCrawler
 from .io_utils import parse_seed_file, export_to_json, export_to_csv, export_nodes_csv
 from .token_env import POOL_ENV, TOKEN_ENV, resolve_github_tokens, tokens_not_set_message
@@ -67,6 +73,77 @@ def get_github_tokens() -> List[str]:
         sys.exit(1)
 
     return tokens
+
+
+def _parse_platforms_csv(value: Optional[str]) -> List[str]:
+    """Parse a comma-separated ``--platforms`` value into a host list.
+
+    Returns ``[]`` for ``None`` or a blank string so callers can fall back
+    to :func:`enabled_instances` (which reads ``CRAWLER_PLATFORMS``).
+    """
+    if not value or not value.strip():
+        return []
+    return [h.strip() for h in value.split(",") if h.strip()]
+
+
+def _build_registry(
+    platforms_list: List[str],
+    *,
+    cache_dir: Optional[Path] = None,
+    request_delay: float = 0.0,
+    max_concurrent: int = 5,
+    rate_limit_buffer: int = 50,
+) -> tuple[PlatformRegistry, Optional[GitHubClient], List[str]]:
+    """Build a :class:`PlatformRegistry` for the given hosts.
+
+    Returns ``(registry, github_client, missing_hosts)``. ``github_client``
+    is the GitHub client built for ``github.com`` (if it's in the list and
+    has tokens), exposed separately so the legacy github-only crawl path
+    can keep using ``GitHubCrawler(client=...)`` semantics. ``missing_hosts``
+    is the list of configured hosts that have no tokens — the caller can
+    log/skip these; ``doctor`` surfaces them.
+    """
+    reg = PlatformRegistry()
+    github_client: Optional[GitHubClient] = None
+    missing: List[str] = []
+    for host in platforms_list:
+        tokens = resolve_tokens(host)
+        if not tokens:
+            missing.append(host)
+            continue
+        if host == "github.com":
+            github_client = GitHubClient(
+                tokens,
+                cache_dir=cache_dir,
+                request_delay=request_delay,
+                max_concurrent_requests=max_concurrent,
+                rate_limit_buffer=rate_limit_buffer,
+            )
+            reg.register(GitHubAdapter(github_client, instance_host="github.com"))
+        else:
+            gl_client = GitLabClient(host=host, tokens=tokens)
+            reg.register(GitLabAdapter(gl_client, instance_host=host))
+    return reg, github_client, missing
+
+
+def _normalize_seeds(seeds: List[str], default_host: str) -> List[str]:
+    """Rewrite bare logins / ``owner/repo`` seeds to full URLs on ``default_host``.
+
+    Full URLs pass through unchanged. The crawler's own ``_parse_seed`` will
+    canonicalize again — applying ``default_host`` here ensures non-URL
+    seeds for non-github hosts (e.g. ``gitlab-org/gitlab``) resolve to the
+    intended instance instead of ``github.com``.
+    """
+    out: List[str] = []
+    for seed in seeds:
+        s = seed.strip()
+        if not s:
+            continue
+        if s.startswith("http://") or s.startswith("https://"):
+            out.append(s)
+        else:
+            out.append(f"https://{default_host}/{s}")
+    return out
 
 
 @app.command()
@@ -252,6 +329,32 @@ def crawl(
         "--gimie-skip-existing-jsonld",
         help="Skip HTTP when a payload already exists under output-dir/jsonld/ (crawler output only).",
     ),
+    # ── Multi-platform options (Task 14) ──────────────────────────────────
+    platforms: Optional[str] = typer.Option(
+        None,
+        "--platforms",
+        help=(
+            "Comma-separated list of instance hosts to crawl, e.g. "
+            "'github.com,gitlab.epfl.ch'. Overrides CRAWLER_PLATFORMS. "
+            "Defaults to the env value (which itself defaults to 'github.com')."
+        ),
+    ),
+    default_host: str = typer.Option(
+        "github.com",
+        "--default-host",
+        help=(
+            "Host used to resolve bare-login or 'owner/repo' seeds into "
+            "full URLs (full URL seeds pass through unchanged)."
+        ),
+    ),
+    crawl_stars: bool = typer.Option(
+        False,
+        "--crawl-stars",
+        help=(
+            "Crawl repositories starred by users (adapter path only — "
+            "the legacy github.com BFS treats this as a no-op for now)."
+        ),
+    ),
 ):
     """
     Crawl GitHub to discover users, organizations, and repositories.
@@ -268,24 +371,26 @@ def crawl(
         open-pulse-crawler crawl --resume --state-file state.json
     """
     setup_logging(verbose)
-    
+
     # Create output directory
     output_dir.mkdir(parents=True, exist_ok=True)
-    
+
     # Collect seeds
     all_seeds = list(seeds) if seeds else []
     if seed_file:
         all_seeds.extend(parse_seed_file(seed_file))
-    
+
+    # Normalize bare-login / owner/repo seeds against --default-host so they
+    # resolve to the intended instance on non-github hosts. Full URLs pass
+    # through unchanged.
+    if all_seeds:
+        all_seeds = _normalize_seeds(all_seeds, default_host)
+
     if not all_seeds and not resume:
         console.print("[red]Error: No seed nodes provided[/red]")
         console.print("Provide seeds as arguments or use --seed-file option")
         raise typer.Exit(1)
-    
-    # Get GitHub tokens
-    tokens = get_github_tokens()
-    console.print(f"[green]✓[/green] Loaded {len(tokens)} GitHub token(s)")
-    
+
     # Resolve cache directory: --cache-dir wins, else $OPC_CACHE_DIR / default.
     # --no-cache disables caching outright.
     if no_cache:
@@ -296,12 +401,6 @@ def crawl(
         if cache_dir:
             cache_dir.mkdir(parents=True, exist_ok=True)
             console.print(f"[green]✓[/green] Cache directory: {cache_dir}")
-    
-    # ── gimie hybrid repo option wiring ─────────────────────────────────────
-    jsonld_dir: Optional[Path] = None
-    if gimie_repos:
-        if gimie_store_jsonld:
-            jsonld_dir = output_dir / "jsonld"
 
     # ── gimie hybrid repo option wiring ─────────────────────────────────────
     jsonld_dir: Optional[Path] = None
@@ -309,14 +408,49 @@ def crawl(
         if gimie_store_jsonld:
             jsonld_dir = output_dir / "jsonld"
 
-    # Initialize client and crawler
-    client = GitHubClient(
-        tokens, 
-        cache_dir=cache_dir,
-        request_delay=request_delay,
-        max_concurrent_requests=max_concurrent,
-        rate_limit_buffer=rate_limit_buffer
-    )
+    # ── Resolve enabled platforms ───────────────────────────────────────────
+    # ``--platforms`` overrides ``CRAWLER_PLATFORMS``; with neither set we
+    # fall back to ``enabled_instances()`` (which itself defaults to
+    # ``['github.com']``). The legacy github-only path is preserved when the
+    # final list is exactly ``['github.com']`` — same client construction,
+    # same crawler kwargs — so existing invocations behave identically.
+    platforms_list = _parse_platforms_csv(platforms) or enabled_instances()
+    is_legacy_github_only = platforms_list == ["github.com"]
+
+    if is_legacy_github_only:
+        # Legacy path: reuse ``get_github_tokens()`` so the existing
+        # token-resolution / .env-loading / friendly-error behaviour stays
+        # exactly the same for the common github-only invocation.
+        tokens = get_github_tokens()
+        console.print(f"[green]✓[/green] Loaded {len(tokens)} GitHub token(s)")
+        client = GitHubClient(
+            tokens,
+            cache_dir=cache_dir,
+            request_delay=request_delay,
+            max_concurrent_requests=max_concurrent,
+            rate_limit_buffer=rate_limit_buffer,
+        )
+        registry = None
+    else:
+        registry, client, missing = _build_registry(
+            platforms_list,
+            cache_dir=cache_dir,
+            request_delay=request_delay,
+            max_concurrent=max_concurrent,
+            rate_limit_buffer=rate_limit_buffer,
+        )
+        for host in missing:
+            console.print(
+                f"[yellow]⚠[/yellow] No tokens configured for {host}; skipping "
+                f"(run 'open-pulse-crawler doctor' for details)"
+            )
+        if not registry.hosts():
+            console.print("[red]Error: no platforms have tokens configured[/red]")
+            raise typer.Exit(1)
+        console.print(
+            f"[green]✓[/green] Registered adapters for: {', '.join(registry.hosts())}"
+        )
+
     crawler = GitHubCrawler(
         client,
         max_rounds=rounds,
@@ -335,6 +469,12 @@ def crawl(
         gimie_api_base=gimie_api_base,
         gimie_store_jsonld_dir=jsonld_dir,
         gimie_skip_existing_jsonld=gimie_skip_existing_jsonld,
+        registry=registry,
+    )
+    # ``crawl_stars`` lives only on ``ExpandOpts``; thread it through the
+    # crawler's already-built opts so adapter ``expand`` calls see it.
+    crawler._expand_opts = crawler._expand_opts.model_copy(
+        update={"crawl_stars": crawl_stars}
     )
     
     # Setup incremental export callback if requested
@@ -524,6 +664,43 @@ def crawl(
                     console.print(f"[red]✗[/red] Cluster visualization failed: {e}")
     
     console.print(f"\n[bold green]All done! 🎉[/bold green]")
+
+
+@app.command()
+def doctor(
+    as_json: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit a machine-readable JSON array instead of the Rich table.",
+    ),
+):
+    """Report enabled platforms, configured token counts, and per-host status.
+
+    Reads ``CRAWLER_PLATFORMS`` plus ``CRAWLER_TOKEN__<HOST>`` /
+    ``CRAWLER_TOKEN_POOL__<HOST>`` (and the legacy ``GITHUB_TOKEN``
+    family for ``github.com``) and prints an OK / MISSING summary per host.
+
+    # TODO(post-task-18): wire a real token-health check that does
+    # GET /user (GitHub) or /user (GitLab) per host.
+    """
+    rows = []
+    for host in enabled_instances():
+        tokens = resolve_tokens(host)
+        rows.append({"host": host, "tokens": len(tokens), "ok": bool(tokens)})
+
+    if as_json:
+        typer.echo(json.dumps(rows, indent=2))
+        return
+
+    console.print("Enabled platforms:")
+    for r in rows:
+        status = "OK" if r["ok"] else "MISSING"
+        colour = "green" if r["ok"] else "red"
+        suffix = "" if r["tokens"] == 1 else "s"
+        console.print(
+            f"  {r['host']}: {r['tokens']} token{suffix} "
+            f"[{colour}][{status}][/{colour}]"
+        )
 
 
 @app.command()
