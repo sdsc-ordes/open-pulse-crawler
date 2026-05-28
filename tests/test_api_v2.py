@@ -72,7 +72,13 @@ def test_v2_crawl_openapi_examples_include_zenodo():
     crawl_path = spec["paths"]["/api/v2/crawl"]
     body = crawl_path["post"]["requestBody"]["content"]["application/json"]
     examples = body.get("examples", {})
-    assert "zenodo_community_renku" in examples
+    # ESCAPE OSSR replaces the never-existed `renku-python` example;
+    # `eosc` is the smaller smoke-test community used by the integration test.
+    assert "zenodo_community_escape2020" in examples
+    assert "zenodo_community_eosc" in examples
     assert "zenodo_record_doi_url" in examples
     assert "zenodo_record_canonical" in examples
-    assert "cross_platform_zenodo_github" in examples
+    # The Gammapy record is the canonical real-data Zenodo→GitHub example;
+    # `cross_platform_escape_full` exercises the full community→GitHub-orgs path.
+    assert "cross_platform_zenodo_github_gammapy" in examples
+    assert "cross_platform_escape_full" in examples

@@ -161,15 +161,32 @@ _CRAWL_V2_REQUEST_EXAMPLES = {
             "max_rounds": 2,
         },
     },
-    "zenodo_community_renku": {
-        "summary": "Zenodo community (Renku)",
+    "zenodo_community_escape2020": {
+        "summary": "Zenodo community (ESCAPE OSSR) — software-rich",
         "description": (
-            "Crawl one Zenodo community. Anonymous-friendly — works without "
-            "any CRAWLER_TOKEN__ZENODO_ORG. Round 0 fetches the community; "
-            "round 1 walks `contains` edges to every record in the community."
+            "Crawl the ESCAPE Open Science Software Repository, a Zenodo "
+            "community where ~14/15 records carry `related_identifiers` to "
+            "their source repos on GitHub / GitLab. Anonymous-friendly "
+            "(no CRAWLER_TOKEN__ZENODO_ORG needed). Round 0 fetches the "
+            "community; round 1 walks `contains` edges to its 56 records. "
+            "Pair with `CRAWLER_PLATFORMS=zenodo.org,github.com` to follow "
+            "`related_to.isDerivedFrom` / `isDocumentedBy` edges into the "
+            "actual code (Gammapy, R3BRoot, CTLearn, …)."
         ),
         "value": {
-            "seeds": ["https://zenodo.org/communities/renku-python"],
+            "seeds": ["https://zenodo.org/communities/escape2020"],
+            "max_rounds": 2,
+        },
+    },
+    "zenodo_community_eosc": {
+        "summary": "Zenodo community (EOSC Association) — lighter demo",
+        "description": (
+            "Smaller smoke-test community: ~72 records, fewer outgoing "
+            "links than escape2020 but still useful for verifying the "
+            "round-1 `contains` fan-out. Used by the integration test."
+        ),
+        "value": {
+            "seeds": ["https://zenodo.org/communities/eosc"],
             "max_rounds": 2,
         },
     },
@@ -198,17 +215,37 @@ _CRAWL_V2_REQUEST_EXAMPLES = {
             "max_rounds": 2,
         },
     },
-    "cross_platform_zenodo_github": {
-        "summary": "Zenodo record → GitHub repo via related_to edges",
+    "cross_platform_zenodo_github_gammapy": {
+        "summary": "Zenodo record → GitHub repo via related_to edges (Gammapy)",
         "description": (
-            "Zenodo records that link to a GitHub repo via "
-            "`metadata.related_identifiers` (relation `isSupplementTo` etc.) "
-            "spawn a cross-platform crawl when both adapters are registered. "
-            "Set `CRAWLER_PLATFORMS=github.com,zenodo.org` to exercise the "
-            "full link-following behavior."
+            "Gammapy is a Python toolbox for gamma-ray astronomy. Its "
+            "Zenodo deposit links to https://github.com/gammapy/gammapy "
+            "via `related_to.isDerivedFrom`. With both adapters registered "
+            "(`CRAWLER_PLATFORMS=zenodo.org,github.com`), round 0 fetches "
+            "the Zenodo record; round 1 follows the cross-platform edge "
+            "to the GitHub org + repo and crawls them in place. Real-data "
+            "example exercising the full link-following behavior."
         ),
         "value": {
-            "seeds": ["https://zenodo.org/records/7234562"],
+            "seeds": ["https://zenodo.org/records/20432079"],
+            "max_rounds": 2,
+        },
+    },
+    "cross_platform_escape_full": {
+        "summary": "Zenodo community → GitHub orgs (ESCAPE OSSR)",
+        "description": (
+            "End-to-end demo of multi-platform crawling. Seed = the ESCAPE "
+            "OSSR community on Zenodo. Round 0: fetches the community. "
+            "Round 1: walks `contains` edges to its records, then follows "
+            "each record's `related_to.isDerivedFrom` / `isDocumentedBy` "
+            "to GitHub orgs (gammapy, FairRootGroup, R3BRootGroup, "
+            "ctlearn-project, cds-astro, …) and Zenodo sibling communities "
+            "(astronomy-general, oscars, gammalearn, …). Requires both "
+            "`CRAWLER_PLATFORMS=zenodo.org,github.com` and a GitHub token. "
+            "Caps round-1 fan-out at ~28 graph nodes for a 2-round crawl."
+        ),
+        "value": {
+            "seeds": ["https://zenodo.org/communities/escape2020"],
             "max_rounds": 2,
         },
     },

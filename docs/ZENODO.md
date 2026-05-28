@@ -66,7 +66,24 @@ Get a Personal Access Token at <https://zenodo.org/account/settings/applications
 
 ## Manual-test recipes
 
-### Single community (anonymous, the smallest crawl)
+### Software-rich community (ESCAPE OSSR — the canonical demo)
+
+The ESCAPE Open Science Software Repository is a Zenodo community where
+~14/15 records carry `related_identifiers` pointing at their actual source
+repos on GitHub / GitLab — the gold-standard cross-platform demo.
+
+```bash
+# Round 0 fetches the community; round 1 walks `contains` to its 56 records.
+opc crawl --platforms zenodo.org \
+    --default-host zenodo.org --rounds 2 \
+    https://zenodo.org/communities/escape2020
+```
+
+### Smaller demo community (EOSC Association)
+
+Lighter alternative used by the integration test (~72 records, fewer
+outgoing links — better when you just want to verify the `contains`
+fan-out):
 
 ```bash
 opc crawl --platforms zenodo.org \
@@ -79,20 +96,38 @@ opc crawl --platforms zenodo.org \
 ```bash
 opc crawl --platforms zenodo.org \
     --default-host zenodo.org --rounds 2 \
-    https://doi.org/10.5281/zenodo.7234562
+    https://doi.org/10.5281/zenodo.20432079
 ```
 
-### Cross-platform crawl (Zenodo + GitHub linked via related_identifiers)
+### Cross-platform crawl (Zenodo → GitHub via `related_to.*`)
+
+End-to-end: seed the ESCAPE community on Zenodo, follow the
+`related_to.isDerivedFrom` / `isDocumentedBy` edges into GitHub.
 
 ```bash
-CRAWLER_PLATFORMS=github.com,zenodo.org \
+CRAWLER_PLATFORMS=zenodo.org,github.com \
 CRAWLER_TOKEN__GITHUB_COM=ghp_… \
 opc crawl --rounds 2 \
-    https://zenodo.org/records/7234562
+    https://zenodo.org/communities/escape2020
 ```
 
-`related_to.isSupplementTo` edges to GitHub URLs get queued automatically;
-the GitHub adapter takes them over.
+Verified result (anonymous Zenodo + authenticated GitHub, 2 rounds, 15 of
+the 56 ESCAPE records as seeds): **28 graph nodes** — 15 `ZenodoRecord`,
+8 `ZenodoCommunity` (escape2020 + 7 sibling communities discovered via
+`in_community` edges), 4 `GitHubOrganization` (gammapy, FairRootGroup,
+R3BRootGroup, cds-astro, ctlearn-project), 1 `GitHubUser`.
+
+### Communities surveyed for `related_identifiers` density
+
+| Community | Records | Rich-link density (sampled) | Notes |
+|---|---:|:---|---|
+| `escape2020` | 56 | 14/15 | Software repos — GitHub + GitLab |
+| `neuroinformatics` | 16 | 11/15 | Computational neuroscience repos |
+| `elixir` | 133 | 7/15 | Bioinformatics — mostly `doi` citations |
+| `nfdi4ing` | 145 | 5/15 | Engineering — gitlab.rwth-aachen.de |
+| `eosc-life` | 63 | 2/15 | Life-sciences citation chains |
+| `pangeo` | 68 | 1/15 | Geoscience |
+| `cernopenlab` | 355 | 0/150 → 1 elsewhere | Mostly reports |
 
 ## Limitations (v3.1)
 
