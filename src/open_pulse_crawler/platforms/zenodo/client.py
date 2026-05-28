@@ -112,3 +112,60 @@ class ZenodoClient:
         auth-required on production Zenodo.
         """
         return self._request_json(f"/api/users/{user_id}", degrade_on_auth=True)
+
+    # ---- list / iterate ----------------------------------------------------
+
+    def _iter_paginated(
+        self,
+        path: str,
+        params: Dict[str, Any],
+        *,
+        degrade_on_auth: bool = False,
+    ) -> Iterable[Dict[str, Any]]:
+        """Yield ``hits.hits`` entries across all pages, following ``links.next``.
+
+        Zenodo's InvenioRDM API uses keyset pagination: each response carries
+        ``links.next`` as an absolute URL when more pages exist. We follow the
+        URL verbatim rather than incrementing a ``page=`` param.
+
+        On 401/403 with ``degrade_on_auth=True`` we stop and emit nothing.
+        """
+        # First page: pass params dict
+        resp = self._session.get(path, params=params)
+        while True:
+            if degrade_on_auth and resp.status_code in (401, 403):
+                logger.warning(
+                    "%s on %s returned %s; emitting no entries (insufficient "
+                    "scope or anonymous access not permitted).",
+                    path, self.host, resp.status_code,
+                )
+                return
+            if not resp.is_success:
+                resp.raise_for_status()
+            body = resp.json()
+            hits = body.get("hits", {}).get("hits", [])
+            for hit in hits:
+                yield hit
+            next_url = body.get("links", {}).get("next")
+            if not next_url:
+                return
+            # Follow the absolute next URL -- params are baked in.
+            resp = self._session.get(next_url)
+
+    def iter_community_records(self, slug: str) -> Iterable[Dict[str, Any]]:
+        """All records belonging to community ``slug``, paginated."""
+        return self._iter_paginated(
+            "/api/records",
+            {"communities": slug, "size": 100},
+        )
+
+    def iter_user_records(self, user_id) -> Iterable[Dict[str, Any]]:
+        """All records uploaded by ``user_id``.
+
+        Often auth-required; degrades to ``[]`` on 401/403.
+        """
+        return self._iter_paginated(
+            "/api/records",
+            {"q": f"owners.user:{user_id}", "size": 100},
+            degrade_on_auth=True,
+        )

@@ -119,3 +119,55 @@ def test_get_user_403_returns_none():
     c = ZenodoClient(host="zenodo.org", tokens=[])
     with patch.object(c._session, "get", return_value=_make_response(403)):
         assert c.get_user(12345) is None
+
+
+# ---- iterators (Task 5) ---------------------------------------------------
+
+
+def test_iter_community_records_single_page():
+    c = ZenodoClient(host="zenodo.org", tokens=[])
+    body = {"hits": {"hits": [{"id": 1}, {"id": 2}]}, "links": {}}
+    with patch.object(c._session, "get", return_value=_make_response(200, body)) as g:
+        records = list(c.iter_community_records("sdsc-ordes"))
+    assert records == [{"id": 1}, {"id": 2}]
+    g.assert_called_once_with(
+        "/api/records",
+        params={"communities": "sdsc-ordes", "size": 100},
+    )
+
+
+def test_iter_community_records_paginates_via_links_next():
+    c = ZenodoClient(host="zenodo.org", tokens=[])
+    page1 = {
+        "hits": {"hits": [{"id": 1}, {"id": 2}]},
+        "links": {"next": "https://zenodo.org/api/records?communities=x&size=100&page=2"},
+    }
+    page2 = {
+        "hits": {"hits": [{"id": 3}]},
+        "links": {},  # last page has no next
+    }
+    with patch.object(c._session, "get") as g:
+        g.side_effect = [_make_response(200, page1), _make_response(200, page2)]
+        records = list(c.iter_community_records("x"))
+    assert [r["id"] for r in records] == [1, 2, 3]
+    assert g.call_count == 2
+
+
+def test_iter_user_records_401_degrades_to_empty():
+    """User-records listing is often auth-required; emit nothing on 401."""
+    c = ZenodoClient(host="zenodo.org", tokens=[])
+    with patch.object(c._session, "get", return_value=_make_response(401)):
+        records = list(c.iter_user_records(12345))
+    assert records == []
+
+
+def test_iter_user_records_uses_q_owners_user_filter():
+    c = ZenodoClient(host="zenodo.org", tokens=[])
+    body = {"hits": {"hits": [{"id": 10}]}, "links": {}}
+    with patch.object(c._session, "get", return_value=_make_response(200, body)) as g:
+        records = list(c.iter_user_records(12345))
+    g.assert_called_once_with(
+        "/api/records",
+        params={"q": "owners.user:12345", "size": 100},
+    )
+    assert records == [{"id": 10}]
