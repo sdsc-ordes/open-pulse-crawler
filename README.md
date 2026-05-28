@@ -31,6 +31,11 @@ See [`docs/GITLAB.md`](docs/GITLAB.md) for the full GitLab guide
 (supported instances, token scopes, per-instance quirks, and
 manual-test recipes).
 
+- **Zenodo** (`zenodo.org`, `sandbox.zenodo.org`): records, communities,
+  uploader accounts. Cross-platform `related_to.<RelationType>` edges
+  follow `metadata.related_identifiers` into GitHub etc. Anonymous reads
+  supported. See [docs/ZENODO.md](docs/ZENODO.md).
+
 ### Enabling platforms
 
 `CRAWLER_PLATFORMS` is a comma-separated list of enabled hosts. When

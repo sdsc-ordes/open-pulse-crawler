@@ -28,6 +28,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `CRAWLER_GITHUB_TOKEN_POOL`, `CRAWLER_GITHUB_TOKEN`, `GITHUB_TOKEN`: still work for `github.com` in v3 with a one-shot deprecation warning. Removed in v4.
 - `/api/v1`: github-only crawls keep working. Non-github seeds rejected with `400 {"error": "v1 supports github.com seeds only; use /api/v2"}`. Endpoint removed in v4.
 
+### Added (v3.1 — Zenodo adapter)
+- `ZenodoAdapter` and `ZenodoClient` under `src/open_pulse_crawler/platforms/zenodo/`.
+- Three subkind models: `ZenodoUserModel`, `ZenodoCommunityModel`,
+  `ZenodoRecordModel`. Records use the concept DOI as the primary
+  identity; versions collapse into a `versions: list[dict]` field.
+- DOI URL → canonical Zenodo URL rewriting in `node_id.py`
+  (`is_zenodo_doi_url`, `rewrite_zenodo_doi_url`).
+- Five new edge kinds: `in_community`, `uploaded_by`, `uploaded`,
+  `contains`, and compound `related_to.<RelationType>` (`isSupplementTo`,
+  `cites`, `isCitedBy`, …) for cross-platform discovery.
+- CLI registers `ZenodoAdapter` for `zenodo.org`, `sandbox.zenodo.org`,
+  and any `*.zenodo.org` host with or without tokens.
+- `tools/scripts/fetch_public_projects.py` handles `zenodo.org` via
+  `/api/records` keyset pagination.
+- `POST /api/v2/crawl` OpenAPI examples: `zenodo_community_renku`,
+  `zenodo_record_doi_url`, `zenodo_record_canonical`,
+  `cross_platform_zenodo_github`.
+- Integration test against live `zenodo.org`
+  (`tests/integration/test_zenodo_dryrun.py`).
+- `docs/ZENODO.md`.
+
+### Out of scope (v3.1)
+- Community member crawling (auth-gated on production Zenodo).
+- Per-version record nodes (versions are intra-node metadata).
+- Cross-platform identity resolution (handled by another tool).
+
 ## [2.0.0] — 2026-05-27
 
 **Breaking release.** Headlines:
