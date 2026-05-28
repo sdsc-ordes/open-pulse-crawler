@@ -153,7 +153,10 @@ def _fetch_zenodo_urls(host: str, limit: int) -> Iterable[str]:
         headers["Authorization"] = f"Bearer {tokens[0]}"
 
     url = f"https://{host}/api/records"
-    params: Optional[Dict[str, Any]] = {"size": min(100, limit)}
+    # Zenodo caps anonymous /api/records page size at 25; authenticated callers
+    # may request up to 100. Pick conservatively based on token presence.
+    max_page = 100 if tokens else 25
+    params: Optional[Dict[str, Any]] = {"size": min(max_page, limit)}
     yielded = 0
     with httpx.Client(timeout=httpx.Timeout(15.0, connect=8.0), follow_redirects=True) as session:
         while yielded < limit:

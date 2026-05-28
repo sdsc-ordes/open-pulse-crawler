@@ -1297,11 +1297,35 @@ class GitHubCrawler:
             # legacy callers). Any other host goes through the adapter
             # ``fetch + expand`` contract — this is the seam non-GitHub
             # platforms (GitLab, etc.) will land on in later tasks.
+            #
+            # Edge case: a github.com URI was discovered via a non-github
+            # adapter's `related_to` edge (e.g., Zenodo → GitHub) but no
+            # GitHubClient was supplied to this crawler. The legacy path
+            # would crash on ``self.client.get_*``. Fall back to the
+            # adapter path if a github.com adapter is registered; otherwise
+            # skip with a warning.
             if urlparse(identifier).netloc.lower() != "github.com":
                 self._process_one_via_adapter(identifier)
                 # The adapter path adds to the graph itself, so we return
                 # ``None`` here to keep ``crawl()`` from double-adding via
                 # its own graph-add branch.
+                return None
+
+            if self.client is None:
+                # Pure-registry mode: try a registered github.com adapter
+                # (e.g., GitHubAdapter), otherwise log+skip rather than
+                # crashing on the missing legacy client.
+                try:
+                    self.registry.adapter_for(identifier)
+                except KeyError:
+                    logger.warning(
+                        "Discovered github.com URI %r but no GitHubClient or "
+                        "github.com adapter is registered — skipping. Pass "
+                        "--platforms github.com (with a token) to crawl it.",
+                        identifier,
+                    )
+                    return None
+                self._process_one_via_adapter(identifier)
                 return None
 
             if node_type == 'user_or_org':

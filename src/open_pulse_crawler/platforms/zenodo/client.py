@@ -152,11 +152,18 @@ class ZenodoClient:
             # Follow the absolute next URL -- params are baked in.
             resp = self._session.get(next_url)
 
+    # Zenodo's /api/records caps page size at 25 for anonymous callers; only
+    # authenticated requests may request size=100. Picking the wrong size in
+    # anonymous mode raises HTTP 400 ("Page size cannot be greater than 25").
+    @property
+    def _records_page_size(self) -> int:
+        return 100 if self.tokens else 25
+
     def iter_community_records(self, slug: str) -> Iterable[Dict[str, Any]]:
         """All records belonging to community ``slug``, paginated."""
         return self._iter_paginated(
             "/api/records",
-            {"communities": slug, "size": 100},
+            {"communities": slug, "size": self._records_page_size},
         )
 
     def iter_user_records(self, user_id) -> Iterable[Dict[str, Any]]:
@@ -166,6 +173,6 @@ class ZenodoClient:
         """
         return self._iter_paginated(
             "/api/records",
-            {"q": f"owners.user:{user_id}", "size": 100},
+            {"q": f"owners.user:{user_id}", "size": self._records_page_size},
             degrade_on_auth=True,
         )

@@ -132,7 +132,7 @@ def test_iter_community_records_single_page():
     assert records == [{"id": 1}, {"id": 2}]
     g.assert_called_once_with(
         "/api/records",
-        params={"communities": "sdsc-ordes", "size": 100},
+        params={"communities": "sdsc-ordes", "size": 25},
     )
 
 
@@ -168,6 +168,6 @@ def test_iter_user_records_uses_q_owners_user_filter():
         records = list(c.iter_user_records(12345))
     g.assert_called_once_with(
         "/api/records",
-        params={"q": "owners.user:12345", "size": 100},
+        params={"q": "owners.user:12345", "size": 25},
     )
     assert records == [{"id": 10}]

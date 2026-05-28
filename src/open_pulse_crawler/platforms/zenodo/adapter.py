@@ -303,8 +303,14 @@ class ZenodoAdapter(PlatformAdapter):
         raw_meta = node.extras.get("_raw_metadata", {}) if node.extras else {}
 
         # in_community
+        # Zenodo's `metadata.communities` list carries community slugs under
+        # the key ``id`` in modern InvenioRDM responses (v12+); some legacy
+        # endpoints / clients used ``identifier``. Accept both so the edge
+        # fires regardless of which shape we see in the wild.
         for c in raw_meta.get("communities", []) or []:
-            slug = c.get("identifier") if isinstance(c, dict) else None
+            if not isinstance(c, dict):
+                continue
+            slug = c.get("id") or c.get("identifier")
             if not slug:
                 continue
             yield Edge(
