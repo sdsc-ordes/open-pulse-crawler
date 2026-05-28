@@ -1,7 +1,6 @@
-"""Tests for ``ZenodoAdapter`` — classify / normalize_uri / fetch.
+"""Tests for ``ZenodoAdapter`` — classify / normalize_uri / fetch / expand.
 
-Task 6 of the Zenodo adapter plan. ``expand`` is implemented in Task 7
-and only stubbed as ``NotImplementedError`` here.
+Tasks 6 and 7 of the Zenodo adapter plan.
 """
 from unittest.mock import MagicMock
 
@@ -13,6 +12,7 @@ from open_pulse_crawler.models import (
     ZenodoUserModel,
 )
 from open_pulse_crawler.node_id import NodeKind
+from open_pulse_crawler.platforms.base import Edge, ExpandOpts
 from open_pulse_crawler.platforms.zenodo.adapter import ZenodoAdapter
 
 
@@ -183,3 +183,112 @@ def test_fetch_record_version_redirects_to_concept(adapter):
 
 def test_fetch_unknown_path_returns_none(adapter):
     assert adapter.fetch("https://zenodo.org/about") is None
+
+
+# --- expand ---------------------------------------------------------
+
+def _stub_record(adapter, *, communities=(), owners=(), related=()):
+    return ZenodoRecordModel(
+        url="https://zenodo.org/records/7234562",
+        full_name="10.5281/zenodo.7234562",
+        platform="zenodo",
+        doi="10.5281/zenodo.7234562",
+        concept_doi="10.5281/zenodo.7234562",
+        extras={
+            "_raw_metadata": {
+                "communities": [{"identifier": c} for c in communities],
+                "owners": list(owners),
+                "related_identifiers": list(related),
+            },
+        },
+    )
+
+
+def test_expand_record_emits_in_community_edge():
+    a = ZenodoAdapter(client=MagicMock(), instance_host="zenodo.org")
+    record = _stub_record(a, communities=["sdsc-ordes", "swiss-research"])
+    edges = list(a.expand(record, ExpandOpts()))
+    in_comm = [e for e in edges if e.kind == "in_community"]
+    assert {e.dst for e in in_comm} == {
+        "https://zenodo.org/communities/sdsc-ordes",
+        "https://zenodo.org/communities/swiss-research",
+    }
+    assert all(e.src == record.url for e in in_comm)
+
+
+def test_expand_record_emits_uploaded_by_edge():
+    a = ZenodoAdapter(client=MagicMock(), instance_host="zenodo.org")
+    record = _stub_record(a, owners=[12345])
+    edges = list(a.expand(record, ExpandOpts()))
+    by = [e for e in edges if e.kind == "uploaded_by"]
+    assert by == [
+        Edge(src=record.url, kind="uploaded_by", dst="https://zenodo.org/users/12345")
+    ]
+
+
+def test_expand_record_emits_related_to_with_relation_in_kind():
+    a = ZenodoAdapter(client=MagicMock(), instance_host="zenodo.org")
+    record = _stub_record(a, related=[
+        {"identifier": "https://github.com/sdsc-ordes/gimie",
+         "relation": "isSupplementTo", "scheme": "url"},
+        {"identifier": "10.5281/zenodo.99",
+         "relation": "cites", "scheme": "doi"},
+        # Bare DOI in non-URL scheme → must be skipped (no URL form)
+        {"identifier": "arXiv:2401.12345", "relation": "cites", "scheme": "arxiv"},
+    ])
+    edges = [e for e in a.expand(record, ExpandOpts()) if e.kind.startswith("related_to.")]
+    kinds_dsts = sorted((e.kind, e.dst) for e in edges)
+    assert kinds_dsts == [
+        ("related_to.cites", "https://zenodo.org/records/99"),
+        ("related_to.isSupplementTo", "https://github.com/sdsc-ordes/gimie"),
+    ]
+
+
+def test_expand_community_emits_contains_edges():
+    a = ZenodoAdapter(client=MagicMock(), instance_host="zenodo.org")
+    a._client.iter_community_records.return_value = iter([
+        {"id": 1}, {"id": 2}, {"id": 3},
+    ])
+    community = ZenodoCommunityModel(
+        url="https://zenodo.org/communities/sdsc-ordes",
+        login="sdsc-ordes",
+        platform="zenodo",
+    )
+    edges = list(a.expand(community, ExpandOpts()))
+    contains = [e for e in edges if e.kind == "contains"]
+    assert sorted(e.dst for e in contains) == [
+        "https://zenodo.org/records/1",
+        "https://zenodo.org/records/2",
+        "https://zenodo.org/records/3",
+    ]
+    assert all(e.src == community.url for e in contains)
+
+
+def test_expand_user_emits_uploaded_edges():
+    a = ZenodoAdapter(client=MagicMock(), instance_host="zenodo.org")
+    a._client.iter_user_records.return_value = iter([{"id": 7}, {"id": 8}])
+    user = ZenodoUserModel(
+        url="https://zenodo.org/users/12345",
+        login="alice",
+        platform="zenodo",
+    )
+    edges = list(a.expand(user, ExpandOpts()))
+    uploaded = [e for e in edges if e.kind == "uploaded"]
+    assert sorted(e.dst for e in uploaded) == [
+        "https://zenodo.org/records/7",
+        "https://zenodo.org/records/8",
+    ]
+    assert all(e.src == user.url for e in uploaded)
+
+
+def test_expand_user_with_no_accessible_records_yields_nothing():
+    """iter_user_records degrades to [] on auth-required endpoints → no edges."""
+    a = ZenodoAdapter(client=MagicMock(), instance_host="zenodo.org")
+    a._client.iter_user_records.return_value = iter([])
+    user = ZenodoUserModel(
+        url="https://zenodo.org/users/12345",
+        login="alice",
+        platform="zenodo",
+    )
+    edges = list(a.expand(user, ExpandOpts()))
+    assert edges == []

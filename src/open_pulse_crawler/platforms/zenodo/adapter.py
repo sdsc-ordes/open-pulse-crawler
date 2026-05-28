@@ -1,10 +1,6 @@
 """Zenodo PlatformAdapter — classify / fetch / expand / normalize_uri.
 
 See ``docs/superpowers/specs/2026-05-28-zenodo-adapter-design.md``.
-
-Task 6 ships ``classify``, ``normalize_uri``, ``fetch``, and
-``rate_limit_state``. ``expand`` raises ``NotImplementedError`` until
-Task 7 lands.
 """
 from __future__ import annotations
 
@@ -286,10 +282,101 @@ class ZenodoAdapter(PlatformAdapter):
             extras={"_raw_metadata": raw_for_expand},
         )
 
-    # ---- expand (placeholder -- Task 7 implements) -------------------------
+    # ---- expand ------------------------------------------------------------
 
     def expand(self, node, opts: ExpandOpts) -> Iterable[Edge]:
-        raise NotImplementedError("Task 7 implements expand()")
+        # Local imports of the subkind classes for isinstance dispatch.
+        from ...models import (
+            ZenodoCommunityModel, ZenodoRecordModel, ZenodoUserModel,
+        )
+        if isinstance(node, ZenodoRecordModel):
+            yield from self._expand_record(node, opts)
+        elif isinstance(node, ZenodoCommunityModel):
+            yield from self._expand_community(node, opts)
+        elif isinstance(node, ZenodoUserModel):
+            yield from self._expand_user(node, opts)
+
+    def _expand_record(
+        self, node: "ZenodoRecordModel", opts: ExpandOpts,
+    ) -> Iterable[Edge]:
+        # _build_record stashes a slim copy of metadata on extras for us.
+        raw_meta = node.extras.get("_raw_metadata", {}) if node.extras else {}
+
+        # in_community
+        for c in raw_meta.get("communities", []) or []:
+            slug = c.get("identifier") if isinstance(c, dict) else None
+            if not slug:
+                continue
+            yield Edge(
+                src=node.url,
+                kind="in_community",
+                dst=f"https://{self.instance_host}/communities/{slug}",
+            )
+
+        # uploaded_by
+        for owner in raw_meta.get("owners", []) or []:
+            # Owners may be ints or dicts with 'user' or 'id'
+            if isinstance(owner, dict):
+                uid = owner.get("user") or owner.get("id")
+            else:
+                uid = owner
+            if uid is None:
+                continue
+            yield Edge(
+                src=node.url,
+                kind="uploaded_by",
+                dst=f"https://{self.instance_host}/users/{uid}",
+            )
+
+        # related_to.<RelationType>
+        for rel in raw_meta.get("related_identifiers", []) or []:
+            if not isinstance(rel, dict):
+                continue
+            ident = rel.get("identifier") or ""
+            relation = rel.get("relation") or "isReferencedBy"
+            scheme = (rel.get("scheme") or "").lower()
+            target_url: Optional[str] = None
+            if scheme == "url" and ident.startswith(("http://", "https://")):
+                target_url = ident
+            elif scheme == "doi":
+                # Try the Zenodo DOI rewriter first; fall back to doi.org URL.
+                rewritten = rewrite_zenodo_doi_url(f"https://doi.org/{ident}")
+                target_url = rewritten or f"https://doi.org/{ident}"
+            elif ident.startswith(("http://", "https://")):
+                target_url = ident
+            if not target_url:
+                continue
+            yield Edge(
+                src=node.url,
+                kind=f"related_to.{relation}",
+                dst=target_url,
+            )
+
+    def _expand_community(
+        self, node: "ZenodoCommunityModel", opts: ExpandOpts,
+    ) -> Iterable[Edge]:
+        for rec in self._client.iter_community_records(node.login):
+            rec_id = rec.get("id")
+            if rec_id is None:
+                continue
+            yield Edge(
+                src=node.url,
+                kind="contains",
+                dst=f"https://{self.instance_host}/records/{rec_id}",
+            )
+
+    def _expand_user(
+        self, node: "ZenodoUserModel", opts: ExpandOpts,
+    ) -> Iterable[Edge]:
+        for rec in self._client.iter_user_records(node.id or node.login):
+            rec_id = rec.get("id")
+            if rec_id is None:
+                continue
+            yield Edge(
+                src=node.url,
+                kind="uploaded",
+                dst=f"https://{self.instance_host}/records/{rec_id}",
+            )
 
     # ---- rate_limit --------------------------------------------------------
 
