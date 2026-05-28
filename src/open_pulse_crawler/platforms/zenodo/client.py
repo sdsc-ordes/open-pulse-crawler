@@ -74,3 +74,41 @@ class ZenodoClient:
             return
         self._idx = (self._idx + 1) % len(self.tokens)
         self._apply_current_token()
+
+    # ---- single-entity fetches ---------------------------------------------
+
+    def _request_json(self, path: str, *, degrade_on_auth: bool = False) -> Optional[Dict[str, Any]]:
+        """GET ``path`` and return parsed JSON.
+
+        404 -> ``None``. 401/403 -> ``None`` when ``degrade_on_auth=True``,
+        else raise. Any other non-2xx raises ``httpx.HTTPStatusError``.
+        """
+        resp = self._session.get(path)
+        if resp.status_code == 404:
+            return None
+        if degrade_on_auth and resp.status_code in (401, 403):
+            logger.warning(
+                "%s on %s returned %s; degrading to None (insufficient scope or "
+                "anonymous access not permitted).",
+                path, self.host, resp.status_code,
+            )
+            return None
+        if not resp.is_success:
+            resp.raise_for_status()
+        return resp.json()
+
+    def get_record(self, record_id) -> Optional[Dict[str, Any]]:
+        """Return the record's JSON payload, or ``None`` on 404."""
+        return self._request_json(f"/api/records/{record_id}")
+
+    def get_community(self, slug: str) -> Optional[Dict[str, Any]]:
+        """Return the community's JSON payload, or ``None`` on 404."""
+        return self._request_json(f"/api/communities/{slug}")
+
+    def get_user(self, user_id) -> Optional[Dict[str, Any]]:
+        """Return the user's JSON payload.
+
+        Returns ``None`` on 404, 401, or 403 -- ``/api/users/<id>`` is often
+        auth-required on production Zenodo.
+        """
+        return self._request_json(f"/api/users/{user_id}", degrade_on_auth=True)
