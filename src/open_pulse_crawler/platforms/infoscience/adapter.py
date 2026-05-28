@@ -14,12 +14,53 @@ from ...models import (
 )
 from ...node_id import NodeKind, canonical_url
 from ..base import Edge, ExpandOpts, PlatformAdapter, RateLimitInfo
+from ..datacite import synthesize_target_url
 from .client import InfoscienceClient
 
 logger = logging.getLogger(__name__)
 
 _HANDLE_PATH = re.compile(r"^handle/(?P<handle>[^/]+/[^/]+)$")
 _UUID_PATH = re.compile(r"^server/api/core/items/(?P<uuid>[0-9a-fA-F-]+)$")
+
+# DataCite RelationType vocabulary normalization. DSpace lowercases the
+# qualifier (e.g. dc.relation.isversionof); we normalize to DataCite's
+# canonical camelCase form so `related_to.<RelationType>` edge kinds
+# match Zenodo's casing across platforms.
+_RELATION_CAMELCASE = {
+    "isversionof": "isVersionOf",
+    "issupplementto": "isSupplementTo",
+    "issupplementedby": "isSupplementedBy",
+    "iscitedby": "isCitedBy",
+    "ispartof": "isPartOf",
+    "haspart": "hasPart",
+    "isderivedfrom": "isDerivedFrom",
+    "iscompiledby": "isCompiledBy",
+    "isdocumentedby": "isDocumentedBy",
+    "describes": "describes",
+    "isdescribedby": "isDescribedBy",
+    "requires": "requires",
+    "isrequiredby": "isRequiredBy",
+    "references": "references",
+    "isreferencedby": "isReferencedBy",
+    "obsoletes": "obsoletes",
+    "isobsoletedby": "isObsoletedBy",
+}
+
+
+def _scheme_from_identifier(ident: str) -> str:
+    """Best-effort scheme inference for a DSpace dc.relation.* identifier."""
+    if ident.startswith(("http://", "https://")):
+        return "url"
+    if ident.lower().startswith("arxiv:"):
+        return "arxiv"
+    if ident.lower().startswith("orcid:"):
+        return "orcid"
+    if ident.lower().startswith("swh:"):
+        return "swh"
+    # DataCite DOI pattern: "10.<prefix>/<suffix>"
+    if "/" in ident and ident.split("/", 1)[0].startswith("10."):
+        return "doi"
+    return ""
 
 
 class InfoscienceAdapter(PlatformAdapter):
@@ -216,10 +257,136 @@ class InfoscienceAdapter(PlatformAdapter):
             unit_type=self._meta_first(meta, "organization.type"),
         )
 
-    # ---- expand (placeholder — Task 7 implements) --------------------------
+    # ---- expand ------------------------------------------------------------
 
     def expand(self, node, opts: ExpandOpts) -> Iterable[Edge]:
-        raise NotImplementedError("Task 7 implements expand()")
+        if isinstance(node, InfoscienceItem):
+            yield from self._expand_item(node, opts)
+        elif isinstance(node, InfosciencePerson):
+            yield from self._expand_person(node, opts)
+        elif isinstance(node, InfoscienceOrgUnit):
+            yield from self._expand_orgunit(node, opts)
+
+    def _person_url_from_uuid(self, uuid: str) -> str:
+        """Resolve a Person UUID to its canonical handle URL when known,
+        else return the UUID-form URL (the BFS will canonicalize on the
+        round-trip fetch)."""
+        handle = self._uuid_to_handle.get(uuid)
+        if handle:
+            return f"https://{self.instance_host}/handle/{handle}"
+        return f"https://{self.instance_host}/server/api/core/items/{uuid}"
+
+    def _expand_item(self, node: InfoscienceItem, opts: ExpandOpts) -> Iterable[Edge]:
+        raw_meta = node.extras.get("_raw_metadata", {}) if node.extras else {}
+
+        # authored_by
+        for entry in raw_meta.get("dc.contributor.author") or []:
+            if not isinstance(entry, dict):
+                continue
+            authority = entry.get("authority")
+            if not authority:
+                continue
+            yield Edge(
+                src=node.url,
+                kind="authored_by",
+                dst=self._person_url_from_uuid(authority),
+            )
+
+        # affiliated_with — from CRIS-virtual department authorities
+        for entry in raw_meta.get("cris.virtual.department") or []:
+            if not isinstance(entry, dict):
+                continue
+            authority = entry.get("authority")
+            if not authority:
+                continue
+            yield Edge(
+                src=node.url,
+                kind="affiliated_with",
+                dst=self._person_url_from_uuid(authority),
+            )
+
+        # related_to.<RelationType> via DataCite synthesizer
+        for key, entries in (raw_meta or {}).items():
+            if not key.startswith("dc.relation."):
+                continue
+            relation_lower = key[len("dc.relation."):].lower()
+            relation = _RELATION_CAMELCASE.get(relation_lower, "references")
+            for e in entries or []:
+                if not isinstance(e, dict):
+                    continue
+                ident = e.get("value", "")
+                if not ident:
+                    continue
+                scheme = _scheme_from_identifier(ident)
+                target = synthesize_target_url(scheme, ident)
+                if not target:
+                    continue
+                yield Edge(
+                    src=node.url,
+                    kind=f"related_to.{relation}",
+                    dst=target,
+                )
+
+    def _expand_person(self, node: InfosciencePerson, opts: ExpandOpts) -> Iterable[Edge]:
+        # authored — items where this person is an author authority
+        for item in self._client.iter_person_items(node.uuid):
+            handle = item.get("handle")
+            if not handle:
+                continue
+            yield Edge(
+                src=node.url,
+                kind="authored",
+                dst=f"https://{self.instance_host}/handle/{handle}",
+            )
+
+        # member_of — affiliation OrgUnit
+        if node.affiliation_uuid:
+            yield Edge(
+                src=node.url,
+                kind="member_of",
+                dst=self._person_url_from_uuid(node.affiliation_uuid),
+            )
+
+    def _expand_orgunit(self, node: InfoscienceOrgUnit, opts: ExpandOpts) -> Iterable[Edge]:
+        # has_publication
+        for item in self._client.iter_orgunit_items(node.uuid):
+            handle = item.get("handle")
+            if not handle:
+                continue
+            yield Edge(
+                src=node.url,
+                kind="has_publication",
+                dst=f"https://{self.instance_host}/handle/{handle}",
+            )
+
+        # parent_of — child OrgUnits (parent → child direction)
+        children = self._client._iter_paginated(
+            "/server/api/discover/search/objects",
+            {"dsoType": "item",
+             "query": f"dspace.entity.type:OrgUnit AND organization.parentOrganization.authority:{node.uuid}",
+             "size": 100},
+        )
+        for child in children:
+            handle = child.get("handle")
+            if not handle:
+                continue
+            yield Edge(
+                src=node.url,
+                kind="parent_of",
+                dst=f"https://{self.instance_host}/handle/{handle}",
+            )
+
+        # has_member — gated by opts.crawl_members
+        if opts.crawl_members:
+            for person in self._client.iter_orgunit_persons(node.uuid):
+                handle = person.get("handle")
+                if not handle:
+                    continue
+                yield Edge(
+                    src=node.url,
+                    kind="has_member",
+                    dst=f"https://{self.instance_host}/handle/{handle}",
+                )
 
     # ---- rate_limit --------------------------------------------------------
 

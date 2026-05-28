@@ -27,6 +27,7 @@ class ExpandOpts(BaseModel):
     max_contributors: Optional[int] = None
     issue_max: int = 100
     pr_max: int = 100
+    crawl_members: bool = False  # Spec 3 — gate has_member edges for InfoscienceOrgUnit
 
 
 class Edge(BaseModel):

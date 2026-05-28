@@ -7,6 +7,7 @@ from open_pulse_crawler.models import (
 )
 from open_pulse_crawler.node_id import NodeKind
 from open_pulse_crawler.platforms.infoscience.adapter import InfoscienceAdapter
+from open_pulse_crawler.platforms.base import ExpandOpts, Edge
 
 
 @pytest.fixture
@@ -175,3 +176,143 @@ def test_fetch_unknown_entitytype_defaults_to_item(adapter):
     node = adapter.fetch("https://infoscience.epfl.ch/handle/20.500.14299/1")
     assert isinstance(node, InfoscienceItem)
     assert node.title == "Untyped"
+
+
+# --- expand ---------------------------------------------------------
+
+# Helper: build an InfoscienceItem with raw metadata stashed in extras.
+def _stub_item(adapter, *, raw_meta):
+    return InfoscienceItem(
+        url="https://infoscience.epfl.ch/handle/20.500.14299/1",
+        full_name="20.500.14299/1",
+        platform="infoscience",
+        handle="20.500.14299/1",
+        uuid="item-uuid",
+        extras={"_raw_metadata": raw_meta},
+    )
+
+
+def test_expand_item_emits_authored_by_for_authors_with_authority(adapter):
+    item = _stub_item(adapter, raw_meta={
+        "dc.contributor.author": [
+            {"value": "Doe, J.", "authority": "author-uuid-1"},
+            {"value": "No, A.", "authority": None},        # skipped — no authority
+            {"value": "Smith, K.", "authority": "author-uuid-2"},
+        ],
+    })
+    # _uuid_to_handle is empty: emit UUID-form URLs for unresolved authors.
+    edges = [e for e in adapter.expand(item, ExpandOpts()) if e.kind == "authored_by"]
+    assert sorted(e.dst for e in edges) == [
+        "https://infoscience.epfl.ch/server/api/core/items/author-uuid-1",
+        "https://infoscience.epfl.ch/server/api/core/items/author-uuid-2",
+    ]
+
+
+def test_expand_item_uses_cached_handle_when_known(adapter):
+    """When _uuid_to_handle has the author's handle, emit the canonical URL."""
+    adapter._uuid_to_handle["author-uuid-1"] = "20.500.14299/99923"
+    item = _stub_item(adapter, raw_meta={
+        "dc.contributor.author": [
+            {"value": "Doe, J.", "authority": "author-uuid-1"},
+        ],
+    })
+    edges = [e for e in adapter.expand(item, ExpandOpts()) if e.kind == "authored_by"]
+    assert edges[0].dst == "https://infoscience.epfl.ch/handle/20.500.14299/99923"
+
+
+def test_expand_item_emits_affiliated_with_from_cris_virtual_department(adapter):
+    item = _stub_item(adapter, raw_meta={
+        "cris.virtual.department": [{"value": "TRANSP-OR", "authority": "ou-uuid-1"}],
+    })
+    edges = [e for e in adapter.expand(item, ExpandOpts()) if e.kind == "affiliated_with"]
+    assert len(edges) == 1
+    assert edges[0].dst == "https://infoscience.epfl.ch/server/api/core/items/ou-uuid-1"
+
+
+def test_expand_item_emits_related_to_via_datacite_synthesizer(adapter):
+    item = _stub_item(adapter, raw_meta={
+        "dc.relation.uri": [{"value": "https://github.com/foo/bar"}],
+        "dc.relation.isversionof": [{"value": "10.5281/zenodo.99"}],
+        "dc.relation.issupplementto": [{"value": "arXiv:2401.12345"}],
+    })
+    edges = [e for e in adapter.expand(item, ExpandOpts()) if e.kind.startswith("related_to.")]
+    kinds_dsts = sorted((e.kind, e.dst) for e in edges)
+    # Lowercase relation qualifiers normalize to camelCase
+    assert kinds_dsts == [
+        ("related_to.isSupplementTo", "https://arxiv.org/abs/2401.12345"),
+        ("related_to.isVersionOf", "https://zenodo.org/records/99"),
+        ("related_to.references", "https://github.com/foo/bar"),
+    ]
+
+
+def test_expand_person_emits_authored_and_member_of(adapter):
+    adapter._client.iter_person_items.return_value = iter([
+        {"uuid": "i1", "handle": "20.500.14299/1"},
+        {"uuid": "i2", "handle": "20.500.14299/2"},
+    ])
+    person = InfosciencePerson(
+        url="https://infoscience.epfl.ch/handle/20.500.14299/99923",
+        login="123456", platform="infoscience",
+        handle="20.500.14299/99923", uuid="person-uuid",
+        affiliation_uuid="ou-uuid-1",
+    )
+    edges = list(adapter.expand(person, ExpandOpts()))
+    authored = [e for e in edges if e.kind == "authored"]
+    members = [e for e in edges if e.kind == "member_of"]
+    assert sorted(e.dst for e in authored) == [
+        "https://infoscience.epfl.ch/handle/20.500.14299/1",
+        "https://infoscience.epfl.ch/handle/20.500.14299/2",
+    ]
+    assert members == [Edge(
+        src=person.url, kind="member_of",
+        dst="https://infoscience.epfl.ch/server/api/core/items/ou-uuid-1",
+    )]
+
+
+def test_expand_orgunit_emits_has_publication_and_parent_of(adapter):
+    adapter._client.iter_orgunit_items.return_value = iter([
+        {"uuid": "i1", "handle": "20.500.14299/1"},
+    ])
+    # No children: filter for entity_type:OrgUnit + parent.authority = us
+    adapter._client._iter_paginated = MagicMock(return_value=iter([
+        {"uuid": "child-uuid", "handle": "20.500.14299/2"},
+    ]))
+    ou = InfoscienceOrgUnit(
+        url="https://infoscience.epfl.ch/handle/20.500.14299/77777",
+        login="TRANSP-OR", platform="infoscience",
+        handle="20.500.14299/77777", uuid="ou-uuid-1",
+    )
+    edges = list(adapter.expand(ou, ExpandOpts()))
+    has_pub = [e for e in edges if e.kind == "has_publication"]
+    parent_of = [e for e in edges if e.kind == "parent_of"]
+    assert has_pub[0].dst == "https://infoscience.epfl.ch/handle/20.500.14299/1"
+    assert parent_of[0].dst == "https://infoscience.epfl.ch/handle/20.500.14299/2"
+
+
+def test_expand_orgunit_members_gated_off_by_default(adapter):
+    """crawl_members defaults to False — iter_orgunit_persons must not be called."""
+    adapter._client.iter_orgunit_items.return_value = iter([])
+    adapter._client._iter_paginated = MagicMock(return_value=iter([]))
+    ou = InfoscienceOrgUnit(
+        url="https://infoscience.epfl.ch/handle/20.500.14299/77777",
+        login="TRANSP-OR", platform="infoscience",
+        handle="20.500.14299/77777", uuid="ou-uuid-1",
+    )
+    list(adapter.expand(ou, ExpandOpts()))
+    adapter._client.iter_orgunit_persons.assert_not_called()
+
+
+def test_expand_orgunit_members_emitted_when_crawl_members_true(adapter):
+    adapter._client.iter_orgunit_items.return_value = iter([])
+    adapter._client._iter_paginated = MagicMock(return_value=iter([]))
+    adapter._client.iter_orgunit_persons.return_value = iter([
+        {"uuid": "p1", "handle": "20.500.14299/9001"},
+    ])
+    ou = InfoscienceOrgUnit(
+        url="https://infoscience.epfl.ch/handle/20.500.14299/77777",
+        login="TRANSP-OR", platform="infoscience",
+        handle="20.500.14299/77777", uuid="ou-uuid-1",
+    )
+    edges = list(adapter.expand(ou, ExpandOpts(crawl_members=True)))
+    has_member = [e for e in edges if e.kind == "has_member"]
+    assert has_member[0].dst == "https://infoscience.epfl.ch/handle/20.500.14299/9001"
