@@ -301,7 +301,7 @@ class GitHubGraphQLClient:
             resolve_cache_ttl,
         )
         self.cache = (
-            APICache(cache_dir, ttl_seconds=resolve_cache_ttl())
+            APICache(cache_dir, ttl_seconds=resolve_cache_ttl(), host="github.com")
             if cache_dir
             else None
         )

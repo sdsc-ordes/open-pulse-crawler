@@ -36,8 +36,20 @@ from .node_id import (
 
 # Bumped alongside models.GRAPH_SCHEMA_VERSION whenever the on-disk
 # state.json layout changes incompatibly. Old state files are refused
-# on load with a clear error.
-STATE_SCHEMA_VERSION = 2
+# on load with a clear ``IncompatibleStateError`` — the silent log-and-
+# continue behaviour from earlier prototypes risked loading e.g. a v2
+# state into a v3 crawler and producing garbage.
+STATE_SCHEMA_VERSION = 3
+
+
+class IncompatibleStateError(Exception):
+    """Raised when a state file's ``schema_version`` does not match this build.
+
+    State files written under an earlier release are not migrated — the
+    cutover from URL-keyed-nodes (v2) to multi-platform host-prefixed
+    nodes (v3) is a hard break. Operators are expected to start a fresh
+    crawl when bumping major versions.
+    """
 
 
 def _kind_to_url(kind: str, identifier: str) -> str:
@@ -288,28 +300,34 @@ class GitHubCrawler:
 
         Refuses to load files written under an earlier ``schema_version``
         — that's the agreed hard break for the URL-keyed-nodes cutover
-        (see node_id + models.GRAPH_SCHEMA_VERSION). The caller decides
-        whether to re-crawl from seeds or fail.
+        (see node_id + models.GRAPH_SCHEMA_VERSION). When the on-disk
+        version doesn't match this build, ``IncompatibleStateError`` is
+        raised so the caller can't silently degrade by mixing schemas.
 
         Returns:
-            True if state was loaded successfully.
+            True if state was loaded successfully; False if no state
+            file exists yet.
+
+        Raises:
+            IncompatibleStateError: if the state file's ``schema_version``
+                is not the build's :data:`STATE_SCHEMA_VERSION`.
         """
         if not self.state_file or not self.state_file.exists():
             return False
 
+        with open(self.state_file, 'r') as f:
+            state = json.load(f)
+
+        file_version = state.get('schema_version', 1)
+        if file_version != STATE_SCHEMA_VERSION:
+            raise IncompatibleStateError(
+                f"State file {self.state_file} has schema_version={file_version} "
+                f"but this build requires version {STATE_SCHEMA_VERSION}. "
+                f"The snapshot schema is from an earlier release; please start "
+                f"a fresh crawl."
+            )
+
         try:
-            with open(self.state_file, 'r') as f:
-                state = json.load(f)
-
-            file_version = state.get('schema_version', 1)
-            if file_version != STATE_SCHEMA_VERSION:
-                logger.error(
-                    "State file %s has schema_version=%s but this build "
-                    "requires version %s. Re-crawl from seeds.",
-                    self.state_file, file_version, STATE_SCHEMA_VERSION,
-                )
-                return False
-
             self.current_round = state.get('current_round', 0)
             self.visited = set(state.get('visited', []))
             self.seed_nodes = set(state.get('seed_nodes', []))

@@ -97,8 +97,29 @@ class APICache:
     ``ttl_seconds=None`` disables expiry (entries are kept indefinitely).
     """
 
-    def __init__(self, cache_dir: Path, ttl_seconds: Optional[float] = None):
-        self.cache_dir = cache_dir
+    def __init__(
+        self,
+        cache_dir: Path,
+        ttl_seconds: Optional[float] = None,
+        host: str = "github.com",
+    ):
+        """Initialise the cache.
+
+        ``host`` is the network host whose responses this cache holds (e.g.
+        ``"github.com"``, ``"gitlab.epfl.ch"``). It's used as a directory
+        segment so the same ``cache_dir`` can be shared across platforms /
+        instances without two clients trampling each other's entries. The
+        on-disk layout is ``<cache_dir>/<host>/<sha>.json``.
+
+        ``host`` defaults to ``"github.com"`` for backwards compatibility
+        with the v2.x single-platform layout — but in v3 every caller that
+        constructs an ``APICache`` should pass an explicit host so the
+        layout is self-documenting.
+        """
+        # Per-host subdirectory: avoids cross-instance collisions and lets
+        # operators wipe a single host's cache without nuking the rest.
+        self.host = host
+        self.cache_dir = Path(cache_dir) / host
         # Age (seconds) beyond which a cached entry is stale. None = no expiry.
         self.ttl_seconds = ttl_seconds
         self.enabled = True
@@ -110,7 +131,7 @@ class APICache:
                 "Cache directory '%s' is not usable (%s); continuing without "
                 "caching. Set OPC_CACHE_DIR to a writable path, or to an empty "
                 "string to disable caching without this warning.",
-                cache_dir,
+                self.cache_dir,
                 exc,
             )
 
@@ -146,14 +167,14 @@ class APICache:
         except Exception as e:
             logger.warning(f"Failed to read cache file {cache_file}: {e}")
             return None
-    
+
     def set(self, endpoint: str, params: str, data: Any):
         """Store response in cache."""
         if not self.enabled:
             return
         key = self._get_cache_key(endpoint, params)
         cache_file = self.cache_dir / f"{key}.json"
-        
+
         try:
             with open(cache_file, 'w') as f:
                 json.dump(data, f)
@@ -198,8 +219,10 @@ class GitHubClient:
         self.request_lock = threading.Lock()
         
         # Cache setup. Entries expire per OPC_CACHE_TTL_DAYS (default 30).
+        # The v3 on-disk layout is ``<cache_dir>/<host>/<sha>.json``; this
+        # client is hard-bound to github.com.
         self.cache = (
-            APICache(cache_dir, ttl_seconds=resolve_cache_ttl())
+            APICache(cache_dir, ttl_seconds=resolve_cache_ttl(), host="github.com")
             if cache_dir
             else None
         )

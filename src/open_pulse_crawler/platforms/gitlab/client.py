@@ -14,13 +14,15 @@ This module owns three concerns and nothing else:
    degrades to `[]` on older self-hosted instances (gitlab.epfl.ch,
    gitlab.ethz.ch) where the endpoint is missing.
 
-Caching is intentionally out of scope here — Task 15 introduces a per-host
-disk cache one layer up.
+A per-host disk cache (`<cache_dir>/<host>/<sha>.json`) is accepted via the
+optional `_cache_dir` parameter; today it is only pre-allocated, not yet
+wired into the lookups (see `__init__` docstring for the rationale).
 """
 
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any, Callable, List, Optional
 
 import gitlab
@@ -41,7 +43,24 @@ class GitLabClient:
         host: str,
         tokens: List[str],
         _gl_factory: Callable[..., Any] = gitlab.Gitlab,
+        _cache_dir: Optional[Path] = None,
     ) -> None:
+        """Build a `GitLabClient` for `host`.
+
+        ``_cache_dir`` — if provided — pre-allocates a per-host disk cache
+        under ``<_cache_dir>/<host>/`` (the same layout the github-side
+        ``APICache`` uses in v3). The cache *directory* is created and
+        held on ``self._cache`` so consumers can verify the layout, but
+        the single-entity lookups (``get_user_by_username``,
+        ``get_group_by_path``, ``get_project_by_path``) and the iterators
+        still go straight to the API. Round-tripping python-gitlab object
+        instances through JSON is non-trivial (their state is private),
+        so disk caching for GitLab is deferred.
+
+        TODO(post-task-15): wire the cache into single-entity lookups by
+        caching a minimal dict (``id``, ``path``, ``web_url`` …) and
+        rebuilding a lazy proxy on read; widen to iterators afterwards.
+        """
         if not tokens:
             raise ValueError("At least one GitLab token is required")
         self.host = host
@@ -49,6 +68,18 @@ class GitLabClient:
         self._idx = 0
         self._gl_factory = _gl_factory
         self._gl = self._build_gl()
+
+        # Optional disk cache for single-entity lookups. Imported lazily to
+        # avoid a hard dependency between the GitLab client module and the
+        # GitHub-side cache implementation; the cache is platform-agnostic.
+        self._cache: Optional[Any] = None
+        if _cache_dir is not None:
+            from ..github.client import APICache, resolve_cache_ttl
+            self._cache = APICache(
+                _cache_dir,
+                ttl_seconds=resolve_cache_ttl(),
+                host=self.host,
+            )
 
     # ---- construction / rotation ------------------------------------------------
 
