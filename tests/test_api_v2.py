@@ -57,3 +57,22 @@ def test_v2_platforms_reports_missing_tokens(monkeypatch):
     platforms = {p["host"]: p for p in r.json()["platforms"]}
     assert platforms["renkulab.io"]["tokens"] == 0
     assert platforms["renkulab.io"]["ok"] is False
+
+
+def test_v2_crawl_openapi_examples_include_zenodo():
+    """Swagger UI's dropdown should surface Zenodo example seeds."""
+    from fastapi.testclient import TestClient
+    from open_pulse_crawler.api import app
+    client = TestClient(app)
+    # The app mounts its OpenAPI document at ``/api/v1/openapi.json`` (see
+    # ``api/__init__.py``); fall back to ``app.openapi()`` if the URL ever
+    # changes. Both surface the same spec — Swagger UI reads it via the URL.
+    spec = client.get("/api/v1/openapi.json").json()
+    # Find the /api/v2/crawl POST body examples.
+    crawl_path = spec["paths"]["/api/v2/crawl"]
+    body = crawl_path["post"]["requestBody"]["content"]["application/json"]
+    examples = body.get("examples", {})
+    assert "zenodo_community_renku" in examples
+    assert "zenodo_record_doi_url" in examples
+    assert "zenodo_record_canonical" in examples
+    assert "cross_platform_zenodo_github" in examples

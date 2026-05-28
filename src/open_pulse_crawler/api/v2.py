@@ -161,6 +161,57 @@ _CRAWL_V2_REQUEST_EXAMPLES = {
             "max_rounds": 2,
         },
     },
+    "zenodo_community_renku": {
+        "summary": "Zenodo community (Renku)",
+        "description": (
+            "Crawl one Zenodo community. Anonymous-friendly — works without "
+            "any CRAWLER_TOKEN__ZENODO_ORG. Round 0 fetches the community; "
+            "round 1 walks `contains` edges to every record in the community."
+        ),
+        "value": {
+            "seeds": ["https://zenodo.org/communities/renku-python"],
+            "max_rounds": 2,
+        },
+    },
+    "zenodo_record_doi_url": {
+        "summary": "Zenodo record via DOI URL",
+        "description": (
+            "DOI URLs (`https://doi.org/10.5281/zenodo.<id>`) are rewritten "
+            "to canonical Zenodo URLs by the adapter. Useful when copying a "
+            "DOI from a citation."
+        ),
+        "value": {
+            "seeds": ["https://doi.org/10.5281/zenodo.7234562"],
+            "max_rounds": 2,
+        },
+    },
+    "zenodo_record_canonical": {
+        "summary": "Zenodo record via canonical URL",
+        "description": (
+            "Direct seeding with the platform URL. When the record is a "
+            "specific version, the adapter follows its concept DOI and "
+            "stores the result under the concept URL (versions collapse "
+            "into the concept node's `versions` field)."
+        ),
+        "value": {
+            "seeds": ["https://zenodo.org/records/7234562"],
+            "max_rounds": 2,
+        },
+    },
+    "cross_platform_zenodo_github": {
+        "summary": "Zenodo record → GitHub repo via related_to edges",
+        "description": (
+            "Zenodo records that link to a GitHub repo via "
+            "`metadata.related_identifiers` (relation `isSupplementTo` etc.) "
+            "spawn a cross-platform crawl when both adapters are registered. "
+            "Set `CRAWLER_PLATFORMS=github.com,zenodo.org` to exercise the "
+            "full link-following behavior."
+        ),
+        "value": {
+            "seeds": ["https://zenodo.org/records/7234562"],
+            "max_rounds": 2,
+        },
+    },
 }
 
 
