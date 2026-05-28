@@ -87,6 +87,30 @@ def test_fetch_repo_routes_to_get_repository(adapter):
     assert node is repo
 
 
+def test_fetch_team_returns_none_when_client_lacks_get_team(adapter):
+    # GitHubClient on develop has no get_team; the adapter must degrade
+    # cleanly rather than raise AttributeError.
+    if hasattr(adapter._client, "get_team"):
+        # The MagicMock auto-creates attributes; explicitly remove so we
+        # simulate the real client's surface.
+        del adapter._client.get_team
+    node = adapter.fetch("https://github.com/orgs/anthropic/teams/core")
+    assert node is None
+
+
+def test_fetch_team_routes_when_client_has_get_team(adapter):
+    # When Task 6 adds GitHubClient.get_team, the adapter should route to it.
+    from open_pulse_crawler.models import TeamModel
+    team = TeamModel(
+        url="https://github.com/orgs/anthropic/teams/core",
+        full_name="anthropic/core", org="anthropic", slug="core",
+    )
+    adapter._client.get_team.return_value = team
+    node = adapter.fetch("https://github.com/orgs/anthropic/teams/core")
+    assert node is team
+    adapter._client.get_team.assert_called_once()
+
+
 # ---------- expand: UserModel -----------------------------------------------
 
 

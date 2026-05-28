@@ -156,8 +156,12 @@ class GitHubAdapter(PlatformAdapter):
             # (teams are populated as a side effect of org fetches). The
             # adapter routes to ``get_team`` so the contract is complete;
             # production wiring lands when Task 6 plugs the adapter into
-            # the BFS engine.
-            return self._client.get_team(uri)
+            # the BFS engine. Until then, ``get_team`` may be missing, so
+            # we guard with ``getattr`` and return ``None`` (matching the
+            # other branches' "we don't know how" semantics) instead of
+            # raising ``AttributeError``.
+            get_team = getattr(self._client, "get_team", None)
+            return get_team(uri) if get_team is not None else None
         if kind == NodeKind.USER_OR_ORG:
             # USER_OR_ORG is genuinely ambiguous at the URL level; try user
             # first, fall back to organization — same order the crawler uses
