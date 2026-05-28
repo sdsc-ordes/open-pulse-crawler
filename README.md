@@ -367,7 +367,10 @@ When `--visualize` is enabled, generates a PNG image with:
 src/open_pulse_crawler/
 ├── __init__.py          # Package initialization
 ├── models.py            # Pydantic models for GitHub entities
-├── github_client.py     # GitHub API client with caching
+├── platforms/
+│   └── github/
+│       ├── client.py    # GitHub REST client (PyGithub) with caching
+│       └── graphql.py   # GitHub GraphQL client
 ├── crawler.py           # BFS crawler core logic
 ├── io_utils.py          # Input/output handlers
 ├── visualization.py     # Graph visualization
