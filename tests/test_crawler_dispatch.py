@@ -115,3 +115,16 @@ def test_dispatch_github_host_uses_legacy_path():
     # The legacy path was actually taken — at least one of the legacy
     # client methods must have been called for the seed.
     assert client.get_user.called or client.get_organization.called
+
+
+def test_pure_registry_mode_get_statistics_returns_none_api_stats():
+    from tests.platforms._fake_adapter import FakePlatformAdapter
+    from open_pulse_crawler.crawler import GitHubCrawler
+    from open_pulse_crawler.platforms import PlatformRegistry
+
+    fake = FakePlatformAdapter()
+    reg = PlatformRegistry()
+    reg.register(fake)
+    c = GitHubCrawler(registry=reg, max_rounds=1)
+    stats = c.get_statistics()
+    assert stats["api_stats"] is None

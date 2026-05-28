@@ -421,18 +421,20 @@ def crawl(
             table.add_row("  Organizations Queued", str(last_round.get('queued_orgs', 0)))
             table.add_row("  Repositories Queued", str(last_round.get('queued_repos', 0)))
     
-    table.add_row("[bold]API Statistics[/bold]", "")
-    table.add_row("  API Calls Made", str(stats['api_stats']['api_calls']))
-    table.add_row("  Cache Hits", str(stats['api_stats']['cache_hits']))
-    table.add_row("  Rate Limit Waits", str(stats['api_stats']['rate_limit_waits']))
-    table.add_row("  Token Switches", str(stats['api_stats']['token_switches']))
-    table.add_row("  Throttle Waits", str(stats['api_stats'].get('throttle_waits', 0)))
-    
-    # Show efficiency metrics
-    if 'efficiency' in stats['api_stats']:
-        eff = stats['api_stats']['efficiency']
-        table.add_row("Cache Hit Rate", f"{eff['cache_hit_rate']:.1f}%")
-        table.add_row("Requests per Wait", f"{eff['requests_per_wait']:.1f}")
+    if stats.get('api_stats') is not None:
+        api_stats = stats['api_stats']
+        table.add_row("[bold]API Statistics[/bold]", "")
+        table.add_row("  API Calls Made", str(api_stats['api_calls']))
+        table.add_row("  Cache Hits", str(api_stats['cache_hits']))
+        table.add_row("  Rate Limit Waits", str(api_stats['rate_limit_waits']))
+        table.add_row("  Token Switches", str(api_stats['token_switches']))
+        table.add_row("  Throttle Waits", str(api_stats.get('throttle_waits', 0)))
+
+        # Show efficiency metrics
+        if 'efficiency' in api_stats:
+            eff = api_stats['efficiency']
+            table.add_row("Cache Hit Rate", f"{eff['cache_hit_rate']:.1f}%")
+            table.add_row("Requests per Wait", f"{eff['requests_per_wait']:.1f}")
     
     console.print(table)
     
