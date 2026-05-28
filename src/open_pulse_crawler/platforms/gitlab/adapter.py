@@ -321,20 +321,26 @@ class GitLabAdapter(PlatformAdapter):
     def _expand_user(self, node: GitLabUserModel, opts: ExpandOpts) -> Iterable[Edge]:
         # Owned projects → ``authored`` edges (user owns the namespace).
         for proj in self._client.iter_user_projects(node.id):
-            dst = self._url_for_path(getattr(proj, "path_with_namespace", ""))
-            yield Edge(src=node.url, kind="authored", dst=dst)
+            path = self._get_field(proj, "path_with_namespace")
+            if not path:
+                continue
+            yield Edge(src=node.url, kind="authored", dst=self._url_for_path(path))
 
         # Starred projects → ``starred`` edges.
         for proj in self._client.iter_user_starred(node.id):
-            dst = self._url_for_path(getattr(proj, "path_with_namespace", ""))
-            yield Edge(src=node.url, kind="starred", dst=dst)
+            path = self._get_field(proj, "path_with_namespace")
+            if not path:
+                continue
+            yield Edge(src=node.url, kind="starred", dst=self._url_for_path(path))
 
         # Contributed-to projects: we don't keep them on the user model
         # (the contributor list is recorded on the project's side), but the
         # BFS engine still needs to discover them, so emit the edge.
         for proj in self._client.iter_user_contributed(node.id):
-            dst = self._url_for_path(getattr(proj, "path_with_namespace", ""))
-            yield Edge(src=node.url, kind="contributor_of", dst=dst)
+            path = self._get_field(proj, "path_with_namespace")
+            if not path:
+                continue
+            yield Edge(src=node.url, kind="contributor_of", dst=self._url_for_path(path))
 
     def _expand_group(self, node: GitLabGroupModel, opts: ExpandOpts) -> Iterable[Edge]:
         # Members → ``member_of`` edges (user → group).
@@ -448,6 +454,20 @@ class GitLabAdapter(PlatformAdapter):
             value = entry.get("username")
         else:
             value = getattr(entry, "username", None)
+        return value if isinstance(value, str) and value else None
+
+    @staticmethod
+    def _get_field(entry: Any, name: str) -> Optional[str]:
+        """Read a string field from either a dict (``http_list`` payload) or
+        a typed python-gitlab object. The GitLab client's user-listing
+        endpoints come back as plain dicts (because we bypass
+        ``users.get(...)`` to avoid its 403-on-no-scope failure), while
+        group/project iterators still yield typed objects. This helper
+        absorbs both forms so the adapter doesn't have to branch."""
+        if isinstance(entry, dict):
+            value = entry.get(name)
+        else:
+            value = getattr(entry, name, None)
         return value if isinstance(value, str) and value else None
 
     @classmethod

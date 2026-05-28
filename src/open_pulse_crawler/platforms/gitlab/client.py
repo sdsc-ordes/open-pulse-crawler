@@ -190,30 +190,49 @@ class GitLabClient:
         )
         return []
 
+    def _http_list_projects(self, sub_path: str, endpoint: str) -> List[Any]:
+        """List projects under ``sub_path`` via direct HTTP, skipping ``users.get``.
+
+        python-gitlab's idiomatic ``self._gl.users.get(id).projects.list()``
+        fetches the single-user endpoint ``/users/:id`` first, which several
+        institutional GitLab instances (gitlab.epfl.ch, gitlab.ethz.ch) gate
+        behind ``read_user`` scope or refuse to anonymous callers — even
+        though the *project list* endpoints themselves are public. Calling
+        ``http_list`` directly avoids that pre-fetch entirely.
+
+        Wraps the call in the same forbidden-degrades-to-empty contract as
+        every other ``iter_*`` method so a 403 doesn't tank the crawl.
+        """
+        try:
+            results = self._gl.http_list(sub_path, get_all=True)
+            return list(results)
+        except (
+            gitlab.GitlabHttpError,
+            gitlab.GitlabListError,
+            gitlab.GitlabGetError,
+        ) as exc:
+            return self._degrade_on_forbidden(self.host, endpoint, exc)
+
     def iter_user_projects(self, user_id: Any) -> List[Any]:
         """Projects the user authored / owns."""
-        try:
-            user = self._gl.users.get(user_id)
-            return list(user.projects.list(get_all=True))
-        except (gitlab.GitlabHttpError, gitlab.GitlabListError, gitlab.GitlabGetError) as exc:
-            return self._degrade_on_forbidden(self.host, f"users/{user_id}/projects", exc)
+        return self._http_list_projects(
+            f"/users/{user_id}/projects",
+            f"users/{user_id}/projects",
+        )
 
     def iter_user_contributed(self, user_id: Any) -> List[Any]:
         """Projects the user has contributed to (commits, merges, etc.)."""
-        try:
-            user = self._gl.users.get(user_id)
-            # python-gitlab v5 exposes this as `contributed_projects`.
-            return list(user.contributed_projects.list(get_all=True))
-        except (gitlab.GitlabHttpError, gitlab.GitlabListError, gitlab.GitlabGetError) as exc:
-            return self._degrade_on_forbidden(self.host, f"users/{user_id}/contributed_projects", exc)
+        return self._http_list_projects(
+            f"/users/{user_id}/contributed_projects",
+            f"users/{user_id}/contributed_projects",
+        )
 
     def iter_user_starred(self, user_id: Any) -> List[Any]:
         """Projects the user has starred."""
-        try:
-            user = self._gl.users.get(user_id)
-            return list(user.starred_projects.list(get_all=True))
-        except (gitlab.GitlabHttpError, gitlab.GitlabListError, gitlab.GitlabGetError) as exc:
-            return self._degrade_on_forbidden(self.host, f"users/{user_id}/starred_projects", exc)
+        return self._http_list_projects(
+            f"/users/{user_id}/starred_projects",
+            f"users/{user_id}/starred_projects",
+        )
 
     # ---- project iterators -----------------------------------------------------
 
