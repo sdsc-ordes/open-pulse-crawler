@@ -35,6 +35,7 @@ from .deps import (
     _write_snapshot,
 )
 from .v1 import router as v1_router
+from .v2 import router as v2_router
 
 _API_DESCRIPTION = """
 A breadth-first crawler that maps relationships between GitHub **users**,
@@ -98,6 +99,7 @@ app = FastAPI(
     openapi_url="/api/v1/openapi.json",
 )
 app.include_router(v1_router, prefix="/api/v1")
+app.include_router(v2_router, prefix="/api/v2")
 
 
 __all__ = [

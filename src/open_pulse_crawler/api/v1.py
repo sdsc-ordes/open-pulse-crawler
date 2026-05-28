@@ -6,6 +6,7 @@ import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 from fastapi import (
     APIRouter,
@@ -44,6 +45,25 @@ logger = logging.getLogger(__name__)
 
 
 router = APIRouter()
+
+
+def _validate_v1_seeds(seeds: List[str]) -> None:
+    """Reject any seed whose host is not ``github.com``.
+
+    v1 is the legacy github-only surface. Multi-platform crawls live at
+    ``/api/v2``. Bare logins and ``owner/repo`` strings (no scheme) are
+    *assumed* to be github.com and pass through — only full
+    ``https://OTHER.HOST/...`` URLs trigger the guard.
+    """
+    for seed in seeds:
+        if not isinstance(seed, str) or not seed.startswith("https://"):
+            continue
+        host = urlparse(seed).netloc.lower()
+        if host and host != "github.com":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"error": "v1 supports github.com seeds only; use /api/v2"},
+            )
 
 
 # States the BFS loop has stopped or never started running. Used by the
@@ -125,6 +145,30 @@ _RESP_JOB_NOT_FOUND = {404: {"description": "No job exists with that `job_id`"}}
 _RESP_JOB_CONFLICT = {
     409: {"description": "The job's current status does not allow this action"}
 }
+_RESP_V1_NON_GITHUB_SEED = {
+    400: {
+        "description": (
+            "A seed URL targets a host other than github.com. v1 is "
+            "github-only — submit the same request to ``/api/v2/crawl``."
+        )
+    }
+}
+
+
+def _v1_crawl_body(
+    body: CrawlRequest = Body(..., openapi_examples=_CRAWL_REQUEST_EXAMPLES),
+) -> CrawlRequest:
+    """Body dependency that runs the github-only seed guard.
+
+    Lives as a FastAPI dependency (declared *before* ``verify_token`` in the
+    endpoint signature) so the guard runs before bearer-token validation.
+    That lets the rejection return a clean ``400 {"error": "...; use /api/v2"}``
+    instead of the bearer scheme's generic 401/403, even when no
+    Authorization header is supplied. The OpenAPI examples are reused so
+    Swagger UI still gets the prefilled request bodies.
+    """
+    _validate_v1_seeds(body.seeds)
+    return body
 
 
 @router.get(
@@ -147,11 +191,11 @@ def health() -> HealthResponse:
     status_code=status.HTTP_202_ACCEPTED,
     tags=["Crawl"],
     summary="Start a crawl (REST)",
-    responses={**_RESP_AUTH},
+    responses={**_RESP_AUTH, **_RESP_V1_NON_GITHUB_SEED},
 )
 def start_crawl(
     background_tasks: BackgroundTasks,
-    body: CrawlRequest = Body(..., openapi_examples=_CRAWL_REQUEST_EXAMPLES),
+    body: CrawlRequest = Depends(_v1_crawl_body),
     _token: str = Depends(verify_token),
 ) -> CrawlJobResponse:
     """Start a new crawl job. It runs in the background and returns a
@@ -190,11 +234,11 @@ def start_crawl(
     status_code=status.HTTP_202_ACCEPTED,
     tags=["Crawl"],
     summary="Start a crawl (GraphQL)",
-    responses={**_RESP_AUTH},
+    responses={**_RESP_AUTH, **_RESP_V1_NON_GITHUB_SEED},
 )
 def start_crawl_graphql(
     background_tasks: BackgroundTasks,
-    body: CrawlRequest = Body(..., openapi_examples=_CRAWL_REQUEST_EXAMPLES),
+    body: CrawlRequest = Depends(_v1_crawl_body),
     _token: str = Depends(verify_token),
 ) -> CrawlJobResponse:
     """Start a crawl using the **GraphQL-backed** client.
