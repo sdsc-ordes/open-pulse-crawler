@@ -6,15 +6,20 @@ from pathlib import Path
 import json
 from collections import deque
 from datetime import datetime
+from urllib.parse import urlparse
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 
 from .models import (
+    BaseEntityModel,
     GraphData, UserModel, OrgModel, RepoModel, TeamModel,
     GitHubItemType,
 )
+from .platforms import PlatformRegistry
+from .platforms.base import ExpandOpts
 from .platforms.github import GitHubClient
+from .platforms.github.adapter import GitHubAdapter
 from .dependency_utils import fetch_dependencies_sbom, fetch_dependents
 from .gimie_client import GimieJsonLdClient
 from .gimie_jsonld import parse_gimie_repo_jsonld
@@ -64,7 +69,7 @@ class GitHubCrawler:
     
     def __init__(
         self,
-        client: GitHubClient,
+        client: Optional[GitHubClient] = None,
         max_rounds: int = 3,
         state_file: Optional[Path] = None,
         batch_size: Optional[int] = None,
@@ -81,6 +86,7 @@ class GitHubCrawler:
         gimie_api_base: str = "http://host.docker.internal:1234",
         gimie_store_jsonld_dir: Optional[Path] = None,
         gimie_skip_existing_jsonld: bool = False,
+        registry: Optional[PlatformRegistry] = None,
     ):
         """
         Initialize the crawler.
@@ -106,11 +112,49 @@ class GitHubCrawler:
             gimie_api_base: Base URL for the gimie JSON-LD API.
             gimie_store_jsonld_dir: Optional directory to store gimie JSON-LD payloads.
             gimie_skip_existing_jsonld: If storing, skip HTTP when payload file exists under jsonld_dir.
+            registry: Optional ``PlatformRegistry`` used to dispatch BFS work for
+                non-``github.com`` hosts via the adapter ``fetch``/``expand``
+                contract. When omitted but ``client`` is supplied, a default
+                registry containing a ``GitHubAdapter(client, "github.com")``
+                is built so legacy call sites keep working unchanged. The
+                ``github.com`` dispatch path remains the existing
+                ``_process_*`` helpers regardless of the registry contents
+                (dual-path mode — see :meth:`_process_one_via_adapter`).
         """
         self.client = client
+
+        # Build / accept the platform registry. Three supported shapes:
+        #   * ``client=...`` (legacy)              → default registry with
+        #                                            a GitHubAdapter on
+        #                                            github.com.
+        #   * ``registry=...`` (multi-platform)    → caller-supplied registry,
+        #                                            client may be None.
+        #   * ``client=..., registry=...``         → both honoured; the
+        #                                            caller's registry is
+        #                                            the source of truth and
+        #                                            we do NOT auto-add a
+        #                                            GitHubAdapter on top.
+        if registry is None:
+            if client is None:
+                raise ValueError(
+                    "GitHubCrawler requires either a `client` (legacy) or a "
+                    "`registry` (multi-platform) constructor argument"
+                )
+            registry = PlatformRegistry()
+            registry.register(GitHubAdapter(client, instance_host="github.com"))
+        self.registry = registry
+
         self.max_rounds = max_rounds
         self.state_file = state_file
-        self.batch_size = batch_size if batch_size is not None else client.semaphore._value
+        # ``batch_size`` defaults to the client's max concurrency. When no
+        # client is given (pure-registry construction) we fall back to a
+        # conservative default — adapters manage their own concurrency.
+        if batch_size is not None:
+            self.batch_size = batch_size
+        elif client is not None:
+            self.batch_size = client.semaphore._value
+        else:
+            self.batch_size = 4
         self.crawl_dependencies = crawl_dependencies
         self.crawl_dependents = crawl_dependents
         self.crawl_issues = crawl_issues
@@ -120,6 +164,23 @@ class GitHubCrawler:
         self.min_stars = min_stars
         self.max_dependents = max_dependents
         self.max_contributors = max_contributors
+
+        # Per-crawl knobs handed to ``PlatformAdapter.expand`` for non-github
+        # hosts. ``crawl_stars`` is intentionally left at its default — that
+        # flag lands with Task 14 (CLI changes). ``min_stars`` lives only on
+        # the ``ExpandOpts`` dataclass for forward compatibility; today the
+        # GitHubAdapter does not consume it (the legacy path reads
+        # ``self.min_stars`` directly in ``_process_repository``).
+        self._expand_opts = ExpandOpts(
+            crawl_issues=crawl_issues,
+            crawl_prs=crawl_prs,
+            crawl_dependencies=crawl_dependencies,
+            crawl_dependents=crawl_dependents,
+            min_stars=min_stars,
+            max_contributors=max_contributors,
+            issue_max=issue_max,
+            pr_max=pr_max,
+        )
 
         # Optional gimie hybrid repo population.
         self.gimie_repos = gimie_repos
@@ -1113,18 +1174,118 @@ class GitHubCrawler:
         except Exception as e:
             logger.warning(f"PR iteration failed for {repo.full_name}: {e}")
     
+    def _process_one_via_adapter(self, uri: str) -> Optional[BaseEntityModel]:
+        """Adapter-driven processing path for non-github.com hosts.
+
+        Looks up the ``PlatformAdapter`` from ``self.registry`` by URL host,
+        calls ``adapter.fetch(uri)`` to materialize the node, then asks
+        ``adapter.expand(node, self._expand_opts)`` for its outgoing edges.
+        Each edge's counter-party URI (the endpoint that isn't ``node.url``)
+        is enqueued for the next round if it isn't already visited or
+        queued.
+
+        Adding to the graph happens here (under ``graph_lock``) rather than
+        through the legacy ``_process_node`` → graph-add path, because the
+        adapter returns a fully-built Pydantic model and we don't need
+        another round of mapping. ``_process_node`` short-circuits by
+        returning ``None`` after this method runs, so the calling executor
+        loop won't double-add.
+
+        Returns the node (handy for tests / future progress reporting), or
+        ``None`` if the adapter couldn't fetch it.
+        """
+        try:
+            adapter = self.registry.adapter_for(uri)
+        except KeyError:
+            logger.warning(f"No platform adapter registered for URI {uri!r}")
+            return None
+
+        try:
+            node = adapter.fetch(uri)
+        except Exception as e:
+            logger.error(f"Adapter fetch failed for {uri}: {e}")
+            return None
+        if node is None:
+            return None
+
+        # Add the materialized node to the appropriate graph dict. We use
+        # ``isinstance`` so a future GitLab subclass (``GitLabUserModel`` etc.)
+        # still slots into ``graph.users`` thanks to subclass-of-User
+        # semantics — the discriminated union on the dict's value type
+        # accepts both.
+        with self.graph_lock:
+            if isinstance(node, UserModel):
+                self.graph.add_user(node)
+            elif isinstance(node, OrgModel):
+                self.graph.add_org(node)
+            elif isinstance(node, RepoModel):
+                self.graph.add_repo(node)
+            elif isinstance(node, TeamModel):
+                self.graph.add_team(node)
+            else:
+                logger.warning(
+                    f"Adapter for {uri} returned unknown node type "
+                    f"{type(node).__name__}; not added to graph"
+                )
+
+        # Enqueue counter-party URIs from each emitted edge. The "kind" the
+        # crawler queues with for the adapter path is always
+        # ``'user_or_org'`` — the host check at the top of ``_process_node``
+        # re-routes the popped item to this same method regardless of its
+        # queued kind, so there's no need to disambiguate here.
+        try:
+            edges = list(adapter.expand(node, self._expand_opts))
+        except Exception as e:
+            logger.error(f"Adapter expand failed for {uri}: {e}")
+            edges = []
+
+        with self.visited_lock:
+            # Pre-compute the set of URIs already in the queue so we don't
+            # add duplicates within this one call. The visited-lock window
+            # also guards ``self.queue`` against concurrent writers.
+            queued = {q[1] for q in self.queue}
+            for edge in edges:
+                # Pick whichever endpoint isn't ``node.url``. For self-edges
+                # we skip outright — they aren't useful BFS frontiers.
+                if edge.src == node.url and edge.dst != node.url:
+                    neighbor = edge.dst
+                elif edge.dst == node.url and edge.src != node.url:
+                    neighbor = edge.src
+                else:
+                    continue
+                if neighbor in self.visited or neighbor in queued:
+                    continue
+                self.queue.append(
+                    ('user_or_org', neighbor, self.current_round + 1)
+                )
+                queued.add(neighbor)
+
+        return node
+
     def _process_node(self, node_type: str, identifier: str) -> Optional[tuple]:
         """
         Process a single node and return (type, entity) tuple.
-        
+
         Args:
             node_type: Type of node ('user', 'org', 'repo', 'user_or_org')
             identifier: Node identifier (username, org name, or repo full name)
-        
+
         Returns:
             Tuple of (entity_type, entity_object) or None if processing failed
         """
         try:
+            # Dual-path dispatch (Task 6): github.com URIs still run through
+            # the existing ``_process_*`` helpers (zero behaviour change for
+            # legacy callers). Any other host goes through the adapter
+            # ``fetch + expand`` contract — this is the seam non-GitHub
+            # platforms (GitLab, etc.) will land on in later tasks.
+            if urlparse(identifier).netloc.lower() != "github.com":
+                self._process_one_via_adapter(identifier)
+                # The adapter path adds to the graph itself, so we return
+                # ``None`` here to keep ``crawl()`` from double-adding via
+                # its own graph-add branch.
+                return None
+
             if node_type == 'user_or_org':
                 # Try as user first
                 user = self._process_user(identifier)
@@ -1135,22 +1296,22 @@ class GitHubCrawler:
                     org = self._process_organization(identifier)
                     if org:
                         return ('org', org)
-            
+
             elif node_type == 'user':
                 user = self._process_user(identifier)
                 if user:
                     return ('user', user)
-            
+
             elif node_type == 'org':
                 org = self._process_organization(identifier)
                 if org:
                     return ('org', org)
-            
+
             elif node_type == 'repo':
                 repo = self._process_repository(identifier)
                 if repo:
                     return ('repo', repo)
-            
+
             return None
         except Exception as e:
             logger.error(f"Error processing node {node_type}:{identifier}: {e}")
@@ -1362,7 +1523,10 @@ class GitHubCrawler:
             'organizations': len(self.graph.orgs),
             'repositories': len(self.graph.repos),
             'round_stats': self.round_stats,
-            'api_stats': self.client.get_stats(),
+            # ``api_stats`` is omitted when the crawler was built without a
+            # legacy ``client`` (pure-registry construction) — adapters
+            # report their own rate-limit state via ``rate_limit_state()``.
+            'api_stats': self.client.get_stats() if self.client is not None else None,
         }
     
     def export_round(
