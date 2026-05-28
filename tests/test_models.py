@@ -411,5 +411,101 @@ def test_graphdata_accepts_zenodo_subclasses_in_existing_dicts():
     assert isinstance(restored.repos["https://zenodo.org/records/1"], ZenodoRecordModel)
 
 
+# --- Infoscience subkinds (Spec 3) ---------------------------------
+from open_pulse_crawler.models import (
+    InfoscienceItem, InfosciencePerson, InfoscienceOrgUnit,
+)
+
+
+def test_infoscience_item_subkind_and_fields():
+    item = InfoscienceItem(
+        url="https://infoscience.epfl.ch/handle/20.500.14299/182247",
+        full_name="20.500.14299/182247",
+        platform="infoscience",
+        handle="20.500.14299/182247",
+        uuid="80f7da77-dc21-430e-88a2-f07ede2cb194",
+        resource_type="master thesis",
+        title="A study of X",
+        publication_date="2024-06-30",
+        authors=[
+            {"name": "Doe, J.", "orcid": "0000-0001-2345-6789",
+             "authority_uuid": "31b1115e-c04a-445d-b905-18616ef2aacb"},
+        ],
+        keywords=["urban planning", "thesis"],
+        license="CC-BY-4.0",
+    )
+    assert item.subkind == "InfoscienceItem"
+    assert item.handle == "20.500.14299/182247"
+    assert item.uuid == "80f7da77-dc21-430e-88a2-f07ede2cb194"
+    assert item.resource_type == "master thesis"
+    assert item.is_fork is False  # inherited; no DSpace fork concept
+    assert item.dependents == []  # inherited; not a DSpace concept
+
+
+def test_infoscience_person_subkind_and_fields():
+    person = InfosciencePerson(
+        url="https://infoscience.epfl.ch/handle/20.500.14299/99923",
+        login="123456",  # SciPer ID
+        platform="infoscience",
+        handle="20.500.14299/99923",
+        uuid="31b1115e-c04a-445d-b905-18616ef2aacb",
+        given_name="Nicholas",
+        family_name="Molyneaux",
+        orcid="0000-0001-2345-6789",
+        sciper_id="123456",
+        affiliation_name="TRANSP-OR",
+        affiliation_uuid="aaaa1111-2222-3333-4444-555566667777",
+    )
+    assert person.subkind == "InfosciencePerson"
+    assert person.handle == "20.500.14299/99923"
+    assert person.sciper_id == "123456"
+    assert person.orcid == "0000-0001-2345-6789"
+    assert person.followers == []  # Infoscience has no social graph
+
+
+def test_infoscience_orgunit_subkind_and_fields():
+    ou = InfoscienceOrgUnit(
+        url="https://infoscience.epfl.ch/handle/20.500.14299/77777",
+        login="TRANSP-OR",
+        platform="infoscience",
+        handle="20.500.14299/77777",
+        uuid="aaaa1111-2222-3333-4444-555566667777",
+        unit_id="TRANSP-OR",
+        parent_uuid="bbbb2222-3333-4444-5555-666677778888",
+        parent_url="https://infoscience.epfl.ch/handle/20.500.14299/11111",
+        unit_type="laboratory",
+    )
+    assert ou.subkind == "InfoscienceOrgUnit"
+    assert ou.parent_uuid == "bbbb2222-3333-4444-5555-666677778888"
+    assert ou.unit_type == "laboratory"
+
+
+def test_graphdata_accepts_infoscience_subclasses_in_existing_dicts():
+    from open_pulse_crawler.models import GraphData
+    g = GraphData()
+    g.users["https://infoscience.epfl.ch/handle/20.500.14299/99923"] = InfosciencePerson(
+        url="https://infoscience.epfl.ch/handle/20.500.14299/99923",
+        login="123456", platform="infoscience",
+        handle="20.500.14299/99923",
+        uuid="31b1115e-c04a-445d-b905-18616ef2aacb",
+    )
+    g.orgs["https://infoscience.epfl.ch/handle/20.500.14299/77777"] = InfoscienceOrgUnit(
+        url="https://infoscience.epfl.ch/handle/20.500.14299/77777",
+        login="TRANSP-OR", platform="infoscience",
+        handle="20.500.14299/77777",
+        uuid="aaaa1111-2222-3333-4444-555566667777",
+    )
+    g.repos["https://infoscience.epfl.ch/handle/20.500.14299/182247"] = InfoscienceItem(
+        url="https://infoscience.epfl.ch/handle/20.500.14299/182247",
+        full_name="20.500.14299/182247", platform="infoscience",
+        handle="20.500.14299/182247",
+        uuid="80f7da77-dc21-430e-88a2-f07ede2cb194",
+    )
+    restored = GraphData.model_validate_json(g.model_dump_json())
+    assert isinstance(restored.users["https://infoscience.epfl.ch/handle/20.500.14299/99923"], InfosciencePerson)
+    assert isinstance(restored.orgs["https://infoscience.epfl.ch/handle/20.500.14299/77777"], InfoscienceOrgUnit)
+    assert isinstance(restored.repos["https://infoscience.epfl.ch/handle/20.500.14299/182247"], InfoscienceItem)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

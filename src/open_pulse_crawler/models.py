@@ -350,6 +350,91 @@ class ZenodoRecordModel(RepoModel):
     access_right: Literal["open", "embargoed", "restricted", "closed"] = "open"
 
 
+# --- Infoscience subclasses -------------------------------------------------
+#
+# Infoscience is EPFL's institutional DSpace-CRIS repository. It has three
+# entity types that map onto the existing base models: Person → UserModel,
+# OrgUnit → OrgModel, Item → RepoModel. Social graph fields inherited from
+# the base models stay empty — DSpace has no follower / star / fork concept.
+
+
+class InfosciencePerson(UserModel):
+    """A DSpace-CRIS Person entity — an EPFL researcher profile.
+
+    Distinct from cross-platform identity resolution (still out of scope).
+    A Person here is purely an Infoscience platform entity, identified by
+    its DSpace UUID and Handle. ORCID / SciPer / Scopus IDs are kept as
+    embedded metadata, NOT as cross-platform identity anchors.
+
+    Social fields (``followers`` / ``following`` / ``starred_repositories`` /
+    ``watched_repositories``) inherited from ``UserModel`` are unused —
+    Infoscience has no social graph.
+    """
+    subkind: Literal["InfosciencePerson"] = "InfosciencePerson"
+    handle: str
+    uuid: str
+    given_name: str = ""
+    family_name: str = ""
+    orcid: Optional[str] = None
+    sciper_id: Optional[str] = None
+    email: str = ""
+    scopus_id: Optional[str] = None
+    affiliation_name: str = ""
+    affiliation_uuid: Optional[str] = None
+
+
+class InfoscienceOrgUnit(OrgModel):
+    """A DSpace-CRIS OrgUnit entity — an EPFL department, school, or lab.
+
+    Forms the canonical EPFL hierarchy: school → faculty → department →
+    laboratory. Parent pointer is set when CRIS exposes a parent relation.
+    ``members`` (inherited from ``OrgModel``) stays empty by default;
+    population is opt-in via ``opts.crawl_members=True`` on the expand
+    call to avoid fetching potentially-large member lists.
+    """
+    subkind: Literal["InfoscienceOrgUnit"] = "InfoscienceOrgUnit"
+    handle: str
+    uuid: str
+    unit_id: Optional[str] = None
+    parent_uuid: Optional[str] = None
+    parent_url: Optional[str] = None
+    unit_type: str = ""
+
+
+class InfoscienceItem(RepoModel):
+    """A DSpace item on Infoscience — publication or resource.
+
+    All artifacts (papers, theses, datasets, software, presentations, …)
+    are DSpace ``item`` entities with the same shape. The ``resource_type``
+    field carries Dublin Core ``dc.type`` so downstream code can filter
+    publications vs datasets without an isinstance switch.
+
+    ``authors`` is a ``list[dict]`` carrying author names + ORCID + the
+    CRIS Person authority UUID — embedded, NOT crawled to Person nodes.
+    The adapter's ``_expand_item`` emits ``authored_by`` edges per
+    authority UUID without forcing eager Person fetches.
+
+    Inherited ``RepoModel.contributors`` / ``forked_from`` / ``is_fork`` /
+    ``dependents`` / ``dependencies`` stay at defaults — DSpace has no
+    fork or dependency concept.
+    """
+    subkind: Literal["InfoscienceItem"] = "InfoscienceItem"
+    handle: str
+    uuid: str
+    doi: Optional[str] = None
+    resource_type: str = ""
+    publication_date: str = ""
+    title: str = ""
+    abstract: str = ""
+    authors: List[Dict[str, Any]] = Field(default_factory=list)
+    keywords: List[str] = Field(default_factory=list)
+    language: str = ""
+    license: str = ""
+    journal: str = ""
+    issn: str = ""
+    isbn: str = ""
+
+
 # Schema version bumped when the graph contract changed. v2 added URL-keyed
 # nodes; v3 adds the ``subkind`` discriminator + ``extras`` /
 # ``external_identifiers`` slots so GitLab subclasses can coexist with the
@@ -358,19 +443,19 @@ GRAPH_SCHEMA_VERSION = 3
 
 
 # Discriminated unions on ``subkind`` let the same dict hold either the
-# GitHub concrete class or its GitLab / Zenodo counterpart. Pydantic v2
-# picks the right class on deserialization by reading the literal subkind
-# tag.
+# GitHub concrete class or its GitLab / Zenodo / Infoscience counterpart.
+# Pydantic v2 picks the right class on deserialization by reading the
+# literal subkind tag.
 UserNode = Annotated[
-    Union[UserModel, GitLabUserModel, ZenodoUserModel],
+    Union[UserModel, GitLabUserModel, ZenodoUserModel, InfosciencePerson],
     Field(discriminator="subkind"),
 ]
 OrgNode = Annotated[
-    Union[OrgModel, GitLabGroupModel, ZenodoCommunityModel],
+    Union[OrgModel, GitLabGroupModel, ZenodoCommunityModel, InfoscienceOrgUnit],
     Field(discriminator="subkind"),
 ]
 RepoNode = Annotated[
-    Union[RepoModel, GitLabProjectModel, ZenodoRecordModel],
+    Union[RepoModel, GitLabProjectModel, ZenodoRecordModel, InfoscienceItem],
     Field(discriminator="subkind"),
 ]
 
