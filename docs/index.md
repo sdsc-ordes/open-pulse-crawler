@@ -52,7 +52,10 @@ flowchart LR
 ## Where to start
 
 - [REST API reference](API.md) — every endpoint, request bodies, examples, and the job
-  lifecycle (pause / resume / cancel).
+  lifecycle (pause / resume / cancel). v3+ adds `/api/v2` for multi-platform crawls.
+- [GitLab support](GITLAB.md) — supported instances, token scopes,
+  per-instance quirks, and manual-test recipes for the v3 multi-platform
+  crawler.
 - [Deployment](DEPLOYMENT.md) — Docker Compose stack (API + GUI + Nginx), env vars,
   single-container builds, and the gimie-enrichment knobs.
 - [Concurrency & rate limiting](CONCURRENCY.md) — multi-token rotation, semaphores,

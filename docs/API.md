@@ -1,11 +1,18 @@
 # Open Pulse Crawler — REST API
 
-Base path: `/api/v1`.
+The server exposes two API versions side-by-side:
 
-Interactive Swagger docs at `/api/v1/docs` and the raw OpenAPI document at
-`/api/v1/openapi.json` when the server is running. Behind Nginx the API is reachable
-at `http://localhost/api/v1` (or `http://localhost:${OPC_PORT}/api/v1` if overridden);
-running uvicorn directly puts it on `http://localhost:8000/api/v1`.
+* **`/api/v2`** — current, multi-platform (GitHub + GitLab). New
+  integrations should target this version.
+* **`/api/v1`** — legacy, **GitHub-only** in v3 and **scheduled for
+  removal in v4**. Non-`github.com` seeds are rejected with
+  `400 {"error": "v1 supports github.com seeds only; use /api/v2"}`.
+
+Interactive Swagger docs at `/api/v2/docs` (and `/api/v1/docs`) and the raw OpenAPI
+documents at `/api/v2/openapi.json` / `/api/v1/openapi.json` when the server is running.
+Behind Nginx the API is reachable at `http://localhost/api/v2` (or
+`http://localhost:${OPC_PORT}/api/v2` if overridden); running uvicorn directly puts
+it on `http://localhost:8000/api/v2`.
 
 ## Authentication
 
@@ -307,6 +314,179 @@ long-lived deployments.
 
 `409` if the job is still `running` or `paused` (cancel it first).
 
+## `/api/v2` — multi-platform endpoints
+
+Same auth model as v1 (Bearer `API_TOKEN`). Same job lifecycle. The shape
+differs in that every node now carries a `subkind` discriminator
+(`GitHubUser`, `GitHubOrganization`, `GitHubRepository`, `GitHubTeam`,
+`GitLabUser`, `GitLabGroup`, `GitLabProject`) and the crawl endpoint
+dispatches by host instead of assuming GitHub.
+
+### `GET /api/v2/health` — public
+
+```json
+{
+  "status": "ok",
+  "version": "3.0.0",
+  "api_version": "v2"
+}
+```
+
+### `GET /api/v2/platforms`
+
+Lists the platforms enabled on the server (driven by `CRAWLER_PLATFORMS`)
+and reports per-host token configuration. Useful for clients to discover
+where they can submit seeds before calling `POST /crawl`.
+
+**Response** `200`
+
+```json
+{
+  "platforms": [
+    {"host": "github.com",     "kind": "github", "tokens": 1, "status": "ok"},
+    {"host": "gitlab.com",     "kind": "gitlab", "tokens": 3, "status": "ok"},
+    {"host": "gitlab.epfl.ch", "kind": "gitlab", "tokens": 0, "status": "missing_token"}
+  ]
+}
+```
+
+The same data is available on the CLI via `opc doctor [--json]`.
+
+### `POST /api/v2/crawl` — start a multi-platform crawl
+
+Accepts seeds from any enabled host. The dispatcher looks at each seed's
+host, routes it to the matching adapter (`GitHubAdapter` /
+`GitLabAdapter`), and merges the per-host graphs in the response.
+
+**Request body**
+
+| Field                | Type          | Required | Default | Description                                       |
+| -------------------- | ------------- | -------- | ------- | ------------------------------------------------- |
+| `seeds`              | `string[]`    | yes      | —       | Seed URLs on any enabled host (or short forms)    |
+| `platforms`          | `string[]`    | no       | all enabled | Restrict the crawl to a subset of enabled hosts |
+| `default_host`       | `string`      | no       | `github.com` | Host assumed for short-form seeds (`owner/repo`) |
+| `max_rounds`         | `int`         | no       | `2`     | BFS rounds (1–10)                                 |
+| `crawl_stars`        | `bool`        | no       | `false` | Emit `starred` edges (GitHub + GitLab ≥13.5)      |
+| `crawl_dependencies` | `bool`        | no       | `false` | GitHub-only; ignored for GitLab seeds             |
+| `crawl_dependents`   | `bool`        | no       | `false` | GitHub-only; ignored for GitLab seeds             |
+| `crawl_issues`       | `bool`        | no       | `false` | Issue authors / commenters                        |
+| `crawl_prs`          | `bool`        | no       | `false` | PR authors / reviewers / commenters               |
+| `min_stars`          | `int`         | no       | `0`     | Star filter on dep/dependent expansion            |
+| `max_dependents`     | `int \| null` | no       | `null`  | Max dependents per repo (GitHub)                  |
+| `max_contributors`   | `int \| null` | no       | `null`  | Per-repo / per-project contributor cap            |
+| `batch_size`         | `int \| null` | no       | `null`  | Concurrent nodes per round                        |
+
+```json
+{
+  "seeds": [
+    "https://github.com/sdsc-ordes/open-pulse-crawler",
+    "https://gitlab.com/gitlab-org/gitlab-foss",
+    "https://gitlab.epfl.ch/some-group/some-project"
+  ],
+  "platforms": ["github.com", "gitlab.com", "gitlab.epfl.ch"],
+  "max_rounds": 2,
+  "crawl_stars": true
+}
+```
+
+**Response** `202 Accepted` — identical shape to `/api/v1/crawl`:
+
+```json
+{
+  "job_id": "d290f1ee-6c54-4b01-90e6-d701748f0851",
+  "status": "pending"
+}
+```
+
+`400` if any seed targets a host that is not enabled in `CRAWLER_PLATFORMS`.
+
+### `GET /api/v2/graph/{job_id}` — fetch the graph
+
+Same shape as `/api/v1/graph/{job_id}` plus every node carrying a
+`subkind` discriminator and platform-specific fields. GitLab subkinds
+add `visibility`, `namespace`, `parent` (groups), and other GitLab-only
+fields; GitHub subkinds are unchanged from v1.
+
+```json
+{
+  "job_id": "d290f1ee-…",
+  "graph": {
+    "schema_version": 3,
+    "nodes": {
+      "https://github.com/torvalds": {
+        "subkind": "GitHubUser",
+        "url": "https://github.com/torvalds",
+        "platform": "github",
+        "host": "github.com",
+        "login": "torvalds",
+        "extras": {},
+        "external_identifiers": []
+      },
+      "https://gitlab.com/gitlab-org": {
+        "subkind": "GitLabGroup",
+        "url": "https://gitlab.com/gitlab-org",
+        "platform": "gitlab",
+        "host": "gitlab.com",
+        "path": "gitlab-org",
+        "visibility": "public",
+        "parent": null,
+        "extras": {},
+        "external_identifiers": []
+      }
+    }
+  },
+  "partial": false,
+  "status": "completed",
+  "rounds_completed": 2
+}
+```
+
+The v3 graph collapses the v1 `users` / `orgs` / `repos` / `teams` dicts
+into one `nodes` dict keyed by canonical URL. The per-kind split is
+recovered from each node's `subkind` field.
+
+### `GET /api/v2/nodes` — filtered listing
+
+Lightweight node listing useful for pagination / UI dropdowns when the
+full graph is too large to load.
+
+**Query parameters**
+
+| Param      | Type     | Description                                                    |
+| ---------- | -------- | -------------------------------------------------------------- |
+| `subkind`  | `string` | Filter by subkind (e.g. `GitLabProject`)                       |
+| `platform` | `string` | Filter by platform kind (`github` / `gitlab`)                  |
+| `instance` | `string` | Filter by host (`github.com`, `gitlab.com`, `gitlab.epfl.ch`)  |
+| `limit`    | `int`    | Max nodes returned (default 100)                               |
+| `cursor`   | `string` | Opaque continuation token from a previous response             |
+
+**Response** `200`
+
+```json
+{
+  "nodes": [
+    {"subkind": "GitLabProject", "url": "https://gitlab.com/foo/bar", "host": "gitlab.com"}
+  ],
+  "next_cursor": null,
+  "total": 1
+}
+```
+
+## `/api/v1` deprecation
+
+`/api/v1` continues to work for `github.com` seeds in v3. Any seed whose
+host is not `github.com` is rejected:
+
+```
+HTTP/1.1 400 Bad Request
+{"error": "v1 supports github.com seeds only; use /api/v2"}
+```
+
+The `/api/v1` endpoints will be **removed in v4**. Migrate to
+`/api/v2` — the request bodies are a superset (v1 fields are
+forward-compatible) and the response is enriched with the `subkind`
+discriminator.
+
 ## Quick curl examples
 
 ```bash
@@ -349,9 +529,11 @@ curl -X DELETE "$API_BASE/crawl/$JOB_ID" -H "Authorization: Bearer $API_TOKEN"
 
 ```bash
 export API_TOKEN="my-secret"
-export CRAWLER_GITHUB_TOKEN="ghp_..."
+export CRAWLER_PLATFORMS="github.com,gitlab.com"
+export CRAWLER_TOKEN__GITHUB_COM="ghp_..."
+export CRAWLER_TOKEN__GITLAB_COM="glpat-..."
 export OPC_DATA_DIR="/var/lib/crawler/jobs"     # optional; per-job snapshots + resumable state
-export OPC_CACHE_DIR="$OPC_DATA_DIR/cache"      # optional; GitHub API response cache ("" disables)
+export OPC_CACHE_DIR="$OPC_DATA_DIR/cache"      # optional; GitHub/GitLab API response cache ("" disables)
 export OPC_CACHE_TTL_DAYS="30"                  # optional; cache entry expiry (0 = never expire)
 uvicorn open_pulse_crawler.api:app --host 0.0.0.0 --port 8000
 ```

@@ -19,6 +19,59 @@ A powerful GitHub crawler based on breadth-first search (BFS) strategy to discov
 - 🚦 **Intelligent Rate Limiting**: Adaptive rate limit management with semaphores, delays, and multi-token rotation
 - ⚙️ **Concurrent Control**: Configurable request throttling to prevent API abuse
 
+## Multi-platform support
+
+Open Pulse Crawler v3+ crawls both **GitHub and GitLab** in a single run.
+Multiple GitLab instances are supported side-by-side — `gitlab.com`,
+`gitlab.epfl.ch`, `gitlab.ethz.ch`, and `renkulab.io` are exercised in
+manual-test recipes; other vanilla GitLab instances work with a valid
+`read_api` token.
+
+See [`docs/GITLAB.md`](docs/GITLAB.md) for the full GitLab guide
+(supported instances, token scopes, per-instance quirks, and
+manual-test recipes).
+
+### Enabling platforms
+
+`CRAWLER_PLATFORMS` is a comma-separated list of enabled hosts. When
+unset, only `github.com` is enabled — preserving v2.x behaviour:
+
+```bash
+CRAWLER_PLATFORMS=github.com,gitlab.com,gitlab.epfl.ch
+```
+
+### Host-keyed token env vars
+
+Tokens are configured per host. Each host accepts either a single token
+or a comma-separated rotation pool:
+
+```bash
+# Single token per host
+CRAWLER_TOKEN__GITHUB_COM=ghp_…
+CRAWLER_TOKEN__GITLAB_COM=glpat-…
+CRAWLER_TOKEN__GITLAB_EPFL_CH=glpat-…
+
+# Or a rotation pool
+CRAWLER_TOKEN_POOL__GITHUB_COM=ghp_a,ghp_b,ghp_c
+CRAWLER_TOKEN_POOL__GITLAB_COM=glpat-a,glpat-b
+```
+
+The host name is uppercased and dots are converted to underscores
+(`gitlab.epfl.ch` → `GITLAB_EPFL_CH`).
+
+Check what is configured at a glance:
+
+```bash
+opc doctor
+```
+
+### Legacy GitHub env vars (deprecated)
+
+`CRAWLER_GITHUB_TOKEN_POOL`, `CRAWLER_GITHUB_TOKEN`, and `GITHUB_TOKEN`
+still work in v3 for `github.com` — each emits a one-shot deprecation
+warning on first read. **They will be removed in v4**; migrate to the
+host-keyed names above.
+
 ## Installation
 
 Using uv (recommended):

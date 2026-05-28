@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- GitLab support across multiple instances: `gitlab.com`, `gitlab.epfl.ch`, `gitlab.ethz.ch`, `renkulab.io`.
+- `PlatformAdapter` abstraction + `PlatformRegistry` for host-keyed dispatch.
+- Concrete `GitHubAdapter` (wrapping the existing client) and `GitLabAdapter` (new, on `python-gitlab`).
+- `subkind` discriminator on every node (`GitHubUser`, `GitHubOrganization`, `GitHubRepository`, `GitHubTeam`, `GitLabUser`, `GitLabGroup`, `GitLabProject`) with typed GitLab subclasses carrying platform-specific fields (e.g., `GitLabProjectModel.visibility`, `.namespace`, `GitLabGroupModel.parent`).
+- `extras: dict[str, Any]` and `external_identifiers: list[ExternalIdentifier]` on every node — escape hatch for fields we don't model and slot for future cross-platform identity linking.
+- `/api/v2` — unified shape including `subkind`. Endpoints: `health`, `platforms`, `crawl`, `graph/{job_id}`, `nodes` filtered listing.
+- CLI: `--platforms`, `--default-host`, `--crawl-stars` flags on `crawl`.
+- CLI: `crawler doctor` (`opc doctor`) reports enabled hosts and per-host token configuration.
+- Host-keyed env vars: `CRAWLER_TOKEN_POOL__<HOST>`, `CRAWLER_TOKEN__<HOST>`; `CRAWLER_PLATFORMS` to enable instances.
+- `python-gitlab>=4,<6` as a required dependency.
+
+### Changed
+- Snapshot schema bumped to 3; v2 state files are now refused on load with `IncompatibleStateError`.
+- Cache layout: `cache/<host>/<sha256(uri)>.json`. Existing v2 flat-cache directories are not migrated — re-crawl required.
+- Visualization color map keyed by `subkind`. GitHub subkinds keep the v2 cyan/gold/green palette so existing crawls render identically; GitLab subkinds use distinct purple/brown/pink colors.
+
+### Deprecated
+- `CRAWLER_GITHUB_TOKEN_POOL`, `CRAWLER_GITHUB_TOKEN`, `GITHUB_TOKEN`: still work for `github.com` in v3 with a one-shot deprecation warning. Removed in v4.
+- `/api/v1`: github-only crawls keep working. Non-github seeds rejected with `400 {"error": "v1 supports github.com seeds only; use /api/v2"}`. Endpoint removed in v4.
+
 ## [2.0.0] — 2026-05-27
 
 **Breaking release.** Headlines:
