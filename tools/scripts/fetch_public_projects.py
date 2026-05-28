@@ -43,10 +43,56 @@ import gitlab
 
 from open_pulse_crawler.config import resolve_tokens
 
+# Self-hosted GitLab instances at Swiss research institutions and universities.
+# Compiled 2026-05-28; probed at the same date — only hosts that answered
+# `GET /api/v4/projects?visibility=public&per_page=1` with HTTP 200 are listed.
+#
+# Excluded (and why):
+#   - gitlab.psi.ch / git-ext.psi.ch      retired 2025-11-30; PSI moved to gitea.psi.ch.
+#   - c4science.ch                        retired 2025-07-31; EPFL migrated to gitlab.epfl.ch.
+#   - phd-gitlab.ethz.ch, gitlab.aiub.unibe.ch, spacegit.unibe.ch,
+#     vit-gitlab.unil.ch, gitlab.ci.inf.usi.ch, git.cscs.ch
+#                                         DNS / TCP unreachable on the probe date.
+#   - gitlab.enterpriselab.ch             301 → labservices.ch (no longer a GitLab forge).
+#   - git.bfh.ch                          legacy gitweb, not a GitLab API target.
+#   - github.zhaw.ch                      GitHub Enterprise, not GitLab.
+#   - gitlabext.wsl.ch, git.wsl.ch        same backend as code.wsl.ch (proxy aliases).
+#
+# Each host carries its institution + access mode in a comment so an operator
+# can decide which subset to include.
 DEFAULT_HOSTS = [
-    "gitlab.epfl.ch",
-    "gitlab.ethz.ch",
-    "gitlab.renkulab.io",
+    # --- ETH Domain ---
+    "gitlab.ethz.ch",             # ETH Zurich, central
+    "gitlab.inf.ethz.ch",         # ETH Zurich, D-INFK
+    "git.ee.ethz.ch",             # ETH Zurich, D-ITET
+    "sissource.ethz.ch",          # ETH Zurich, Scientific IT Services
+    "gitlab.epfl.ch",             # EPFL, central
+    "gitlab.empa.ch",             # Empa (0 public projects on probe, but reachable)
+    "gitlab.eawag.ch",            # Eawag
+    "code.wsl.ch",                # WSL (gitlabext.wsl.ch + git.wsl.ch are aliases)
+    # --- Cantonal universities ---
+    "gitlab.uzh.ch",              # UZH, central (SWITCH-hosted)
+    "gitlab.ifi.uzh.ch",          # UZH, Informatics
+    "gitlab.inf.unibe.ch",        # Uni Bern, CS Institute
+    "gitlab.climate.unibe.ch",    # Uni Bern, KUP/Climate
+    "gitlab.iml.unibe.ch",        # Uni Bern, IML
+    "git.upd.unibe.ch",           # Uni Bern, University Psychiatric Services
+    "gitlab.unige.ch",            # Uni Geneva
+    "gitlabcse.unil.ch",          # Uni Lausanne, CSE
+    "git.scicore.unibas.ch",      # Uni Basel, sciCORE
+    "cs-gitlab.unine.ch",         # Uni Neuchâtel, IIUN
+    # --- Universities of Applied Sciences ---
+    "gitlab.ti.bfh.ch",           # BFH Bern
+    "gitlab.fhnw.ch",             # FHNW
+    "gitlab.hevs.ch",             # HES-SO Valais/Wallis
+    "gitlab.forge.hefr.ch",       # HES-SO Fribourg
+    "gitlab.ost.ch",              # OST Ostschweizer Fachhochschule
+    # --- National research institutions ---
+    "gitlab.switch.ch",           # SWITCH (shared, best-effort)
+    "gitlab.sib.swiss",           # SIB, general
+    "git.dcc.sib.swiss",          # SIB, Data Coordination Centre
+    "gitlab.idiap.ch",            # Idiap Research Institute
+    "gitlab.renkulab.io",         # SDSC / RenkuLab (legacy; retiring)
 ]
 DEFAULT_OUTPUT = Path("data/explore")
 DEFAULT_LIMIT_PER_HOST = 1000
@@ -102,7 +148,11 @@ def fetch_public_project_urls(host: str, limit: int) -> Iterable[str]:
                 page=page,
                 get_all=False,
             )
-        except gitlab.GitlabError as exc:
+        except Exception as exc:
+            # Catch anything — gitlab.GitlabError covers API-level failures
+            # but `requests`-level connection errors (DNS, TLS, timeout)
+            # propagate as `requests.exceptions.ConnectionError` and would
+            # otherwise tank the whole script when a single host is down.
             sys.stderr.write(
                 f"  ! {host}: page {page} failed ({type(exc).__name__}: {exc}); stopping.\n"
             )
