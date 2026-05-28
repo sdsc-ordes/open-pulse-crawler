@@ -61,6 +61,29 @@ def _build_gitlab(host: str) -> gitlab.Gitlab:
     return gitlab.Gitlab(url=f"https://{host}")
 
 
+def _total_public_projects(host: str) -> int | None:
+    """Best-effort total project count via ``X-Total`` (None when not surfaced)."""
+    import httpx
+
+    tokens = resolve_tokens(host)
+    headers = {"PRIVATE-TOKEN": tokens[0]} if tokens else {}
+    try:
+        r = httpx.head(
+            f"https://{host}/api/v4/projects",
+            params={"visibility": "public", "per_page": 1, "page": 1},
+            headers=headers,
+            timeout=10.0,
+            follow_redirects=True,
+        )
+    except httpx.HTTPError:
+        return None
+    raw = r.headers.get("x-total") or r.headers.get("X-Total")
+    try:
+        return int(raw) if raw else None
+    except ValueError:
+        return None
+
+
 def fetch_public_project_urls(host: str, limit: int) -> Iterable[str]:
     """Yield up to ``limit`` public project web URLs from ``host``.
 
@@ -150,17 +173,26 @@ def main(argv: List[str] | None = None) -> int:
     for host in hosts:
         tokens = resolve_tokens(host)
         mode = f"authenticated ({len(tokens)} token{'s' if len(tokens) != 1 else ''})" if tokens else "anonymous"
-        print(f"  {host} [{mode}] …", end="", flush=True)
+        total = _total_public_projects(host)
+        target = min(total, limit) if total is not None else limit
+        total_repr = f"~{total}" if total is not None else "unknown"
+        print(
+            f"  {host} [{mode}] total={total_repr} target={target} …",
+            flush=True,
+        )
 
         urls: List[str] = []
+        start = time.monotonic()
         for url in fetch_public_project_urls(host, limit):
             urls.append(url)
             if verbose and len(urls) % 100 == 0:
-                sys.stderr.write(f"  {host}: {len(urls)} urls so far\n")
+                pct = f" ({100*len(urls)/total:.1f}%)" if total else ""
+                sys.stderr.write(f"  {host}: {len(urls)}{pct} urls in {time.monotonic()-start:.1f}s\n")
 
         out_path = write_host_urls(host, urls, output_dir)
         totals[host] = len(urls)
-        print(f" {len(urls)} urls → {out_path}")
+        elapsed = time.monotonic() - start
+        print(f"    {host}: {len(urls)} urls in {elapsed:.1f}s → {out_path}")
 
     grand = sum(totals.values())
     print(f"\nDone. {grand} project URLs across {len(hosts)} host(s).")
