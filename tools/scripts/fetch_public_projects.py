@@ -96,6 +96,8 @@ DEFAULT_HOSTS = [
     # --- Zenodo (Spec 2) ---
     "zenodo.org",
     # NOTE: sandbox.zenodo.org excluded from defaults — operator-opt-in via --hosts.
+    # --- Swiss research institutional repositories ---
+    "infoscience.epfl.ch",
 ]
 DEFAULT_OUTPUT = Path("data/explore")
 DEFAULT_LIMIT_PER_HOST = 1000
@@ -118,6 +120,10 @@ def _total_public_projects(host: str) -> int | None:
     """
     if host in ("zenodo.org", "sandbox.zenodo.org") or host.endswith(".zenodo.org"):
         return None  # Zenodo uses keyset pagination; no global count header
+    if host == "infoscience.epfl.ch" or host.endswith(".infoscience.epfl.ch"):
+        # DSpace exposes totalElements on the search response, but it requires
+        # a real fetch. Skip the up-front total probe.
+        return None
     import httpx
 
     tokens = resolve_tokens(host)
@@ -188,6 +194,54 @@ def _fetch_zenodo_urls(host: str, limit: int) -> Iterable[str]:
             time.sleep(0.05)
 
 
+def _fetch_infoscience_urls(host: str, limit: int) -> Iterable[str]:
+    """Yield up to ``limit`` Infoscience handle URLs via DSpace's discover/search/objects."""
+    import httpx
+
+    tokens = resolve_tokens(host)
+    headers = {"Accept": "application/json"}
+    if tokens:
+        headers["Authorization"] = f"Bearer {tokens[0]}"
+
+    url = f"https://{host}/server/api/discover/search/objects"
+    params: Optional[Dict[str, Any]] = {"dsoType": "item", "size": min(100, limit)}
+    yielded = 0
+    with httpx.Client(timeout=httpx.Timeout(15.0, connect=8.0), follow_redirects=True) as session:
+        while yielded < limit:
+            try:
+                r = session.get(url, params=params, headers=headers)
+                if r.status_code == 429:
+                    retry_after = float(r.headers.get("Retry-After", "5"))
+                    sys.stderr.write(f"  ! {host}: 429, sleeping {min(retry_after, 60):.1f}s\n")
+                    time.sleep(min(retry_after, 60))
+                    continue
+                r.raise_for_status()
+            except Exception as exc:
+                sys.stderr.write(f"  ! {host}: page failed ({type(exc).__name__}: {exc}); stopping.\n")
+                return
+            body = r.json()
+            search = body.get("_embedded", {}).get("searchResult", {})
+            objects = search.get("_embedded", {}).get("objects", [])
+            if not objects:
+                return
+            for obj in objects:
+                ix = obj.get("_embedded", {}).get("indexableObject", {})
+                handle = ix.get("handle")
+                if not handle:
+                    continue
+                yield f"https://{host}/handle/{handle}"
+                yielded += 1
+                if yielded >= limit:
+                    return
+            next_link = search.get("_links", {}).get("next", {})
+            next_href = next_link.get("href") if isinstance(next_link, dict) else None
+            if not next_href:
+                return
+            url = next_href
+            params = None
+            time.sleep(0.5)  # be polite — Infoscience rate-limits aggressively
+
+
 def fetch_public_project_urls(host: str, limit: int) -> Iterable[str]:
     """Yield up to ``limit`` public project / record URLs from ``host``.
 
@@ -197,6 +251,9 @@ def fetch_public_project_urls(host: str, limit: int) -> Iterable[str]:
     """
     if host in ("zenodo.org", "sandbox.zenodo.org") or host.endswith(".zenodo.org"):
         yield from _fetch_zenodo_urls(host, limit)
+        return
+    if host == "infoscience.epfl.ch" or host.endswith(".infoscience.epfl.ch"):
+        yield from _fetch_infoscience_urls(host, limit)
         return
     gl = _build_gitlab(host)
     yielded = 0
