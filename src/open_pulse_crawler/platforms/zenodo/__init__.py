@@ -1,4 +1,5 @@
 """Zenodo platform implementation."""
-from .client import ZenodoClient  # re-export
+from .adapter import ZenodoAdapter
+from .client import ZenodoClient
 
-__all__ = ["ZenodoClient"]
+__all__ = ["ZenodoAdapter", "ZenodoClient"]
