@@ -233,15 +233,105 @@ def test_expand_record_emits_related_to_with_relation_in_kind():
          "relation": "isSupplementTo", "scheme": "url"},
         {"identifier": "10.5281/zenodo.99",
          "relation": "cites", "scheme": "doi"},
-        # Bare DOI in non-URL scheme → must be skipped (no URL form)
+        # arXiv now synthesized to arxiv.org URL (was previously skipped).
         {"identifier": "arXiv:2401.12345", "relation": "cites", "scheme": "arxiv"},
     ])
     edges = [e for e in a.expand(record, ExpandOpts()) if e.kind.startswith("related_to.")]
     kinds_dsts = sorted((e.kind, e.dst) for e in edges)
     assert kinds_dsts == [
+        ("related_to.cites", "https://arxiv.org/abs/2401.12345"),
         ("related_to.cites", "https://zenodo.org/records/99"),
         ("related_to.isSupplementTo", "https://github.com/sdsc-ordes/gimie"),
     ]
+
+
+# --- _synthesize_target_url (scheme → canonical URL) ----------------
+
+def test_synthesize_passthrough_https_under_any_scheme():
+    """Identifiers that are already https:// always pass through verbatim,
+    regardless of declared scheme — Zenodo sometimes stamps the URL into the
+    identifier and declares scheme='doi' or scheme='arxiv'."""
+    fn = ZenodoAdapter._synthesize_target_url
+    assert fn("doi", "https://doi.org/10.1234/x") == "https://doi.org/10.1234/x"
+    assert fn("arxiv", "https://arxiv.org/abs/2401.12345") == "https://arxiv.org/abs/2401.12345"
+    assert fn("url", "https://example.com/foo") == "https://example.com/foo"
+
+
+def test_synthesize_arxiv_strips_prefix():
+    fn = ZenodoAdapter._synthesize_target_url
+    assert fn("arxiv", "2401.12345") == "https://arxiv.org/abs/2401.12345"
+    assert fn("arxiv", "arXiv:2401.12345") == "https://arxiv.org/abs/2401.12345"
+    assert fn("arxiv", "ARXIV:2401.12345") == "https://arxiv.org/abs/2401.12345"
+
+
+def test_synthesize_orcid_handles_prefix_and_bare():
+    fn = ZenodoAdapter._synthesize_target_url
+    assert fn("orcid", "0000-0002-1825-0097") == "https://orcid.org/0000-0002-1825-0097"
+    assert fn("orcid", "ORCID:0000-0002-1825-0097") == "https://orcid.org/0000-0002-1825-0097"
+
+
+def test_synthesize_pmid():
+    fn = ZenodoAdapter._synthesize_target_url
+    assert fn("pmid", "12345678") == "https://pubmed.ncbi.nlm.nih.gov/12345678/"
+
+
+def test_synthesize_pmcid_normalizes_prefix():
+    fn = ZenodoAdapter._synthesize_target_url
+    assert fn("pmcid", "PMC1234567") == "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC1234567/"
+    assert fn("pmcid", "1234567") == "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC1234567/"
+    # Lowercase prefix should canonicalize to PMC
+    assert fn("pmcid", "pmc1234567") == "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC1234567/"
+
+
+def test_synthesize_swh_urn():
+    fn = ZenodoAdapter._synthesize_target_url
+    assert fn("swh", "swh:1:dir:abc123") == "https://archive.softwareheritage.org/swh:1:dir:abc123"
+    assert fn("swh", "swh:1:cnt:deadbeef") == "https://archive.softwareheritage.org/swh:1:cnt:deadbeef"
+
+
+def test_synthesize_doi_zenodo_rewrites_to_platform_url():
+    fn = ZenodoAdapter._synthesize_target_url
+    # Zenodo prefix (10.5281) → canonical platform URL
+    assert fn("doi", "10.5281/zenodo.99") == "https://zenodo.org/records/99"
+    # Sandbox prefix (10.5072) → sandbox platform URL
+    assert fn("doi", "10.5072/zenodo.42") == "https://sandbox.zenodo.org/records/42"
+    # Non-Zenodo DOI falls back to doi.org URL
+    assert fn("doi", "10.1234/foo.bar") == "https://doi.org/10.1234/foo.bar"
+
+
+def test_synthesize_unknown_scheme_drops_non_url_identifier():
+    fn = ZenodoAdapter._synthesize_target_url
+    # Unknown scheme + non-URL identifier → None
+    assert fn("isbn", "978-3-16-148410-0") is None
+    assert fn("issn", "0001-1234") is None
+    assert fn("ark", "ark:/12345/abc") is None
+
+
+def test_synthesize_empty_inputs():
+    fn = ZenodoAdapter._synthesize_target_url
+    assert fn("doi", "") is None
+    assert fn("url", "") is None
+    assert fn("", "") is None
+
+
+def test_expand_record_emits_all_synthesized_schemes():
+    """End-to-end: a record with five different scheme entries emits five
+    edges with the right target URLs and the relation in the kind."""
+    a = ZenodoAdapter(client=MagicMock(), instance_host="zenodo.org")
+    record = _stub_record(a, related=[
+        {"identifier": "2401.12345", "relation": "cites", "scheme": "arxiv"},
+        {"identifier": "0000-0002-1825-0097", "relation": "isReferencedBy", "scheme": "orcid"},
+        {"identifier": "12345678", "relation": "documents", "scheme": "pmid"},
+        {"identifier": "PMC987654", "relation": "isCitedBy", "scheme": "pmcid"},
+        {"identifier": "swh:1:dir:abc", "relation": "isSupplementTo", "scheme": "swh"},
+    ])
+    edges = [e for e in a.expand(record, ExpandOpts()) if e.kind.startswith("related_to.")]
+    dsts = {e.kind: e.dst for e in edges}
+    assert dsts["related_to.cites"] == "https://arxiv.org/abs/2401.12345"
+    assert dsts["related_to.isReferencedBy"] == "https://orcid.org/0000-0002-1825-0097"
+    assert dsts["related_to.documents"] == "https://pubmed.ncbi.nlm.nih.gov/12345678/"
+    assert dsts["related_to.isCitedBy"] == "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC987654/"
+    assert dsts["related_to.isSupplementTo"] == "https://archive.softwareheritage.org/swh:1:dir:abc"
 
 
 def test_expand_community_emits_contains_edges():

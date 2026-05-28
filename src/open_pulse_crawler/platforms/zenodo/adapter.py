@@ -341,15 +341,7 @@ class ZenodoAdapter(PlatformAdapter):
             ident = rel.get("identifier") or ""
             relation = rel.get("relation") or "isReferencedBy"
             scheme = (rel.get("scheme") or "").lower()
-            target_url: Optional[str] = None
-            if scheme == "url" and ident.startswith(("http://", "https://")):
-                target_url = ident
-            elif scheme == "doi":
-                # Try the Zenodo DOI rewriter first; fall back to doi.org URL.
-                rewritten = rewrite_zenodo_doi_url(f"https://doi.org/{ident}")
-                target_url = rewritten or f"https://doi.org/{ident}"
-            elif ident.startswith(("http://", "https://")):
-                target_url = ident
+            target_url = self._synthesize_target_url(scheme, ident)
             if not target_url:
                 continue
             yield Edge(
@@ -357,6 +349,85 @@ class ZenodoAdapter(PlatformAdapter):
                 kind=f"related_to.{relation}",
                 dst=target_url,
             )
+
+    @staticmethod
+    def _synthesize_target_url(scheme: str, ident: str) -> Optional[str]:
+        """Turn a (scheme, identifier) pair from Zenodo's
+        ``metadata.related_identifiers`` into a full canonical URL.
+
+        Returns ``None`` when the entry can't be made into a URL — those
+        edges are dropped rather than emitted with a useless target.
+
+        Supported schemes (full canonical URL produced):
+
+        ====  ============================================================
+        url    pass through if already https://; otherwise drop
+        doi    Zenodo DOIs → canonical platform URL; other DOIs → doi.org
+        arxiv  ``2401.12345`` (or ``arXiv:2401.12345``) → arxiv.org/abs/<id>
+        orcid  ``0000-0002-1825-0097`` → orcid.org/<id>
+        pmid   ``12345678`` → pubmed.ncbi.nlm.nih.gov/<id>/
+        pmcid  ``PMC1234567`` or ``1234567`` → ncbi.nlm.nih.gov/pmc/articles/PMC<id>/
+        swh    ``swh:1:dir:…`` → archive.softwareheritage.org/<urn>
+        ====  ============================================================
+
+        Identifiers that already start with http(s):// pass through under
+        any scheme — Zenodo sometimes stamps the URL directly into the
+        identifier regardless of the declared scheme.
+        """
+        if not ident:
+            return None
+
+        # Always honor an already-resolved URL, regardless of declared scheme.
+        if ident.startswith(("http://", "https://")):
+            return ident
+
+        scheme = scheme.lower()
+        if scheme == "url":
+            return None  # url scheme but identifier wasn't a URL — drop
+
+        if scheme == "doi":
+            rewritten = rewrite_zenodo_doi_url(f"https://doi.org/{ident}")
+            return rewritten or f"https://doi.org/{ident}"
+
+        if scheme == "arxiv":
+            # Strip a leading "arXiv:" prefix if present (case-insensitive).
+            arxiv_id = ident
+            if arxiv_id.lower().startswith("arxiv:"):
+                arxiv_id = arxiv_id[len("arxiv:"):]
+            arxiv_id = arxiv_id.strip()
+            return f"https://arxiv.org/abs/{arxiv_id}" if arxiv_id else None
+
+        if scheme == "orcid":
+            # Strip any optional "ORCID:" prefix; accept the 16-digit form
+            # or hyphenated form verbatim.
+            oid = ident
+            if oid.lower().startswith("orcid:"):
+                oid = oid[len("orcid:"):]
+            oid = oid.strip().strip("/")
+            return f"https://orcid.org/{oid}" if oid else None
+
+        if scheme == "pmid":
+            pid = ident.strip()
+            return f"https://pubmed.ncbi.nlm.nih.gov/{pid}/" if pid else None
+
+        if scheme == "pmcid":
+            pid = ident.strip()
+            if not pid:
+                return None
+            # Normalize to a leading "PMC" prefix.
+            if not pid.upper().startswith("PMC"):
+                pid = "PMC" + pid
+            else:
+                pid = "PMC" + pid[3:]  # canonical-case prefix
+            return f"https://www.ncbi.nlm.nih.gov/pmc/articles/{pid}/"
+
+        if scheme == "swh":
+            # Software Heritage URN; canonical resolver is at
+            # archive.softwareheritage.org/<urn>.
+            return f"https://archive.softwareheritage.org/{ident.strip()}"
+
+        # Unknown scheme + non-URL identifier: drop.
+        return None
 
     def _expand_community(
         self, node: "ZenodoCommunityModel", opts: ExpandOpts,
