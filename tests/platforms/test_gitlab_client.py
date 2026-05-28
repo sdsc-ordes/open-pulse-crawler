@@ -23,9 +23,22 @@ def make_client(gl_mock=None, tokens=None):
     )
 
 
-def test_requires_tokens():
-    with pytest.raises(ValueError):
-        GitLabClient(host="gitlab.example.com", tokens=[])
+def test_empty_tokens_enables_anonymous_mode():
+    factory = MagicMock()
+    GitLabClient(host="gitlab.example.com", tokens=[], _gl_factory=factory)
+    factory.assert_called_once()
+    args, kwargs = factory.call_args
+    # Anonymous mode: no private_token passed
+    assert "private_token" not in kwargs
+    assert kwargs.get("url") == "https://gitlab.example.com"
+
+
+def test_anonymous_rotate_is_noop():
+    factory = MagicMock()
+    c = GitLabClient(host="gitlab.example.com", tokens=[], _gl_factory=factory)
+    factory.reset_mock()
+    c._rotate()
+    factory.assert_not_called()
 
 
 def test_init_builds_gitlab_instance_with_current_token():

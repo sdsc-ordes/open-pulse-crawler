@@ -69,6 +69,35 @@ opc crawl --platforms gitlab.com --rounds 1 \
   https://gitlab.com/gitlab-org/gitlab-foss
 ```
 
+### gitlab.epfl.ch — single user (Matthieu Bovel)
+
+```bash
+CRAWLER_TOKEN__GITLAB_EPFL_CH=glpat-… \
+opc crawl --platforms gitlab.epfl.ch \
+  --default-host gitlab.epfl.ch --rounds 2 \
+  https://gitlab.epfl.ch/users/bovel
+```
+
+The dashboard-form URL `https://gitlab.epfl.ch/users/bovel` is canonicalized
+to `https://gitlab.epfl.ch/bovel` by the adapter; both forms produce the
+same graph node.
+
+### gitlab.ethz.ch — single user (vermeul, anonymous OK)
+
+```bash
+# Authenticated (read_api scope recommended)
+CRAWLER_TOKEN__GITLAB_ETHZ_CH=glpat-… \
+opc crawl --platforms gitlab.ethz.ch \
+  --default-host gitlab.ethz.ch --rounds 2 \
+  https://gitlab.ethz.ch/vermeul
+
+# Anonymous (public profile reads only; expansion endpoints return 403,
+# the adapter degrades silently — fine for a quick visibility check).
+opc crawl --platforms gitlab.ethz.ch \
+  --default-host gitlab.ethz.ch --rounds 2 \
+  https://gitlab.ethz.ch/vermeul
+```
+
 ### gitlab.epfl.ch — group + project mix
 
 ```bash

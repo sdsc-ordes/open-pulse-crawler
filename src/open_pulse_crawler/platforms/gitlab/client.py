@@ -61,12 +61,23 @@ class GitLabClient:
         caching a minimal dict (``id``, ``path``, ``web_url`` …) and
         rebuilding a lazy proxy on read; widen to iterators afterwards.
         """
-        if not tokens:
-            raise ValueError("At least one GitLab token is required")
+        # An empty token list means "anonymous reads only". GitLab instances
+        # such as gitlab.epfl.ch allow `/users`, `/groups`, `/projects` reads
+        # for public entities without a PAT — useful for a quick discovery
+        # crawl, and the only practical way to demo against self-hosted
+        # instances when the operator hasn't yet provisioned a token.
+        # Anonymous mode is rate-limited far more aggressively by GitLab,
+        # so token rotation is a no-op (`_rotate` short-circuits).
         self.host = host
         self.tokens = list(tokens)
         self._idx = 0
         self._gl_factory = _gl_factory
+        if not self.tokens:
+            logger.warning(
+                "GitLabClient(%s) constructed with no tokens — anonymous "
+                "reads only; rate limits will be tight.",
+                host,
+            )
         self._gl = self._build_gl()
 
         # Optional disk cache for single-entity lookups. Imported lazily to
@@ -91,6 +102,9 @@ class GitLabClient:
         all issue Personal Access Tokens. OAuth support can be added later
         without changing the wrapper's signature.
         """
+        if not self.tokens:
+            # Anonymous: don't pass private_token at all.
+            return self._gl_factory(url=f"https://{self.host}")
         return self._gl_factory(
             url=f"https://{self.host}",
             private_token=self.tokens[self._idx],
@@ -103,6 +117,8 @@ class GitLabClient:
         response. For Task 9 we just expose the helper; rotation triggers
         live in the adapter layer (Task 10).
         """
+        if not self.tokens:
+            return   # nothing to rotate in anonymous mode
         self._idx = (self._idx + 1) % len(self.tokens)
         self._gl = self._build_gl()
 
@@ -156,21 +172,48 @@ class GitLabClient:
 
     # ---- user iterators --------------------------------------------------------
 
+    @staticmethod
+    def _degrade_on_forbidden(host: str, endpoint: str, exc: Exception) -> List[Any]:
+        """Log and return ``[]`` when an iter endpoint is forbidden.
+
+        Anonymous mode and tokens with insufficient scope (``read_api``,
+        ``read_user``) frequently 403 on user-listing endpoints. We treat
+        those as "no edges from this endpoint" rather than aborting the
+        whole crawl — surface in the log so an operator can decide to
+        widen their token scope.
+        """
+        code = getattr(exc, "response_code", None)
+        logger.warning(
+            "%s on %s returned %s (likely insufficient token scope); "
+            "skipping that edge source.",
+            endpoint, host, code,
+        )
+        return []
+
     def iter_user_projects(self, user_id: Any) -> List[Any]:
         """Projects the user authored / owns."""
-        user = self._gl.users.get(user_id)
-        return list(user.projects.list(get_all=True))
+        try:
+            user = self._gl.users.get(user_id)
+            return list(user.projects.list(get_all=True))
+        except (gitlab.GitlabHttpError, gitlab.GitlabListError, gitlab.GitlabGetError) as exc:
+            return self._degrade_on_forbidden(self.host, f"users/{user_id}/projects", exc)
 
     def iter_user_contributed(self, user_id: Any) -> List[Any]:
         """Projects the user has contributed to (commits, merges, etc.)."""
-        user = self._gl.users.get(user_id)
-        # python-gitlab v5 exposes this as `contributed_projects`.
-        return list(user.contributed_projects.list(get_all=True))
+        try:
+            user = self._gl.users.get(user_id)
+            # python-gitlab v5 exposes this as `contributed_projects`.
+            return list(user.contributed_projects.list(get_all=True))
+        except (gitlab.GitlabHttpError, gitlab.GitlabListError, gitlab.GitlabGetError) as exc:
+            return self._degrade_on_forbidden(self.host, f"users/{user_id}/contributed_projects", exc)
 
     def iter_user_starred(self, user_id: Any) -> List[Any]:
         """Projects the user has starred."""
-        user = self._gl.users.get(user_id)
-        return list(user.starred_projects.list(get_all=True))
+        try:
+            user = self._gl.users.get(user_id)
+            return list(user.starred_projects.list(get_all=True))
+        except (gitlab.GitlabHttpError, gitlab.GitlabListError, gitlab.GitlabGetError) as exc:
+            return self._degrade_on_forbidden(self.host, f"users/{user_id}/starred_projects", exc)
 
     # ---- project iterators -----------------------------------------------------
 

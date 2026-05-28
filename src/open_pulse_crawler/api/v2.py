@@ -61,6 +61,79 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+# Named examples for ``POST /api/v2/crawl``. Surfaced in Swagger UI as a
+# dropdown so operators can try the multi-platform shape without typing
+# a request body from scratch. The bovel / vermeul examples target real
+# EPFL / ETHZ GitLab profiles — they're the smallest seeds that exercise
+# the per-host adapter dispatch end-to-end.
+_CRAWL_V2_REQUEST_EXAMPLES = {
+    "epfl_user_bovel": {
+        "summary": "EPFL GitLab user (Matthieu Bovel)",
+        "description": (
+            "Crawl one EPFL GitLab user profile, two BFS rounds. The "
+            "`/users/<name>` dashboard URL is normalized to the canonical "
+            "`/<name>` profile form by the GitLab adapter. Requires "
+            "`CRAWLER_TOKEN__GITLAB_EPFL_CH` (or anonymous public-data "
+            "reads if the instance allows them)."
+        ),
+        "value": {
+            "seeds": ["https://gitlab.epfl.ch/users/bovel"],
+            "max_rounds": 2,
+        },
+    },
+    "ethz_user_vermeul": {
+        "summary": "ETHZ GitLab user (vermeul)",
+        "description": (
+            "Crawl one ETHZ GitLab user profile, two BFS rounds. Uses "
+            "`CRAWLER_TOKEN__GITLAB_ETHZ_CH` when set; falls back to "
+            "anonymous reads — fine for public profile metadata, but "
+            "expansion endpoints (user projects/starred/contributed) "
+            "return 403 without `read_api` scope and are skipped."
+        ),
+        "value": {
+            "seeds": ["https://gitlab.ethz.ch/vermeul"],
+            "max_rounds": 2,
+        },
+    },
+    "mixed_epfl_ethz": {
+        "summary": "Cross-instance GitLab crawl",
+        "description": (
+            "Seeds from two self-hosted instances in one job. Each "
+            "URL routes to its host's adapter via `PlatformRegistry`. "
+            "Configure both `CRAWLER_TOKEN__GITLAB_EPFL_CH` and "
+            "`CRAWLER_TOKEN__GITLAB_ETHZ_CH`, and enable both hosts via "
+            "`CRAWLER_PLATFORMS=gitlab.epfl.ch,gitlab.ethz.ch`."
+        ),
+        "value": {
+            "seeds": [
+                "https://gitlab.epfl.ch/users/bovel",
+                "https://gitlab.ethz.ch/vermeul",
+            ],
+            "max_rounds": 2,
+        },
+    },
+    "github_plus_epfl": {
+        "summary": "GitHub + GitLab in one crawl",
+        "description": (
+            "Mix a github.com seed with an EPFL GitLab seed. The crawler's "
+            "dual-path dispatch routes the github.com URL through the "
+            "legacy `_process_*` helpers and the gitlab.epfl.ch URL "
+            "through the `GitLabAdapter`. Set "
+            "`CRAWLER_PLATFORMS=github.com,gitlab.epfl.ch` and both "
+            "corresponding tokens."
+        ),
+        "value": {
+            "seeds": [
+                "sdsc-ordes/open-pulse-crawler",
+                "https://gitlab.epfl.ch/users/bovel",
+            ],
+            "max_rounds": 2,
+            "max_contributors": 100,
+        },
+    },
+}
+
+
 # ---------------------------------------------------------------------------
 # Response models specific to v2
 # ---------------------------------------------------------------------------
@@ -268,7 +341,7 @@ def _run_crawl_v2(
 )
 def start_crawl_v2(
     background_tasks: BackgroundTasks,
-    body: CrawlRequest = Body(...),
+    body: CrawlRequest = Body(..., openapi_examples=_CRAWL_V2_REQUEST_EXAMPLES),
     _token: str = Depends(verify_token),
 ) -> CrawlJobResponse:
     """Submit a crawl whose seeds may target any configured platform host.

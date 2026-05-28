@@ -152,7 +152,10 @@ class GitLabAdapter(PlatformAdapter):
         GitLab's user/group distinction collapses to ``USER_OR_ORG`` here
         to stay compatible with the existing enum. The internal
         user-vs-group split is preserved in the kind cache for ``fetch``.
+
+        The URI is canonicalized first (mirrors :meth:`fetch`).
         """
+        uri = self.normalize_uri(uri)
         path = self._path_of(uri)
         kind = self._resolve_kind(path)
         if kind == "user" or kind == "group":
@@ -169,10 +172,24 @@ class GitLabAdapter(PlatformAdapter):
         Delegates to :func:`open_pulse_crawler.node_id.canonical_url`,
         which lowercases the host, enforces ``https``, and strips
         trailing slashes.
+
+        Also rewrites GitLab's dashboard-form user URLs to their
+        canonical profile form: ``/users/<name>`` → ``/<name>``. GitLab
+        emits the ``/users/`` prefix on some redirects and in API
+        responses; the canonical profile page (and the form we key the
+        graph on) is the bare ``/<name>``.
         """
         parsed = urlparse(raw)
         host = (parsed.hostname or self.instance_host).lower()
-        return canonical_url(host, parsed.path or "/")
+        path = parsed.path or "/"
+        # Strip the GitLab dashboard `/users/` prefix for user profile URLs.
+        # Only top-level `/users/<name>` is rewritten; we don't touch
+        # nested `/users/<name>/something` since that's not a user profile.
+        if path.startswith("/users/"):
+            tail = path[len("/users/"):]
+            if tail and "/" not in tail.rstrip("/"):
+                path = "/" + tail.rstrip("/")
+        return canonical_url(host, path)
 
     # -------------------------------------------------------------------- fetch
 
@@ -182,7 +199,13 @@ class GitLabAdapter(PlatformAdapter):
         Routes to one of ``GitLabUserModel`` / ``GitLabGroupModel`` /
         ``GitLabProjectModel`` based on the cached/probed kind. Returns
         ``None`` when the URL doesn't resolve to a known entity.
+
+        The URI is canonicalized first (lowercased host, ``/users/<name>``
+        → ``/<name>``, trailing slash stripped) so callers can pass the
+        URL form they have on hand — the dashboard form, the bare
+        profile URL, etc. — without having to pre-normalize.
         """
+        uri = self.normalize_uri(uri)
         path = self._path_of(uri)
         kind = self._resolve_kind(path)
         if kind == "user":

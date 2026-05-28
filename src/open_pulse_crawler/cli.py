@@ -110,6 +110,16 @@ def _build_registry(
         tokens = resolve_tokens(host)
         if not tokens:
             missing.append(host)
+            if host == "github.com":
+                # GitHub anonymous reads are rate-limited at 60/hour — practically
+                # unusable for crawling. Skip github.com without tokens; the
+                # legacy code path will report the missing token clearly.
+                continue
+            # Anonymous mode for GitLab instances: public projects/users/groups
+            # remain readable. `GitLabClient` handles `tokens=[]` by building
+            # an unauthenticated `gitlab.Gitlab` instance.
+            gl_client = GitLabClient(host=host, tokens=[])
+            reg.register(GitLabAdapter(gl_client, instance_host=host))
             continue
         if host == "github.com":
             github_client = GitHubClient(
