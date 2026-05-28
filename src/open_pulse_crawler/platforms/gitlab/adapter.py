@@ -29,12 +29,13 @@ Resolution strategy:
 Results are cached on ``self._kind_cache`` keyed by the URL path string,
 so ``classify`` and ``fetch`` for the same URL only probe once.
 
-What this task ships (Task 10)
-------------------------------
+What this module ships (Tasks 10 + 11)
+--------------------------------------
 
-``classify``, ``fetch``, ``normalize_uri``, ``rate_limit_state``. The
-``expand`` method raises ``NotImplementedError`` — Task 11 implements
-edge emission against the GitLab subclass models.
+``classify``, ``fetch``, ``normalize_uri``, ``rate_limit_state`` (Task 10)
+plus ``expand`` (Task 11). ``expand`` walks the GitLab client's iterator
+endpoints and yields :class:`Edge` instances pointing at canonical URLs
+on this adapter's instance host.
 """
 
 from __future__ import annotations
@@ -279,11 +280,168 @@ class GitLabAdapter(PlatformAdapter):
     # ------------------------------------------------------------------- expand
 
     def expand(self, node, opts: ExpandOpts) -> Iterable[Edge]:
-        """Edge emission lands in Task 11. The placeholder raises so the
-        class is instantiable but accidental use fails loudly instead of
-        silently emitting nothing.
+        """Emit outgoing edges from ``node``, honouring ``opts``.
+
+        Dispatch on the concrete GitLab model subclass. Unknown node types
+        yield nothing — a defensive default rather than raising, so a
+        future model subclass doesn't crash the BFS engine.
         """
-        raise NotImplementedError("Task 11 implements expand()")
+        if isinstance(node, GitLabUserModel):
+            yield from self._expand_user(node, opts)
+        elif isinstance(node, GitLabGroupModel):
+            yield from self._expand_group(node, opts)
+        elif isinstance(node, GitLabProjectModel):
+            yield from self._expand_project(node, opts)
+
+    # -- per-kind helpers -------------------------------------------------
+
+    def _expand_user(self, node: GitLabUserModel, opts: ExpandOpts) -> Iterable[Edge]:
+        # Owned projects → ``authored`` edges (user owns the namespace).
+        for proj in self._client.iter_user_projects(node.id):
+            dst = self._url_for_path(getattr(proj, "path_with_namespace", ""))
+            yield Edge(src=node.url, kind="authored", dst=dst)
+
+        # Starred projects → ``starred`` edges.
+        for proj in self._client.iter_user_starred(node.id):
+            dst = self._url_for_path(getattr(proj, "path_with_namespace", ""))
+            yield Edge(src=node.url, kind="starred", dst=dst)
+
+        # Contributed-to projects: we don't keep them on the user model
+        # (the contributor list is recorded on the project's side), but the
+        # BFS engine still needs to discover them, so emit the edge.
+        for proj in self._client.iter_user_contributed(node.id):
+            dst = self._url_for_path(getattr(proj, "path_with_namespace", ""))
+            yield Edge(src=node.url, kind="contributor_of", dst=dst)
+
+    def _expand_group(self, node: GitLabGroupModel, opts: ExpandOpts) -> Iterable[Edge]:
+        # Members → ``member_of`` edges (user → group).
+        for member in self._client.iter_group_members(node.id):
+            username = getattr(member, "username", None)
+            if not username:
+                continue
+            yield Edge(
+                src=self._url_for_path(username),
+                kind="member_of",
+                dst=node.url,
+            )
+
+        # Subgroups → ``subgroup_of`` edges (child → parent).
+        for sub in self._client.iter_subgroups(node.id):
+            full_path = getattr(sub, "full_path", None)
+            if not full_path:
+                continue
+            yield Edge(
+                src=self._url_for_path(full_path),
+                kind="subgroup_of",
+                dst=node.url,
+            )
+
+        # Group-owned projects → ``authored`` edges (group → project).
+        for proj in self._client.iter_group_projects(node.id):
+            path = getattr(proj, "path_with_namespace", None)
+            if not path:
+                continue
+            yield Edge(src=node.url, kind="authored", dst=self._url_for_path(path))
+
+    def _expand_project(self, node: GitLabProjectModel, opts: ExpandOpts) -> Iterable[Edge]:
+        # Contributors: python-gitlab's ``repository_contributors`` returns
+        # commit-author records keyed by email/name — no stable user
+        # identifier. We emit a ``contributor_of`` edge only when the entry
+        # carries a ``username`` field (some GitLab instances enrich it);
+        # otherwise we silently skip since there's no real user to point at.
+        # ``opts.max_contributors`` caps the number of *emitted* edges
+        # (skipped-no-username entries do not count toward the cap).
+        limit = opts.max_contributors
+        emitted = 0
+        for contributor in self._client.iter_project_contributors(node.id):
+            if limit is not None and emitted >= limit:
+                break
+            username = self._get_username(contributor)
+            if not username:
+                continue
+            yield Edge(
+                src=self._url_for_path(username),
+                kind="contributor_of",
+                dst=node.url,
+            )
+            emitted += 1
+
+        # Forks: edge points from the downstream fork *to* this upstream.
+        for fork in self._client.iter_project_forks(node.id):
+            path = getattr(fork, "path_with_namespace", None)
+            if not path:
+                continue
+            yield Edge(
+                src=self._url_for_path(path),
+                kind="forked_from",
+                dst=node.url,
+            )
+
+        # Issues — only fetched when crawl_issues is on (the client call
+        # itself is gated so we never hit GitLab when the flag is off).
+        if opts.crawl_issues:
+            for issue in self._client.iter_project_issues(node.id, max_n=opts.issue_max):
+                username = self._author_username(getattr(issue, "author", None))
+                if not username:
+                    continue
+                yield Edge(
+                    src=self._url_for_path(username),
+                    kind="opened_issue_in",
+                    dst=node.url,
+                )
+
+        # Merge requests — same shape as issues, gated on crawl_prs.
+        if opts.crawl_prs:
+            for mr in self._client.iter_project_merge_requests(node.id, max_n=opts.pr_max):
+                username = self._author_username(getattr(mr, "author", None))
+                if not username:
+                    continue
+                yield Edge(
+                    src=self._url_for_path(username),
+                    kind="opened_pr_in",
+                    dst=node.url,
+                )
+
+        # Starrers — gated on crawl_stars. GitLabClient already returns []
+        # when the underlying endpoint is missing on older self-hosted
+        # instances, so we just iterate.
+        if opts.crawl_stars:
+            for starrer in self._client.iter_project_starrers(node.id):
+                username = self._starrer_username(starrer)
+                if not username:
+                    continue
+                yield Edge(
+                    src=self._url_for_path(username),
+                    kind="starred",
+                    dst=node.url,
+                )
+
+    # -- shape helpers ----------------------------------------------------
+
+    @staticmethod
+    def _get_username(entry: Any) -> Optional[str]:
+        """Best-effort ``username`` lookup on a dict or attr-style object."""
+        if isinstance(entry, dict):
+            value = entry.get("username")
+        else:
+            value = getattr(entry, "username", None)
+        return value if isinstance(value, str) and value else None
+
+    @classmethod
+    def _author_username(cls, author: Any) -> Optional[str]:
+        """Extract the ``username`` from python-gitlab's author dict/object."""
+        if author is None:
+            return None
+        return cls._get_username(author)
+
+    @classmethod
+    def _starrer_username(cls, starrer: Any) -> Optional[str]:
+        """Pull ``username`` from a starrer entry's nested ``user`` payload."""
+        if isinstance(starrer, dict):
+            user = starrer.get("user")
+        else:
+            user = getattr(starrer, "user", None)
+        return cls._get_username(user) if user is not None else None
 
     # ----------------------------------------------------------- rate_limit
 
