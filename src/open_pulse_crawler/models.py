@@ -280,6 +280,76 @@ class GitLabProjectModel(RepoModel):
     namespace: Optional[str] = None
 
 
+# --- Zenodo subclasses ------------------------------------------------------
+#
+# Zenodo is a research-data archive (DOI-keyed records, communities,
+# uploader accounts). It has no social graph, so the inherited follower /
+# following / star / watch lists stay empty by construction. See
+# ``docs/superpowers/specs/2026-05-28-zenodo-adapter-design.md`` for the
+# full model contract.
+
+
+class ZenodoUserModel(UserModel):
+    """A Zenodo platform account (uploader).
+
+    Distinct from creators — creators are author names recorded on records
+    (``ZenodoRecordModel.creators``), not Zenodo accounts. Cross-platform
+    identity resolution is intentionally out of scope (handled by another
+    tool downstream), so we model only the platform-internal account here.
+
+    Social fields (``followers``, ``following``, ``starred_repositories``,
+    ``watched_repositories``) inherited from ``UserModel`` are unused —
+    Zenodo has no social graph. They stay empty by construction.
+    """
+    subkind: Literal["ZenodoUser"] = "ZenodoUser"
+    orcid: Optional[str] = None
+    affiliation: str = ""
+
+
+class ZenodoCommunityModel(OrgModel):
+    """A Zenodo community.
+
+    ``login`` (inherited from ``OrgModel``) is the community slug. URL form:
+    ``https://zenodo.org/communities/<slug>``. ``members`` is intentionally
+    not populated — the member-listing endpoint is auth-gated on production
+    Zenodo and out of scope for this adapter.
+    """
+    subkind: Literal["ZenodoCommunity"] = "ZenodoCommunity"
+    doi: Optional[str] = None
+    description: str = ""
+    community_type: str = ""   # "project" | "organization" | "event" | "topic"
+
+
+class ZenodoRecordModel(RepoModel):
+    """A Zenodo record. One node per concept DOI; versions collapse into
+    ``versions: list[dict]`` metadata.
+
+    The concept DOI is the primary identity. When a record has no versioning,
+    ``concept_doi == doi`` (self-reference) and ``versions`` is empty. When
+    a record has versions, ``doi == concept_doi`` (the node represents the
+    lineage, not a specific version), ``latest_version_*`` describes the
+    latest, and ``versions`` carries every version's metadata.
+
+    ``creators`` is a list of dicts ``{name, orcid, affiliation, type}`` —
+    not crawled to User nodes. Identity resolution is downstream of this
+    adapter.
+    """
+    subkind: Literal["ZenodoRecord"] = "ZenodoRecord"
+    doi: str
+    concept_doi: str
+    latest_version: str = ""
+    latest_version_doi: str = ""
+    latest_version_url: str = ""
+    versions: List[Dict[str, Any]] = Field(default_factory=list)
+    resource_type: str = ""
+    publication_date: str = ""
+    title: str = ""
+    creators: List[Dict[str, Any]] = Field(default_factory=list)
+    keywords: List[str] = Field(default_factory=list)
+    license: str = ""
+    access_right: Literal["open", "embargoed", "restricted", "closed"] = "open"
+
+
 # Schema version bumped when the graph contract changed. v2 added URL-keyed
 # nodes; v3 adds the ``subkind`` discriminator + ``extras`` /
 # ``external_identifiers`` slots so GitLab subclasses can coexist with the
@@ -288,11 +358,21 @@ GRAPH_SCHEMA_VERSION = 3
 
 
 # Discriminated unions on ``subkind`` let the same dict hold either the
-# GitHub concrete class or its GitLab counterpart. Pydantic v2 picks the
-# right class on deserialization by reading the literal subkind tag.
-UserNode = Annotated[Union[UserModel, GitLabUserModel], Field(discriminator="subkind")]
-OrgNode = Annotated[Union[OrgModel, GitLabGroupModel], Field(discriminator="subkind")]
-RepoNode = Annotated[Union[RepoModel, GitLabProjectModel], Field(discriminator="subkind")]
+# GitHub concrete class or its GitLab / Zenodo counterpart. Pydantic v2
+# picks the right class on deserialization by reading the literal subkind
+# tag.
+UserNode = Annotated[
+    Union[UserModel, GitLabUserModel, ZenodoUserModel],
+    Field(discriminator="subkind"),
+]
+OrgNode = Annotated[
+    Union[OrgModel, GitLabGroupModel, ZenodoCommunityModel],
+    Field(discriminator="subkind"),
+]
+RepoNode = Annotated[
+    Union[RepoModel, GitLabProjectModel, ZenodoRecordModel],
+    Field(discriminator="subkind"),
+]
 
 
 class GraphData(BaseModel):
