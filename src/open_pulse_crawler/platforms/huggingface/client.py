@@ -85,3 +85,78 @@ class HuggingFaceHTTPClient:
             return
         self._idx = (self._idx + 1) % len(self.tokens)
         self._apply_current_token()
+
+    # ---- single-entity fetches with 429 retry ------------------------------
+
+    def _do_get(self, path: str, params: Optional[Dict[str, Any]] = None,
+                _retried: bool = False) -> httpx.Response:
+        """GET ``path`` with one automatic retry on HTTP 429.
+
+        Honors the ``Retry-After`` header (capped at ``MAX_RETRY_AFTER_SECONDS``).
+        Second 429 raises via the caller's ``raise_for_status``.
+        """
+        resp = (self._session.get(path, params=params)
+                if params is not None else self._session.get(path))
+        if resp.status_code == 429 and not _retried:
+            retry_after_raw = resp.headers.get("Retry-After", "5")
+            try:
+                retry_after = float(retry_after_raw)
+            except (TypeError, ValueError):
+                retry_after = 5.0
+            retry_after = min(max(retry_after, 0.0), MAX_RETRY_AFTER_SECONDS)
+            logger.warning(
+                "%s on %s returned 429; sleeping %.1fs then retrying once.",
+                path, self.host, retry_after,
+            )
+            time.sleep(retry_after)
+            return self._do_get(path, params=params, _retried=True)
+        return resp
+
+    def _request_json(
+        self, path: str, params: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Any]:
+        """GET ``path`` and return parsed JSON body.
+
+        404 → ``None``. Any other non-2xx raises ``httpx.HTTPStatusError``.
+        """
+        resp = self._do_get(path, params)
+        if resp.status_code == 404:
+            return None
+        if not resp.is_success:
+            resp.raise_for_status()
+        return resp.json()
+
+    def get_model(self, repo_id: str) -> Optional[Dict[str, Any]]:
+        """Return the model JSON for the given ``<owner>/<name>``, or None on 404."""
+        return self._request_json(f"/api/models/{repo_id}")
+
+    def get_dataset(self, repo_id: str) -> Optional[Dict[str, Any]]:
+        """Return the dataset JSON for the given ``<owner>/<name>``, or None on 404."""
+        return self._request_json(f"/api/datasets/{repo_id}")
+
+    def get_space(self, repo_id: str) -> Optional[Dict[str, Any]]:
+        """Return the space JSON for the given ``<owner>/<name>``, or None on 404."""
+        return self._request_json(f"/api/spaces/{repo_id}")
+
+    def get_paper(self, arxiv_id: str) -> Optional[Dict[str, Any]]:
+        """Return the paper JSON for the given arxiv ID, or None on 404.
+
+        HuggingFace's /api/papers/<arxiv-id> sometimes returns a list of
+        submissions (one per HF re-post); take the first dict.
+        """
+        data = self._request_json(f"/api/papers/{arxiv_id}")
+        if isinstance(data, list):
+            return data[0] if data else None
+        return data
+
+    def get_collection(self, slug: str) -> Optional[Dict[str, Any]]:
+        """Return the collection JSON for ``<owner>/<slug-with-id>``, or None on 404."""
+        return self._request_json(f"/api/collections/{slug}")
+
+    def get_user_overview(self, username: str) -> Optional[Dict[str, Any]]:
+        """Return the user overview JSON for ``<username>``, or None on 404."""
+        return self._request_json(f"/api/users/{username}/overview")
+
+    def get_org_overview(self, org_name: str) -> Optional[Dict[str, Any]]:
+        """Return the org overview JSON for ``<org_name>``, or None on 404."""
+        return self._request_json(f"/api/organizations/{org_name}/overview")
