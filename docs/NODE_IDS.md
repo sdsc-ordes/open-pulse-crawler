@@ -103,17 +103,22 @@ default_host="gitlab.com")` returns
 The hybrid choice — URLs at the *identity* boundary, bare shorthand on
 internal edge lists — keeps the on-the-wire model compact.
 
-> **Which outputs are URL-joined, and which aren't.** Node *identifiers* are
-> canonical URLs everywhere (dict keys, CSV `id`, edges CSV
-> `source`/`target`, JSON-LD `@id`). But the **edge-list fields on a node**
-> are only normalized to URLs by the **CSV and JSON-LD exporters**. The
-> **REST `GET /api/v*/graph` response returns those fields as bare
-> shorthand** — it emits the raw model via `model_dump()` with no
-> normalization. A REST consumer that wants URL-joined edges must either
-> (a) use the CSV/JSON-LD export, or (b) prepend the owning node's `url`
-> host to each shorthand entry (e.g. `followers: ["caviri"]` on a node whose
-> `url` host is `gitlab.epfl.ch` → `https://gitlab.epfl.ch/caviri`). Do not
-> assume `github.com` — the shorthand is host-relative to its owning node.
+> **All public outputs are URL-joined.** Node *identifiers* are canonical
+> URLs everywhere (dict keys, CSV `id`, edges CSV `source`/`target`, JSON-LD
+> `@id`). The **edge-list fields on a node** are stored as bare shorthand
+> *internally* (compact), but every public boundary normalizes them to
+> canonical URLs: the CSV/JSON-LD exporters at write time, and the REST
+> `GET /api/v*/graph` + `GET /api/v2/nodes` responses at the boundary
+> (host-aware — each shorthand resolves against its owning node's host, so
+> non-github edges get the correct host). A consumer can therefore join an
+> edge endpoint directly against a node key with no normalization of its own.
+>
+> Scope: only node-reference edge lists (`followers`, `contributors`,
+> `members`, `*_repositories`, `dependencies`/`dependents`, `forked_from`,
+> issue/PR activity, plus HuggingFace `member_orgs`/`used_models`) are
+> rewritten. Platform-specific typed fields that aren't bare refs — `authors`
+> / `creators` (dict lists), `relations`, `affiliations`, `tags`, `keywords`,
+> … — keep their native shape.
 
 ## Looking ahead: multi-platform
 

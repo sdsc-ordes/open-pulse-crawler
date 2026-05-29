@@ -50,6 +50,8 @@ from .deps import (
     _jobs,
     _persist_request,
     _read_snapshot,
+    normalize_graph_edge_urls,
+    normalize_node_edge_urls,
     _seed_or_resume,
     _state_path,
     _write_snapshot,
@@ -706,7 +708,7 @@ def get_graph_v2(
     ):
         return GraphResponse(
             job_id=job_id,
-            graph=record.graph.model_dump(),
+            graph=normalize_graph_edge_urls(record.graph.model_dump()),
             partial=False,
             status=record.status,
             rounds_completed=record.rounds_completed,
@@ -730,7 +732,7 @@ def get_graph_v2(
         snap_status = snapshot.get("status")
         return GraphResponse(
             job_id=job_id,
-            graph=snapshot.get("graph") or {},
+            graph=normalize_graph_edge_urls(snapshot.get("graph") or {}),
             partial=snap_status != JobStatus.COMPLETED.value,
             status=snap_status,
             rounds_completed=snapshot.get("rounds_completed"),
@@ -739,7 +741,7 @@ def get_graph_v2(
     if record is not None and record.graph is not None:
         return GraphResponse(
             job_id=job_id,
-            graph=record.graph.model_dump(),
+            graph=normalize_graph_edge_urls(record.graph.model_dump()),
             partial=record.status != JobStatus.COMPLETED,
             status=record.status,
             rounds_completed=record.rounds_completed,
@@ -822,7 +824,7 @@ def list_nodes(
         for collection in (graph.users, graph.orgs, graph.repos, graph.teams):
             for node in collection.values():
                 if _matches_filters(node, subkind, platform, instance):
-                    out.append(node.model_dump())
+                    out.append(normalize_node_edge_urls(node.model_dump()))
     return NodeListResponse(nodes=out, count=len(out))
 
 

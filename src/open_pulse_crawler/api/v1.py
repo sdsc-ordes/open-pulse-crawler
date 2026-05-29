@@ -36,6 +36,7 @@ from .deps import (
     _load_persisted_request,
     _persist_request,
     _read_snapshot,
+    normalize_graph_edge_urls,
     _run_crawl,
     _run_crawl_graphql,
     _state_path,
@@ -465,7 +466,7 @@ def get_graph(
     ):
         return GraphResponse(
             job_id=job_id,
-            graph=record.graph.model_dump(),
+            graph=normalize_graph_edge_urls(record.graph.model_dump()),
             partial=False,
             status=record.status,
             rounds_completed=record.rounds_completed,
@@ -491,7 +492,7 @@ def get_graph(
         snap_status = snapshot.get("status")
         return GraphResponse(
             job_id=job_id,
-            graph=snapshot.get("graph") or {},
+            graph=normalize_graph_edge_urls(snapshot.get("graph") or {}),
             partial=snap_status != JobStatus.COMPLETED.value,
             status=snap_status,
             rounds_completed=snapshot.get("rounds_completed"),
@@ -501,7 +502,7 @@ def get_graph(
     if record is not None and record.graph is not None:
         return GraphResponse(
             job_id=job_id,
-            graph=record.graph.model_dump(),
+            graph=normalize_graph_edge_urls(record.graph.model_dump()),
             partial=record.status != JobStatus.COMPLETED,
             status=record.status,
             rounds_completed=record.rounds_completed,

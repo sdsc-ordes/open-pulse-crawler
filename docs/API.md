@@ -430,7 +430,7 @@ fields; GitHub subkinds are unchanged from v1.
         "platform": "github",
         "login": "torvalds",
         "contributors": [],
-        "followers": ["caviri"],
+        "followers": ["https://github.com/caviri"],
         "extras": {},
         "external_identifiers": []
       }
@@ -443,7 +443,7 @@ fields; GitHub subkinds are unchanged from v1.
         "path": "gitlab-org",
         "visibility": "public",
         "parent": null,
-        "members": ["someuser"],
+        "members": ["https://gitlab.com/someuser"],
         "extras": {},
         "external_identifiers": []
       }
@@ -462,23 +462,26 @@ flattened into a single `nodes` dict — that is what `GET /api/v2/nodes`
 returns). Each dict is keyed by the node's canonical URL, and every node
 carries a `subkind` discriminator plus platform-specific fields.
 
-> **⚠️ Edge-list fields are bare shorthand, not URLs.** Node *keys* are
-> canonical URLs, but the per-node edge-list fields — `contributors`,
-> `members`, `followers`, `following`, `starred_repositories`,
-> `authored_repositories`, `forked_repositories`, … — contain **bare
-> shorthand** (a login like `"caviri"`, or an `"owner/repo"` string), **not**
-> URLs. This is intentional: the internal model keeps the compact form, and
-> only the CSV / JSON-LD exporters (`export_to_csv` / JSON-LD) normalize
-> endpoints to canonical URLs at write time. **The REST `/graph` response
-> does NOT normalize them.**
+> **Edge-list endpoints are canonical URLs.** Both node *keys* and the
+> per-node edge-list fields — `contributors`, `members`, `followers`,
+> `following`, `starred_repositories`, `watched_repositories`,
+> `authored_repositories`, `forked_repositories`, `dependencies`,
+> `dependents`, `forked_from`, `issue_authors`, `pr_authors`, `commenters`,
+> `pr_reviewers`, `repositories` (teams), plus `member_orgs` / `used_models`
+> (HuggingFace) — are emitted as canonical URLs, so the whole graph joins on
+> one uniform key with no client-side normalization.
 >
-> To join an edge endpoint back to a node key, prepend the owning node's
-> host: a `followers` entry `"caviri"` on a node whose `url` is
-> `https://github.com/marftn` resolves to `https://github.com/caviri`; the
-> same shorthand on a `gitlab.epfl.ch` node resolves to
-> `https://gitlab.epfl.ch/caviri`. Use the owning node's `url` host — do
-> **not** assume `github.com`. If you want pre-joined URL→URL edges, use the
-> CSV edges export or the JSON-LD output instead.
+> The model stores these fields as compact shorthand internally (a login or
+> `owner/repo` string); the `/graph` response normalizes each entry against
+> its **owning node's host** at the boundary (so a `followers` entry on a
+> `gitlab.epfl.ch` node becomes a `gitlab.epfl.ch` URL, not a `github.com`
+> one). `GET /api/v2/nodes` applies the same normalization per node.
+>
+> Note: only these node-reference edge lists are rewritten. Platform-specific
+> *typed* fields that aren't bare node refs — `authors` / `creators`
+> (lists of `{name, …}` dicts), `relations`, `affiliations`, `versions`, and
+> scalar lists like `tags` / `keywords` / `subjects` — keep their native
+> shape.
 
 ### `GET /api/v2/nodes` — filtered listing
 
