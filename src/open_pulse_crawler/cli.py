@@ -107,7 +107,15 @@ def _build_registry(
     github_client: Optional[GitHubClient] = None
     missing: List[str] = []
     for host in platforms_list:
-        tokens = resolve_tokens(host)
+        # DataCite uses the actual API host for token lookup, not the
+        # user-facing platform key ``datacite.org``.  Resolve via
+        # ``api.datacite.org`` so the env-var is
+        # ``CRAWLER_TOKEN__API_DATACITE_ORG`` (not ``CRAWLER_TOKEN__DATACITE_ORG``).
+        tokens = (
+            resolve_tokens("api.datacite.org")
+            if host == "datacite.org"
+            else resolve_tokens(host)
+        )
         if not tokens:
             missing.append(host)
             if host == "github.com":
@@ -131,6 +139,22 @@ def _build_registry(
                 from .platforms.infoscience.adapter import InfoscienceAdapter
                 isc = InfoscienceClient(host=host, tokens=[])
                 reg.register(InfoscienceAdapter(isc, instance_host=host))
+                continue
+            if host == "datacite.org":
+                # Anonymous DataCite: public /dois and /clients are readable
+                # without a token. ``missing`` still surfaces the gap via
+                # doctor. The user-facing platform key is ``datacite.org`` but
+                # the adapter owns 5 URL hosts (doi.org, ror.org, orcid.org,
+                # api.datacite.org, commons.datacite.org).
+                from .platforms.datacite_adapter.client import DataCiteHTTPClient
+                from .platforms.datacite_adapter.adapter import DataCiteAdapter
+                dcc = DataCiteHTTPClient(host="api.datacite.org", tokens=[])
+                adapter = DataCiteAdapter(client=dcc, instance_host="api.datacite.org")
+                reg.register_hosts(
+                    ["doi.org", "ror.org", "orcid.org",
+                     "api.datacite.org", "commons.datacite.org"],
+                    adapter,
+                )
                 continue
             # Anonymous mode for GitLab instances: public projects/users/groups
             # remain readable. `GitLabClient` handles `tokens=[]` by building
@@ -157,6 +181,16 @@ def _build_registry(
             from .platforms.infoscience.adapter import InfoscienceAdapter
             isc = InfoscienceClient(host=host, tokens=tokens)
             reg.register(InfoscienceAdapter(isc, instance_host=host))
+        elif host == "datacite.org":
+            from .platforms.datacite_adapter.client import DataCiteHTTPClient
+            from .platforms.datacite_adapter.adapter import DataCiteAdapter
+            dcc = DataCiteHTTPClient(host="api.datacite.org", tokens=tokens)
+            adapter = DataCiteAdapter(client=dcc, instance_host="api.datacite.org")
+            reg.register_hosts(
+                ["doi.org", "ror.org", "orcid.org",
+                 "api.datacite.org", "commons.datacite.org"],
+                adapter,
+            )
         else:
             gl_client = GitLabClient(host=host, tokens=tokens)
             reg.register(GitLabAdapter(gl_client, instance_host=host))

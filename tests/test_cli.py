@@ -263,3 +263,35 @@ def test_build_registry_registers_infoscience_with_token(monkeypatch):
     adapter = registry.adapter_for("https://infoscience.epfl.ch/handle/20.500.14299/1")
     from open_pulse_crawler.platforms.infoscience.adapter import InfoscienceAdapter
     assert isinstance(adapter, InfoscienceAdapter)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# DataCite adapter registration (Task 9)
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def test_build_registry_datacite_anonymous_registers_against_five_hosts(monkeypatch):
+    from open_pulse_crawler.cli import _build_registry
+    from open_pulse_crawler.platforms.datacite_adapter.adapter import DataCiteAdapter
+    monkeypatch.delenv("CRAWLER_TOKEN__API_DATACITE_ORG", raising=False)
+    monkeypatch.delenv("CRAWLER_TOKEN_POOL__API_DATACITE_ORG", raising=False)
+    registry, _gh, missing = _build_registry(["datacite.org"])
+    assert "datacite.org" in missing
+    # All five hosts resolve to the same DataCiteAdapter instance
+    a = registry.adapter_for("https://doi.org/10.6084/m9.figshare.99")
+    b = registry.adapter_for("https://ror.org/02s376052")
+    c = registry.adapter_for("https://orcid.org/0000-0002-1825-0097")
+    d = registry.adapter_for("https://api.datacite.org/dois/10.x/y")
+    e = registry.adapter_for("https://commons.datacite.org/repositories/cern.zenodo")
+    assert a is b is c is d is e
+    assert isinstance(a, DataCiteAdapter)
+
+
+def test_build_registry_datacite_with_token_marks_present(monkeypatch):
+    from open_pulse_crawler.cli import _build_registry
+    monkeypatch.setenv("CRAWLER_TOKEN__API_DATACITE_ORG", "dc-pat-test")
+    registry, _gh, missing = _build_registry(["datacite.org"])
+    assert "datacite.org" not in missing
+    a = registry.adapter_for("https://doi.org/10.6084/m9.figshare.99")
+    from open_pulse_crawler.platforms.datacite_adapter.adapter import DataCiteAdapter
+    assert isinstance(a, DataCiteAdapter)
