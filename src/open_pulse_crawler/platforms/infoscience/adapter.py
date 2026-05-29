@@ -189,6 +189,25 @@ class InfoscienceAdapter(PlatformAdapter):
                 "authority_uuid": entry.get("authority"),
                 "confidence": entry.get("confidence"),
             })
+        affiliations = []
+        for entry in meta.get("cris.virtual.department") or []:
+            if not isinstance(entry, dict):
+                continue
+            affiliations.append({
+                "name": entry.get("value", ""),
+                "authority_uuid": entry.get("authority"),
+            })
+        relations = []
+        for key, entries in meta.items():
+            if not key.startswith("dc.relation."):
+                continue
+            qualifier = key[len("dc.relation."):].lower()
+            for entry in entries or []:
+                if not isinstance(entry, dict):
+                    continue
+                value = entry.get("value", "")
+                if value:
+                    relations.append({"qualifier": qualifier, "value": value})
         return InfoscienceItem(
             url=uri,
             full_name=raw.get("handle", ""),
@@ -202,13 +221,14 @@ class InfoscienceAdapter(PlatformAdapter):
             title=self._meta_first(meta, "dc.title"),
             abstract=self._meta_first(meta, "dc.description.abstract"),
             authors=authors,
+            affiliations=affiliations,
+            relations=relations,
             keywords=self._meta_values(meta, "dc.subject"),
             language=self._meta_first(meta, "dc.language.iso"),
             license=self._meta_first(meta, "datacite.rights") or self._meta_first(meta, "dc.rights"),
             journal=self._meta_first(meta, "dc.relation.ispartof"),
             issn=self._meta_first(meta, "dc.identifier.issn"),
             isbn=self._meta_first(meta, "dc.identifier.isbn"),
-            extras={"_raw_metadata": meta},  # for _expand_item
         )
 
     def _build_person(self, uri: str, raw: Dict[str, Any]) -> InfosciencePerson:
@@ -277,13 +297,9 @@ class InfoscienceAdapter(PlatformAdapter):
         return f"https://{self.instance_host}/server/api/core/items/{uuid}"
 
     def _expand_item(self, node: InfoscienceItem, opts: ExpandOpts) -> Iterable[Edge]:
-        raw_meta = node.extras.get("_raw_metadata", {}) if node.extras else {}
-
         # authored_by
-        for entry in raw_meta.get("dc.contributor.author") or []:
-            if not isinstance(entry, dict):
-                continue
-            authority = entry.get("authority")
+        for entry in node.authors:
+            authority = entry.get("authority_uuid")
             if not authority:
                 continue
             yield Edge(
@@ -292,11 +308,9 @@ class InfoscienceAdapter(PlatformAdapter):
                 dst=self._person_url_from_uuid(authority),
             )
 
-        # affiliated_with — from CRIS-virtual department authorities
-        for entry in raw_meta.get("cris.virtual.department") or []:
-            if not isinstance(entry, dict):
-                continue
-            authority = entry.get("authority")
+        # affiliated_with — from typed affiliations field
+        for entry in node.affiliations:
+            authority = entry.get("authority_uuid")
             if not authority:
                 continue
             yield Edge(
@@ -306,26 +320,21 @@ class InfoscienceAdapter(PlatformAdapter):
             )
 
         # related_to.<RelationType> via DataCite synthesizer
-        for key, entries in (raw_meta or {}).items():
-            if not key.startswith("dc.relation."):
+        for rel in node.relations:
+            qualifier = rel.get("qualifier", "")
+            relation = _RELATION_CAMELCASE.get(qualifier, qualifier)
+            ident = rel.get("value", "")
+            if not ident:
                 continue
-            relation_lower = key[len("dc.relation."):].lower()
-            relation = _RELATION_CAMELCASE.get(relation_lower, "references")
-            for e in entries or []:
-                if not isinstance(e, dict):
-                    continue
-                ident = e.get("value", "")
-                if not ident:
-                    continue
-                scheme = _scheme_from_identifier(ident)
-                target = synthesize_target_url(scheme, ident)
-                if not target:
-                    continue
-                yield Edge(
-                    src=node.url,
-                    kind=f"related_to.{relation}",
-                    dst=target,
-                )
+            scheme = _scheme_from_identifier(ident)
+            target = synthesize_target_url(scheme, ident)
+            if not target:
+                continue
+            yield Edge(
+                src=node.url,
+                kind=f"related_to.{relation}",
+                dst=target,
+            )
 
     def _expand_person(self, node: InfosciencePerson, opts: ExpandOpts) -> Iterable[Edge]:
         # authored — items where this person is an author authority

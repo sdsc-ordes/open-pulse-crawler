@@ -77,6 +77,10 @@ def test_fetch_item_publication(adapter):
             "dc.subject": [{"value": "kw1"}, {"value": "kw2"}],
             "dc.identifier.doi": [{"value": "10.1234/foo"}],
             "datacite.rights": [{"value": "CC-BY-4.0"}],
+            "cris.virtual.department": [
+                {"value": "TRANSP-OR", "authority": "ou-uuid-1"},
+            ],
+            "dc.relation.uri": [{"value": "https://github.com/foo/bar"}],
         },
     }
     node = adapter.fetch("https://infoscience.epfl.ch/handle/20.500.14299/182247")
@@ -92,6 +96,12 @@ def test_fetch_item_publication(adapter):
     assert len(node.authors) == 1
     assert node.authors[0]["name"] == "Doe, J."
     assert node.authors[0]["authority_uuid"] == "auth-uuid-1"
+    assert len(node.affiliations) == 1
+    assert node.affiliations[0]["name"] == "TRANSP-OR"
+    assert node.affiliations[0]["authority_uuid"] == "ou-uuid-1"
+    assert len(node.relations) == 1
+    assert node.relations[0]["qualifier"] == "uri"
+    assert node.relations[0]["value"] == "https://github.com/foo/bar"
 
 
 def test_fetch_person(adapter):
@@ -180,26 +190,26 @@ def test_fetch_unknown_entitytype_defaults_to_item(adapter):
 
 # --- expand ---------------------------------------------------------
 
-# Helper: build an InfoscienceItem with raw metadata stashed in extras.
-def _stub_item(adapter, *, raw_meta):
+# Helper: build an InfoscienceItem with typed fields.
+def _stub_item(adapter, *, authors=None, affiliations=None, relations=None):
     return InfoscienceItem(
         url="https://infoscience.epfl.ch/handle/20.500.14299/1",
         full_name="20.500.14299/1",
         platform="infoscience",
         handle="20.500.14299/1",
         uuid="item-uuid",
-        extras={"_raw_metadata": raw_meta},
+        authors=authors or [],
+        affiliations=affiliations or [],
+        relations=relations or [],
     )
 
 
 def test_expand_item_emits_authored_by_for_authors_with_authority(adapter):
-    item = _stub_item(adapter, raw_meta={
-        "dc.contributor.author": [
-            {"value": "Doe, J.", "authority": "author-uuid-1"},
-            {"value": "No, A.", "authority": None},        # skipped — no authority
-            {"value": "Smith, K.", "authority": "author-uuid-2"},
-        ],
-    })
+    item = _stub_item(adapter, authors=[
+        {"name": "Doe, J.", "authority_uuid": "author-uuid-1"},
+        {"name": "No, A.", "authority_uuid": None},        # skipped — no authority
+        {"name": "Smith, K.", "authority_uuid": "author-uuid-2"},
+    ])
     # _uuid_to_handle is empty: emit UUID-form URLs for unresolved authors.
     edges = [e for e in adapter.expand(item, ExpandOpts()) if e.kind == "authored_by"]
     assert sorted(e.dst for e in edges) == [
@@ -211,37 +221,36 @@ def test_expand_item_emits_authored_by_for_authors_with_authority(adapter):
 def test_expand_item_uses_cached_handle_when_known(adapter):
     """When _uuid_to_handle has the author's handle, emit the canonical URL."""
     adapter._uuid_to_handle["author-uuid-1"] = "20.500.14299/99923"
-    item = _stub_item(adapter, raw_meta={
-        "dc.contributor.author": [
-            {"value": "Doe, J.", "authority": "author-uuid-1"},
-        ],
-    })
+    item = _stub_item(adapter, authors=[
+        {"name": "Doe, J.", "authority_uuid": "author-uuid-1"},
+    ])
     edges = [e for e in adapter.expand(item, ExpandOpts()) if e.kind == "authored_by"]
     assert edges[0].dst == "https://infoscience.epfl.ch/handle/20.500.14299/99923"
 
 
 def test_expand_item_emits_affiliated_with_from_cris_virtual_department(adapter):
-    item = _stub_item(adapter, raw_meta={
-        "cris.virtual.department": [{"value": "TRANSP-OR", "authority": "ou-uuid-1"}],
-    })
+    item = _stub_item(adapter, affiliations=[
+        {"name": "TRANSP-OR", "authority_uuid": "ou-uuid-1"},
+    ])
     edges = [e for e in adapter.expand(item, ExpandOpts()) if e.kind == "affiliated_with"]
     assert len(edges) == 1
     assert edges[0].dst == "https://infoscience.epfl.ch/server/api/core/items/ou-uuid-1"
 
 
 def test_expand_item_emits_related_to_via_datacite_synthesizer(adapter):
-    item = _stub_item(adapter, raw_meta={
-        "dc.relation.uri": [{"value": "https://github.com/foo/bar"}],
-        "dc.relation.isversionof": [{"value": "10.5281/zenodo.99"}],
-        "dc.relation.issupplementto": [{"value": "arXiv:2401.12345"}],
-    })
+    item = _stub_item(adapter, relations=[
+        {"qualifier": "uri", "value": "https://github.com/foo/bar"},
+        {"qualifier": "isversionof", "value": "10.5281/zenodo.99"},
+        {"qualifier": "issupplementto", "value": "arXiv:2401.12345"},
+    ])
     edges = [e for e in adapter.expand(item, ExpandOpts()) if e.kind.startswith("related_to.")]
     kinds_dsts = sorted((e.kind, e.dst) for e in edges)
-    # Lowercase relation qualifiers normalize to camelCase
+    # Known qualifiers normalize to DataCite camelCase; unknown qualifiers
+    # (like "uri") are preserved as-is rather than collapsed to "references".
     assert kinds_dsts == [
         ("related_to.isSupplementTo", "https://arxiv.org/abs/2401.12345"),
         ("related_to.isVersionOf", "https://zenodo.org/records/99"),
-        ("related_to.references", "https://github.com/foo/bar"),
+        ("related_to.uri", "https://github.com/foo/bar"),
     ]
 
 

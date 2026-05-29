@@ -507,5 +507,17 @@ def test_graphdata_accepts_infoscience_subclasses_in_existing_dicts():
     assert isinstance(restored.repos["https://infoscience.epfl.ch/handle/20.500.14299/182247"], InfoscienceItem)
 
 
+def test_infoscience_item_typed_relations_and_affiliations():
+    item = InfoscienceItem(
+        url="https://infoscience.epfl.ch/handle/20.500.14299/1",
+        full_name="20.500.14299/1", platform="infoscience",
+        handle="20.500.14299/1", uuid="x",
+        affiliations=[{"name": "TRANSP-OR", "authority_uuid": "ou-1"}],
+        relations=[{"qualifier": "isversionof", "value": "10.5281/zenodo.99"}],
+    )
+    assert item.affiliations[0]["authority_uuid"] == "ou-1"
+    assert item.relations[0]["qualifier"] == "isversionof"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

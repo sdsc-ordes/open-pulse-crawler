@@ -426,6 +426,8 @@ class InfoscienceItem(RepoModel):
     title: str = ""
     abstract: str = ""
     authors: List[Dict[str, Any]] = Field(default_factory=list)
+    affiliations: List[Dict[str, Any]] = Field(default_factory=list)
+    relations: List[Dict[str, Any]] = Field(default_factory=list)
     keywords: List[str] = Field(default_factory=list)
     language: str = ""
     license: str = ""
