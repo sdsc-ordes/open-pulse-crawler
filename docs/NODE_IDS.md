@@ -101,8 +101,19 @@ default_host="gitlab.com")` returns
 | Model edge-list fields (`followers`, `contributors`, `dependencies`, `members`, ...) | login / full_name | **unchanged** — these stay as bare shorthand internally; the CSV/JSON exporter converts to URLs at write time. |
 
 The hybrid choice — URLs at the *identity* boundary, bare shorthand on
-internal edge lists — keeps the on-the-wire model compact while ensuring
-every external artifact joins on a single uniform key.
+internal edge lists — keeps the on-the-wire model compact.
+
+> **Which outputs are URL-joined, and which aren't.** Node *identifiers* are
+> canonical URLs everywhere (dict keys, CSV `id`, edges CSV
+> `source`/`target`, JSON-LD `@id`). But the **edge-list fields on a node**
+> are only normalized to URLs by the **CSV and JSON-LD exporters**. The
+> **REST `GET /api/v*/graph` response returns those fields as bare
+> shorthand** — it emits the raw model via `model_dump()` with no
+> normalization. A REST consumer that wants URL-joined edges must either
+> (a) use the CSV/JSON-LD export, or (b) prepend the owning node's `url`
+> host to each shorthand entry (e.g. `followers: ["caviri"]` on a node whose
+> `url` host is `gitlab.epfl.ch` → `https://gitlab.epfl.ch/caviri`). Do not
+> assume `github.com` — the shorthand is host-relative to its owning node.
 
 ## Looking ahead: multi-platform
 

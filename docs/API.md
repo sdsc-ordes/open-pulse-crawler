@@ -343,12 +343,23 @@ where they can submit seeds before calling `POST /crawl`.
 ```json
 {
   "platforms": [
-    {"host": "github.com",     "kind": "github", "tokens": 1, "status": "ok"},
-    {"host": "gitlab.com",     "kind": "gitlab", "tokens": 3, "status": "ok"},
-    {"host": "gitlab.epfl.ch", "kind": "gitlab", "tokens": 0, "status": "missing_token"}
+    {"host": "github.com",     "tokens": 1, "ok": true},
+    {"host": "zenodo.org",     "tokens": 0, "ok": true},
+    {"host": "gitlab.epfl.ch", "tokens": 0, "ok": false}
   ]
 }
 ```
+
+Each row is `{host, tokens, ok}`:
+
+- `host` — the configured platform host (a `CRAWLER_PLATFORMS` entry).
+- `tokens` — number of tokens resolved for the host.
+- `ok` — whether the host has at least one token. **This only checks token
+  presence; it does not verify the token works** — use `crawler doctor` for
+  an end-to-end probe. `ok` can be `true` with `tokens: 0` for
+  anonymous-friendly hosts (Zenodo, Infoscience, DataCite, HuggingFace,
+  GitLab), which crawl without a token; `crawler doctor` distinguishes the
+  three states explicitly (OK / ANONYMOUS / MISSING).
 
 The same data is available on the CLI via `opc doctor [--json]`.
 
@@ -412,28 +423,33 @@ fields; GitHub subkinds are unchanged from v1.
   "job_id": "d290f1ee-…",
   "graph": {
     "schema_version": 3,
-    "nodes": {
+    "users": {
       "https://github.com/torvalds": {
         "subkind": "GitHubUser",
         "url": "https://github.com/torvalds",
         "platform": "github",
-        "host": "github.com",
         "login": "torvalds",
+        "contributors": [],
+        "followers": ["caviri"],
         "extras": {},
         "external_identifiers": []
-      },
+      }
+    },
+    "orgs": {
       "https://gitlab.com/gitlab-org": {
         "subkind": "GitLabGroup",
         "url": "https://gitlab.com/gitlab-org",
         "platform": "gitlab",
-        "host": "gitlab.com",
         "path": "gitlab-org",
         "visibility": "public",
         "parent": null,
+        "members": ["someuser"],
         "extras": {},
         "external_identifiers": []
       }
-    }
+    },
+    "repos": {},
+    "teams": {}
   },
   "partial": false,
   "status": "completed",
@@ -441,9 +457,28 @@ fields; GitHub subkinds are unchanged from v1.
 }
 ```
 
-The v3 graph collapses the v1 `users` / `orgs` / `repos` / `teams` dicts
-into one `nodes` dict keyed by canonical URL. The per-kind split is
-recovered from each node's `subkind` field.
+The graph keeps the `users` / `orgs` / `repos` / `teams` dicts (it is **not**
+flattened into a single `nodes` dict — that is what `GET /api/v2/nodes`
+returns). Each dict is keyed by the node's canonical URL, and every node
+carries a `subkind` discriminator plus platform-specific fields.
+
+> **⚠️ Edge-list fields are bare shorthand, not URLs.** Node *keys* are
+> canonical URLs, but the per-node edge-list fields — `contributors`,
+> `members`, `followers`, `following`, `starred_repositories`,
+> `authored_repositories`, `forked_repositories`, … — contain **bare
+> shorthand** (a login like `"caviri"`, or an `"owner/repo"` string), **not**
+> URLs. This is intentional: the internal model keeps the compact form, and
+> only the CSV / JSON-LD exporters (`export_to_csv` / JSON-LD) normalize
+> endpoints to canonical URLs at write time. **The REST `/graph` response
+> does NOT normalize them.**
+>
+> To join an edge endpoint back to a node key, prepend the owning node's
+> host: a `followers` entry `"caviri"` on a node whose `url` is
+> `https://github.com/marftn` resolves to `https://github.com/caviri`; the
+> same shorthand on a `gitlab.epfl.ch` node resolves to
+> `https://gitlab.epfl.ch/caviri`. Use the owning node's `url` host — do
+> **not** assume `github.com`. If you want pre-joined URL→URL edges, use the
+> CSV edges export or the JSON-LD output instead.
 
 ### `GET /api/v2/nodes` — filtered listing
 

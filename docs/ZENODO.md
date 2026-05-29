@@ -64,6 +64,18 @@ Get a Personal Access Token at <https://zenodo.org/account/settings/applications
   `https://sandbox.zenodo.org/records/<id>`.
 - Non-Zenodo DOIs raise — they belong to other adapters.
 
+> **⚠️ A version seed resolves to its concept record — the node URL may
+> differ from the seed URL.** Every Zenodo record is keyed by its
+> *concept DOI* (the version-agnostic identity), so seeding a specific
+> *version* record collapses to the concept node. For example, seeding
+> `https://zenodo.org/records/6494798` (a version) produces the node
+> `https://zenodo.org/records/6494797` (the concept record), with the
+> version recorded in the concept node's `versions` field. **This is by
+> design — the seed is not lost.** If you need to match a submitted seed
+> URL back to its graph node, expect the records/`<id>` to change when the
+> seed was a non-concept version; the original version id is preserved
+> under `versions`.
+
 ## Manual-test recipes
 
 ### Software-rich community (ESCAPE OSSR — the canonical demo)
