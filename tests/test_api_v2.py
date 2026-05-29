@@ -159,3 +159,26 @@ def test_v2_crawl_openapi_examples_include_huggingface():
     assert "huggingface_paper_llama2" in examples
     assert "huggingface_model_llama" in examples
     assert "huggingface_user_karpathy" in examples
+
+
+def test_v2_crawl_openapi_examples_include_url_keying_demos():
+    """Four examples showcasing the URL-as-graph-key convention + the
+    cross-platform routing it enables. Added as docs companions to the
+    `Node identifiers` section of README.md."""
+    from fastapi.testclient import TestClient
+    from open_pulse_crawler.api import app
+    client = TestClient(app)
+    spec = client.get("/api/v1/openapi.json").json()
+    crawl_path = spec["paths"]["/api/v2/crawl"]
+    body = crawl_path["post"]["requestBody"]["content"]["application/json"]
+    examples = body.get("examples", {})
+    assert "doi_url_prefix_routing_to_zenodo" in examples
+    assert "orcid_url_canonical_seed" in examples
+    assert "huggingface_collection_meta_llama" in examples
+    assert "mixed_multi_platform_one_job" in examples
+    # Sanity: the mixed-platforms example actually seeds 4 different hosts.
+    seeds = examples["mixed_multi_platform_one_job"]["value"]["seeds"]
+    hosts = {s.split("/")[2] for s in seeds}
+    assert hosts == {
+        "huggingface.co", "zenodo.org", "ror.org", "github.com",
+    }

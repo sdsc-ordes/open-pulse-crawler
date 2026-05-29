@@ -351,6 +351,80 @@ _CRAWL_V2_REQUEST_EXAMPLES = {
             "max_rounds": 2,
         },
     },
+    "doi_url_prefix_routing_to_zenodo": {
+        "summary": "DOI URL → prefix routing → Zenodo adapter (URL keying in action)",
+        "description": (
+            "Seed `https://doi.org/10.5281/zenodo.<id>`. Even though `doi.org` "
+            "is owned by the DataCite adapter at the registry level, the DOI "
+            "prefix routing table in `platforms/datacite.py` rewrites the "
+            "10.5281 prefix to `https://zenodo.org/records/<id>` BEFORE BFS "
+            "dispatch — so the Zenodo adapter handles the actual fetch and "
+            "the graph key is the Zenodo URL, not the doi.org URL. Same DOI "
+            "stays accessible as the `ZenodoRecord.concept_doi` typed field. "
+            "Pair with `CRAWLER_PLATFORMS=zenodo.org` (DataCite isn't even "
+            "needed in this case — the rewrite happens before dispatch)."
+        ),
+        "value": {
+            "seeds": ["https://doi.org/10.5281/zenodo.4757983"],
+            "max_rounds": 1,
+        },
+    },
+    "orcid_url_canonical_seed": {
+        "summary": "ORCID URL as a canonical graph key (DataCite person anchor)",
+        "description": (
+            "Seed `https://orcid.org/<id>`. The bare ORCID identifier "
+            "(`0000-0002-...`) lives on `DataCitePerson.orcid` as a typed "
+            "field, but the graph key is always the full URL. Round 1 "
+            "emits `authored` edges to every DOI in DataCite whose "
+            "`creators[].nameIdentifiers[].nameIdentifier` matches the same "
+            "ORCID URL — so cross-platform records (Zenodo, Figshare, Dryad) "
+            "converge at this single canonical URL."
+        ),
+        "value": {
+            "seeds": ["https://orcid.org/0000-0002-1825-0097"],
+            "max_rounds": 2,
+        },
+    },
+    "huggingface_collection_meta_llama": {
+        "summary": "HuggingFace collection (\"bucket\") → walk all items",
+        "description": (
+            "Seed a Collection — a user-curated bundle of models / datasets / "
+            "spaces / papers. Round 0 fetches the collection metadata; round "
+            "1 emits `contains` edges to every item, routing each to its "
+            "type-specific HF URL (model → `huggingface.co/<id>`, dataset → "
+            "`huggingface.co/datasets/<id>`, space → "
+            "`huggingface.co/spaces/<id>`, paper → `huggingface.co/papers/<id>`). "
+            "Plus `owned_by` to the collection's owner (user or org)."
+        ),
+        "value": {
+            "seeds": [
+                "https://huggingface.co/collections/meta-llama/metas-llama-32-language-models-and-evals-675bfd70e574a62dd0e40586"
+            ],
+            "max_rounds": 2,
+        },
+    },
+    "mixed_multi_platform_one_job": {
+        "summary": "Single POST seeding 4 platforms — URL-keyed registry router",
+        "description": (
+            "Demonstrates the multi-platform registry: one POST with seeds "
+            "across 4 hosts. Each seed URL is dispatched to its host's "
+            "adapter via `PlatformRegistry.adapter_for(uri)`. Cross-platform "
+            "edges discovered in round 1 (HF paper → arxiv, DataCite work → "
+            "ROR, etc.) converge on identical canonical URLs across "
+            "platforms — the dual-storage pattern (URL as graph key, bare "
+            "identifier as typed field) makes this work. Set "
+            "`CRAWLER_PLATFORMS=huggingface.co,zenodo.org,datacite.org,github.com`."
+        ),
+        "value": {
+            "seeds": [
+                "https://huggingface.co/papers/2307.09288",
+                "https://zenodo.org/communities/escape2020",
+                "https://ror.org/02s376052",
+                "https://github.com/facebookresearch/llama",
+            ],
+            "max_rounds": 2,
+        },
+    },
 }
 
 

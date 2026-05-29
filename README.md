@@ -201,17 +201,54 @@ See `docs/API.md` for endpoint details and example payloads.
 
 ### Node identifiers
 
-Every node in the exported graph (user, organization, repository, team) is
-keyed by its canonical public URL — for example
-`https://github.com/torvalds`, `https://github.com/torvalds/linux`, or
-`https://github.com/orgs/acme/teams/core`. This is the single ID used as
-the dict key in the JSON output, the `id` column in the nodes CSV, and the
-`source`/`target` columns in the edges CSV.
+Every node in the exported graph (user, organization, repository, team,
+paper, dataset, …) is keyed by its **canonical public URL** — always with
+the `https://` scheme. The URL is the single ID used as the dict key in
+JSON output, the `id` column in nodes CSV, and the `source`/`target`
+columns in edges CSV. Multi-platform examples:
 
-Seed input still accepts short forms — `torvalds`, `owner/repo`, or a full
-GitHub URL — and they are normalized to the canonical form internally.
-Snapshots written under the old (login-keyed) format are not readable;
-operators upgrading from a previous release should re-crawl.
+| Platform | Canonical graph key |
+|---|---|
+| GitHub user / repo / team | `https://github.com/torvalds`, `https://github.com/torvalds/linux`, `https://github.com/orgs/acme/teams/core` |
+| GitLab (any instance) | `https://gitlab.epfl.ch/users/bovel`, `https://gitlab.renkulab.io/<group>/<project>` |
+| Zenodo record / community / user | `https://zenodo.org/records/<id>`, `https://zenodo.org/communities/<slug>`, `https://zenodo.org/users/<id>` |
+| Infoscience handle | `https://infoscience.epfl.ch/handle/20.500.14299/<id>` |
+| DataCite work via DOI | `https://doi.org/<doi>` |
+| DataCite organization (ROR) | `https://ror.org/<id>` |
+| DataCite person (ORCID) | `https://orcid.org/<id>` |
+| DataCite repository | `https://commons.datacite.org/repositories/<id>` |
+| HuggingFace model / dataset / space | `https://huggingface.co/<owner>/<name>`, `…/datasets/<owner>/<name>`, `…/spaces/<owner>/<name>` |
+| HuggingFace paper / collection | `https://huggingface.co/papers/<arxiv-id>`, `…/collections/<owner>/<slug>` |
+
+**Why full URLs, not bare identifiers?** The URL form is browser-resolvable
+and JSON-LD `@id`-compatible (downstream linked-data tooling expects IRIs).
+It's also what makes the **cross-platform pivot** work: a Zenodo record, an
+Infoscience publication, a DataCite work, and a HuggingFace paper that all
+reference the same arxiv paper produce edges to the *same* canonical
+`https://arxiv.org/abs/<id>` URL — the convergence is automatic.
+
+**Dual storage of bare identifiers.** Where it adds value, the scheme-native
+form of the identifier lives alongside the URL as a typed metadata field —
+not as a separate node:
+
+```
+DataCiteWork:        url=https://doi.org/10.6084/m9.figshare.99   doi="10.6084/m9.figshare.99"
+DataCiteOrganization:url=https://ror.org/02s376052                ror_id="02s376052"
+DataCitePerson:      url=https://orcid.org/0000-0002-1825-0097    orcid="0000-0002-1825-0097"
+HuggingFacePaper:    url=https://huggingface.co/papers/2307.09288 arxiv_id="2307.09288"
+```
+
+Downstream tools that want to query by scheme-native form (e.g. "all works
+tagged with ORCID 0000-…") use the typed field; the graph itself stays
+URL-keyed.
+
+Seed input still accepts short forms where unambiguous — `torvalds`,
+`owner/repo`, or a full URL — and they are normalized internally. DOI URLs
+matching a known prefix table (`10.5281/zenodo.*`, `10.5072/zenodo.*`) are
+rewritten to the platform's canonical URL before BFS dispatch, so a seed
+of `https://doi.org/10.5281/zenodo.42` enters the graph as
+`https://zenodo.org/records/42`. Snapshots written under the old
+(login-keyed) format are not readable; operators upgrading should re-crawl.
 
 ## Docker and GUI
 
