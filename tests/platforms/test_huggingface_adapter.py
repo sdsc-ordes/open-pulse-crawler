@@ -1,0 +1,498 @@
+"""Tests for the HuggingFace PlatformAdapter."""
+from typing import Dict, List
+from unittest.mock import MagicMock
+import pytest
+
+from open_pulse_crawler.models import (
+    HuggingFaceUser, HuggingFaceOrg, HuggingFaceRepo,
+    HuggingFacePaper, HuggingFaceCollection,
+)
+from open_pulse_crawler.node_id import NodeKind
+from open_pulse_crawler.platforms.huggingface.adapter import HuggingFaceAdapter
+from open_pulse_crawler.platforms.base import ExpandOpts, Edge
+
+
+@pytest.fixture
+def adapter():
+    client = MagicMock()
+    return HuggingFaceAdapter(client=client, instance_host="huggingface.co")
+
+
+# --- classify -------------------------------------------------------
+
+def test_classify_model_url(adapter):
+    assert adapter.classify("https://huggingface.co/meta-llama/Llama-3.2-1B") == NodeKind.REPO
+
+
+def test_classify_dataset_url(adapter):
+    assert adapter.classify("https://huggingface.co/datasets/openai/gsm8k") == NodeKind.REPO
+
+
+def test_classify_space_url(adapter):
+    assert adapter.classify("https://huggingface.co/spaces/black-forest-labs/FLUX.1-schnell") == NodeKind.REPO
+
+
+def test_classify_paper_url(adapter):
+    assert adapter.classify("https://huggingface.co/papers/2307.09288") == NodeKind.REPO
+
+
+def test_classify_collection_url(adapter):
+    assert adapter.classify(
+        "https://huggingface.co/collections/meta-llama/llama-32-language-models-and-evals-675bfd70e574a62dd0e40586"
+    ) == NodeKind.ORG
+
+
+def test_classify_user_or_org_url(adapter):
+    assert adapter.classify("https://huggingface.co/karpathy") == NodeKind.USER_OR_ORG
+
+
+def test_classify_reserved_index_pages_return_none(adapter):
+    """The bare reserved prefixes are index pages, not entities."""
+    assert adapter.classify("https://huggingface.co/datasets") is None
+    assert adapter.classify("https://huggingface.co/spaces") is None
+    assert adapter.classify("https://huggingface.co/papers") is None
+    assert adapter.classify("https://huggingface.co/collections") is None
+
+
+def test_classify_unknown_path_returns_none(adapter):
+    assert adapter.classify("https://huggingface.co/blog/some-post") is None
+
+
+def test_classify_legacy_arxiv_id_returns_none(adapter):
+    """Legacy arxiv IDs (cond-mat/0303517 form) are not supported."""
+    assert adapter.classify("https://huggingface.co/papers/cond-mat/0303517") is None
+
+
+# --- normalize_uri --------------------------------------------------
+
+def test_normalize_strips_trailing_slash(adapter):
+    assert adapter.normalize_uri("https://huggingface.co/meta-llama/Llama-3.2-1B/") == \
+        "https://huggingface.co/meta-llama/Llama-3.2-1B"
+
+
+def test_normalize_lowercases_host(adapter):
+    assert adapter.normalize_uri("https://HUGGINGFACE.CO/meta-llama/Llama-3.2-1B") == \
+        "https://huggingface.co/meta-llama/Llama-3.2-1B"
+
+
+def test_normalize_strips_query_and_fragment(adapter):
+    assert adapter.normalize_uri("https://huggingface.co/karpathy?tab=models#header") == \
+        "https://huggingface.co/karpathy"
+
+
+def test_normalize_paper_with_version_suffix_preserved(adapter):
+    assert adapter.normalize_uri("https://huggingface.co/papers/2307.09288v2") == \
+        "https://huggingface.co/papers/2307.09288v2"
+
+
+def test_normalize_dataset_url(adapter):
+    assert adapter.normalize_uri("https://huggingface.co/datasets/openai/gsm8k") == \
+        "https://huggingface.co/datasets/openai/gsm8k"
+
+
+def test_normalize_collection_url(adapter):
+    coll_url = "https://huggingface.co/collections/meta-llama/llama-32-x-675bfd70"
+    assert adapter.normalize_uri(coll_url) == coll_url
+
+
+def test_normalize_empty_raises(adapter):
+    with pytest.raises(ValueError):
+        adapter.normalize_uri("")
+
+
+# --- fetch ----------------------------------------------------------
+
+def test_fetch_user_returns_huggingface_user(adapter):
+    adapter._client.get_user_overview.return_value = {
+        "user": "karpathy",
+        "type": "user",
+        "fullname": "Andrej Karpathy",
+        "isPro": False,
+        "avatarUrl": "https://cdn.hf.co/karpathy.png",
+        "numModels": 30,
+        "numDatasets": 5,
+        "numSpaces": 2,
+        "numPapers": 12,
+        "numFollowers": 80000,
+        "orgs": [{"name": "nanoGPT"}],
+    }
+    node = adapter.fetch("https://huggingface.co/karpathy")
+    assert isinstance(node, HuggingFaceUser)
+    assert node.username == "karpathy"
+    assert node.fullname == "Andrej Karpathy"
+    assert node.num_models == 30
+    assert node.member_orgs == ["nanoGPT"]
+    # Should NOT call org endpoint when user lookup succeeded
+    adapter._client.get_org_overview.assert_not_called()
+
+
+def test_fetch_org_falls_through_when_user_404(adapter):
+    """If /api/users/<x>/overview returns None, fall through to /api/organizations."""
+    adapter._client.get_user_overview.return_value = None
+    adapter._client.get_org_overview.return_value = {
+        "name": "meta-llama",
+        "fullname": "Meta Llama",
+        "isVerified": True,
+        "plan": "enterprise",
+        "numModels": 80,
+        "numFollowers": 5000,
+    }
+    node = adapter.fetch("https://huggingface.co/meta-llama")
+    assert isinstance(node, HuggingFaceOrg)
+    assert node.org_name == "meta-llama"
+    assert node.is_verified is True
+    adapter._client.get_user_overview.assert_called_once_with("meta-llama")
+    adapter._client.get_org_overview.assert_called_once_with("meta-llama")
+
+
+def test_fetch_user_or_org_both_404_returns_none(adapter):
+    adapter._client.get_user_overview.return_value = None
+    adapter._client.get_org_overview.return_value = None
+    assert adapter.fetch("https://huggingface.co/nobody-anywhere") is None
+
+
+def test_fetch_model_returns_repo(adapter):
+    adapter._client.get_model.return_value = {
+        "id": "meta-llama/Llama-3.2-1B",
+        "author": "meta-llama",
+        "sha": "abc123",
+        "tags": ["transformers", "llama-3"],
+        "downloads": 2222053,
+        "likes": 2412,
+        "gated": True,
+        "pipeline_tag": "text-generation",
+        "library_name": "transformers",
+        "cardData": {"license": "llama3.2", "language": ["en"]},
+    }
+    node = adapter.fetch("https://huggingface.co/meta-llama/Llama-3.2-1B")
+    assert isinstance(node, HuggingFaceRepo)
+    assert node.repo_type == "model"
+    assert node.repo_id == "meta-llama/Llama-3.2-1B"
+    assert node.owner == "meta-llama"
+    assert node.repo_name == "Llama-3.2-1B"
+    assert node.pipeline_tag == "text-generation"
+    assert node.library_name == "transformers"
+    assert node.downloads == 2222053
+    assert node.license == "llama3.2"
+    assert node.language == ["en"]
+    assert node.gated is True
+
+
+def test_fetch_dataset_returns_repo(adapter):
+    adapter._client.get_dataset.return_value = {
+        "id": "openai/gsm8k",
+        "author": "openai",
+        "downloads": 5000,
+        "likes": 100,
+        "paperswithcode_id": "gsm8k",
+        "cardData": {"license": "mit"},
+    }
+    node = adapter.fetch("https://huggingface.co/datasets/openai/gsm8k")
+    assert isinstance(node, HuggingFaceRepo)
+    assert node.repo_type == "dataset"
+    assert node.paperswithcode_id == "gsm8k"
+
+
+def test_fetch_space_returns_repo_with_runtime(adapter):
+    adapter._client.get_space.return_value = {
+        "id": "black-forest-labs/FLUX.1-schnell",
+        "author": "black-forest-labs",
+        "likes": 5067,
+        "sdk": "gradio",
+        "runtime": {"stage": "RUNNING"},
+        "models": ["black-forest-labs/FLUX.1-schnell"],
+    }
+    node = adapter.fetch("https://huggingface.co/spaces/black-forest-labs/FLUX.1-schnell")
+    assert isinstance(node, HuggingFaceRepo)
+    assert node.repo_type == "space"
+    assert node.sdk == "gradio"
+    assert node.runtime_stage == "RUNNING"
+    assert node.used_models == ["black-forest-labs/FLUX.1-schnell"]
+
+
+def test_fetch_paper_returns_huggingface_paper(adapter):
+    adapter._client.get_paper.return_value = {
+        "id": "2307.09288",
+        "title": "Llama 2: Open Foundation and Fine-Tuned Chat Models",
+        "summary": "We develop Llama 2…",
+        "ai_summary": "Llama 2 is open-weight.",
+        "ai_keywords": ["llm", "fine-tuning"],
+        "authors": [{"name": "Hugo Touvron"}, {"name": "Louis Martin"}],
+        "upvotes": 252,
+        "publishedAt": "2023-07-18T00:00:00Z",
+        "githubRepo": "facebookresearch/llama",
+        "linkedModels": [{"id": "meta-llama/Llama-2-7b"}, {"id": "meta-llama/Llama-2-13b"}],
+        "linkedDatasets": [{"id": "some/dataset"}],
+        "linkedSpaces": [],
+        "numTotalModels": 8,
+        "numTotalDatasets": 2,
+        "numTotalSpaces": 14,
+    }
+    node = adapter.fetch("https://huggingface.co/papers/2307.09288")
+    assert isinstance(node, HuggingFacePaper)
+    assert node.arxiv_id == "2307.09288"
+    assert node.arxiv_url == "https://arxiv.org/abs/2307.09288"
+    assert node.title.startswith("Llama 2")
+    assert node.github_repo == "facebookresearch/llama"
+    assert node.num_linked_models == 8
+    assert len(node.authors) == 2
+
+
+def test_fetch_paper_404_returns_none(adapter):
+    adapter._client.get_paper.return_value = None
+    assert adapter.fetch("https://huggingface.co/papers/9999.99999") is None
+
+
+def test_fetch_collection_returns_collection(adapter):
+    adapter._client.get_collection.return_value = {
+        "slug": "meta-llama/llama-32-x-675bfd70",
+        "owner": {"name": "meta-llama"},
+        "title": "Llama 3.2 evals",
+        "description": "Release bundle.",
+        "upvotes": 120,
+        "lastUpdated": "2024-12-01T00:00:00Z",
+    }
+    node = adapter.fetch(
+        "https://huggingface.co/collections/meta-llama/llama-32-x-675bfd70"
+    )
+    assert isinstance(node, HuggingFaceCollection)
+    assert node.slug == "meta-llama/llama-32-x-675bfd70"
+    assert node.owner == "meta-llama"
+    assert node.title == "Llama 3.2 evals"
+
+
+def test_fetch_unknown_url_form_returns_none(adapter):
+    assert adapter.fetch("https://huggingface.co/blog/some-post") is None
+
+
+# --- expand: HuggingFaceUser ----------------------------------------
+
+def test_expand_user_emits_owns_and_member_of(adapter):
+    adapter._client.iter_models_by_author.return_value = iter([
+        {"id": "karpathy/tinyllamas"}, {"id": "karpathy/gpt2"},
+    ])
+    adapter._client.iter_datasets_by_author.return_value = iter([
+        {"id": "karpathy/lecun-mnist"},
+    ])
+    adapter._client.iter_spaces_by_author.return_value = iter([])
+    user = HuggingFaceUser(
+        url="https://huggingface.co/karpathy",
+        login="karpathy", platform="huggingface",
+        username="karpathy",
+        member_orgs=["nanoGPT", "deeplearningorg"],
+    )
+    edges = list(adapter.expand(user, ExpandOpts()))
+    owns_dsts = sorted(e.dst for e in edges if e.kind == "owns")
+    member_dsts = sorted(e.dst for e in edges if e.kind == "member_of")
+    assert owns_dsts == [
+        "https://huggingface.co/datasets/karpathy/lecun-mnist",
+        "https://huggingface.co/karpathy/gpt2",
+        "https://huggingface.co/karpathy/tinyllamas",
+    ]
+    assert member_dsts == [
+        "https://huggingface.co/deeplearningorg",
+        "https://huggingface.co/nanoGPT",
+    ]
+
+
+# --- expand: HuggingFaceOrg -----------------------------------------
+
+def test_expand_org_emits_owns(adapter):
+    adapter._client.iter_models_by_author.return_value = iter([
+        {"id": "meta-llama/Llama-3.2-1B"},
+    ])
+    adapter._client.iter_datasets_by_author.return_value = iter([])
+    adapter._client.iter_spaces_by_author.return_value = iter([
+        {"id": "meta-llama/space-demo"},
+    ])
+    org = HuggingFaceOrg(
+        url="https://huggingface.co/meta-llama",
+        login="meta-llama", platform="huggingface",
+        org_name="meta-llama",
+    )
+    edges = [e for e in adapter.expand(org, ExpandOpts()) if e.kind == "owns"]
+    assert sorted(e.dst for e in edges) == [
+        "https://huggingface.co/meta-llama/Llama-3.2-1B",
+        "https://huggingface.co/spaces/meta-llama/space-demo",
+    ]
+
+
+# --- expand: HuggingFaceRepo ----------------------------------------
+
+def test_expand_repo_emits_owned_by(adapter):
+    repo = HuggingFaceRepo(
+        url="https://huggingface.co/meta-llama/Llama-3.2-1B",
+        full_name="meta-llama/Llama-3.2-1B", platform="huggingface",
+        repo_type="model",
+        repo_id="meta-llama/Llama-3.2-1B",
+        owner="meta-llama",
+        repo_name="Llama-3.2-1B",
+    )
+    edges = [e for e in adapter.expand(repo, ExpandOpts()) if e.kind == "owned_by"]
+    assert edges == [Edge(
+        src=repo.url, kind="owned_by",
+        dst="https://huggingface.co/meta-llama",
+    )]
+
+
+def test_expand_repo_space_emits_uses_model(adapter):
+    """Spaces emit uses_model edges to each entry in `used_models`."""
+    space = HuggingFaceRepo(
+        url="https://huggingface.co/spaces/foo/bar",
+        full_name="spaces/foo/bar", platform="huggingface",
+        repo_type="space",
+        repo_id="foo/bar",
+        owner="foo",
+        repo_name="bar",
+        used_models=["meta-llama/Llama-3.2-1B", "openai/whisper-base"],
+    )
+    edges = [e for e in adapter.expand(space, ExpandOpts()) if e.kind == "uses_model"]
+    assert sorted(e.dst for e in edges) == [
+        "https://huggingface.co/meta-llama/Llama-3.2-1B",
+        "https://huggingface.co/openai/whisper-base",
+    ]
+
+
+def test_expand_repo_model_emits_no_uses_model(adapter):
+    """Only Spaces emit uses_model — Models with empty `used_models` emit no edges."""
+    model = HuggingFaceRepo(
+        url="https://huggingface.co/meta-llama/Llama-3.2-1B",
+        full_name="meta-llama/Llama-3.2-1B", platform="huggingface",
+        repo_type="model",
+        repo_id="meta-llama/Llama-3.2-1B",
+        owner="meta-llama",
+        repo_name="Llama-3.2-1B",
+    )
+    edges = [e for e in adapter.expand(model, ExpandOpts()) if e.kind == "uses_model"]
+    assert edges == []
+
+
+# --- expand: HuggingFacePaper ---------------------------------------
+
+def test_expand_paper_emits_arxiv_and_github_and_linked_repos(adapter):
+    adapter._client.get_paper.return_value = {
+        "id": "2307.09288",
+        "linkedModels": [
+            {"id": "meta-llama/Llama-2-7b"},
+            {"id": "meta-llama/Llama-2-13b"},
+        ],
+        "linkedDatasets": [{"id": "some/dataset"}],
+        "linkedSpaces": [{"id": "demo/llama-chat"}],
+    }
+    paper = HuggingFacePaper(
+        url="https://huggingface.co/papers/2307.09288",
+        full_name="papers/2307.09288", platform="huggingface",
+        arxiv_id="2307.09288",
+        arxiv_url="https://arxiv.org/abs/2307.09288",
+        github_repo="facebookresearch/llama",
+    )
+    edges = list(adapter.expand(paper, ExpandOpts()))
+    by_kind: Dict[str, List[str]] = {}
+    for e in edges:
+        by_kind.setdefault(e.kind, []).append(e.dst)
+    assert by_kind["related_to.IsIdenticalTo"] == [
+        "https://arxiv.org/abs/2307.09288",
+    ]
+    assert by_kind["related_to.IsSupplementedBy"] == [
+        "https://github.com/facebookresearch/llama",
+    ]
+    assert sorted(by_kind["references_model"]) == [
+        "https://huggingface.co/meta-llama/Llama-2-13b",
+        "https://huggingface.co/meta-llama/Llama-2-7b",
+    ]
+    assert by_kind["references_dataset"] == [
+        "https://huggingface.co/datasets/some/dataset",
+    ]
+    assert by_kind["references_space"] == [
+        "https://huggingface.co/spaces/demo/llama-chat",
+    ]
+
+
+def test_expand_paper_skips_github_when_field_empty(adapter):
+    adapter._client.get_paper.return_value = {"id": "2307.09288"}
+    paper = HuggingFacePaper(
+        url="https://huggingface.co/papers/2307.09288",
+        full_name="papers/2307.09288", platform="huggingface",
+        arxiv_id="2307.09288",
+        arxiv_url="https://arxiv.org/abs/2307.09288",
+        github_repo="",
+    )
+    edges = [e for e in adapter.expand(paper, ExpandOpts())
+             if e.kind == "related_to.IsSupplementedBy"]
+    assert edges == []
+
+
+def test_expand_paper_versioned_arxiv_id_converges_to_unversioned_url(adapter):
+    """A versioned seed (papers/2307.09288v2) must emit the SAME arxiv edge
+    target as the unversioned seed (papers/2307.09288). _build_paper strips
+    the `v<n>` suffix when synthesizing arxiv_url; _expand_paper now emits
+    that stored field directly (rather than re-running synthesize_target_url
+    on the versioned arxiv_id) so the cross-platform convergence holds for
+    versioned papers. Regression: previously the edge target included the
+    version suffix while the stored arxiv_url didn't — breaking joins."""
+    adapter._client.get_paper.return_value = {"id": "2307.09288v2"}
+    paper_v2 = HuggingFacePaper(
+        url="https://huggingface.co/papers/2307.09288v2",
+        full_name="papers/2307.09288v2", platform="huggingface",
+        arxiv_id="2307.09288v2",
+        arxiv_url="https://arxiv.org/abs/2307.09288",  # unversioned (from _build_paper)
+    )
+    edges = [e for e in adapter.expand(paper_v2, ExpandOpts())
+             if e.kind == "related_to.IsIdenticalTo"]
+    assert edges == [Edge(
+        src=paper_v2.url,
+        kind="related_to.IsIdenticalTo",
+        dst="https://arxiv.org/abs/2307.09288",  # same as unversioned seed
+    )]
+
+
+# --- expand: HuggingFaceCollection ----------------------------------
+
+def test_expand_collection_emits_owned_by_and_contains(adapter):
+    adapter._client.get_collection.return_value = {
+        "slug": "meta-llama/llama-32-x-675bfd70",
+        "owner": {"name": "meta-llama"},
+        "items": [
+            {"type": "model", "id": "meta-llama/Llama-3.2-1B"},
+            {"type": "dataset", "id": "openai/gsm8k"},
+            {"type": "space", "id": "demo/llama-chat"},
+            {"type": "paper", "id": "2307.09288"},
+        ],
+    }
+    coll = HuggingFaceCollection(
+        url="https://huggingface.co/collections/meta-llama/llama-32-x-675bfd70",
+        login="meta-llama/llama-32-x-675bfd70", platform="huggingface",
+        slug="meta-llama/llama-32-x-675bfd70",
+        owner="meta-llama",
+    )
+    edges = list(adapter.expand(coll, ExpandOpts()))
+    by_kind: Dict[str, List[str]] = {}
+    for e in edges:
+        by_kind.setdefault(e.kind, []).append(e.dst)
+    assert by_kind["owned_by"] == ["https://huggingface.co/meta-llama"]
+    assert sorted(by_kind["contains"]) == [
+        "https://huggingface.co/datasets/openai/gsm8k",
+        "https://huggingface.co/meta-llama/Llama-3.2-1B",
+        "https://huggingface.co/papers/2307.09288",
+        "https://huggingface.co/spaces/demo/llama-chat",
+    ]
+
+
+def test_expand_collection_skips_items_with_unknown_type(adapter):
+    """Items with an unrecognized `type` field should be skipped, not crash."""
+    adapter._client.get_collection.return_value = {
+        "slug": "x/y-1",
+        "owner": {"name": "x"},
+        "items": [
+            {"type": "model", "id": "meta-llama/Llama-3.2-1B"},
+            {"type": "unknown-future-type", "id": "x/y"},
+        ],
+    }
+    coll = HuggingFaceCollection(
+        url="https://huggingface.co/collections/x/y-1",
+        login="x/y-1", platform="huggingface",
+        slug="x/y-1", owner="x",
+    )
+    edges = [e for e in adapter.expand(coll, ExpandOpts()) if e.kind == "contains"]
+    assert len(edges) == 1
+    assert edges[0].dst == "https://huggingface.co/meta-llama/Llama-3.2-1B"

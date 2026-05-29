@@ -34,9 +34,14 @@ class NodeKind(str, Enum):
     ``https://github.com/<login>`` can be a user or an organization, and
     only an API call can tell. The crawler resolves the ambiguity at
     fetch time.
+
+    ``USER`` and ``ORG`` are unambiguous variants used by adapters whose
+    URL shapes are discriminated (DataCite ORCID vs ROR / commons-repo).
     """
 
     USER_OR_ORG = "user_or_org"
+    USER = "user"
+    ORG = "org"
     REPO = "repo"
     TEAM = "team"
 
@@ -213,3 +218,5 @@ def parse_seed(raw: str, default_host: str = DEFAULT_HOST) -> Tuple[NodeKind, st
     if is_team_url(url):
         return NodeKind.TEAM, url
     return kind_of(url), url
+
+

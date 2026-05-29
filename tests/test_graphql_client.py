@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from open_pulse_crawler.graphql_client import GitHubGraphQLClient
+from open_pulse_crawler.platforms.github.graphql import GitHubGraphQLClient
 
 
 def _gql_response(data: dict, status_code: int = 200):
@@ -489,7 +489,7 @@ def test_handle_rate_limit_rotates_before_sleeping():
     """Exhausting one token rotates; only when every token is spent do we sleep."""
     client = GitHubGraphQLClient(tokens=["a", "b"])
 
-    with patch("open_pulse_crawler.graphql_client.time.sleep") as slept:
+    with patch("open_pulse_crawler.platforms.github.graphql.time.sleep") as slept:
         # token 0 exhausted -> rotate to token 1, no sleep
         client._handle_rate_limit(0, 0, 1, "2000-01-01T00:00:00Z")
         assert client.current_token_idx == 1
@@ -509,7 +509,7 @@ def test_handle_rate_limit_ignores_stale_token_response():
     client._handle_rate_limit(0, 0, 1, "2000-01-01T00:00:00Z")  # rotate 0 -> 1
     assert client.current_token_idx == 1
 
-    with patch("open_pulse_crawler.graphql_client.time.sleep") as slept:
+    with patch("open_pulse_crawler.platforms.github.graphql.time.sleep") as slept:
         # late "exhausted" response still tagged token 0 — stale, ignore it
         client._handle_rate_limit(0, 0, 1, "2000-01-01T00:00:00Z")
         slept.assert_not_called()
@@ -524,7 +524,7 @@ def test_handle_rate_limit_healthy_response_clears_streak():
     client._handle_rate_limit(0, 0, 1, "2000-01-01T00:00:00Z")  # exhausted -> rotate to 1
     client._handle_rate_limit(1, 5000, 1, "2000-01-01T00:00:00Z")  # healthy -> streak cleared
 
-    with patch("open_pulse_crawler.graphql_client.time.sleep") as slept:
+    with patch("open_pulse_crawler.platforms.github.graphql.time.sleep") as slept:
         # exhausted on 1 -> streak is 1 (not 2), so rotate, do not sleep
         client._handle_rate_limit(1, 0, 1, "2000-01-01T00:00:00Z")
         slept.assert_not_called()
@@ -554,7 +554,7 @@ def test_graphql_sleeps_after_sweeping_all_rate_limited_tokens():
     client = GitHubGraphQLClient(tokens=["a", "b"])
 
     healthy = _gql_response({"user": None})
-    with patch("open_pulse_crawler.graphql_client.time.sleep") as slept, patch.object(
+    with patch("open_pulse_crawler.platforms.github.graphql.time.sleep") as slept, patch.object(
         client._http,
         "post",
         side_effect=[_rate_limited_response(), _rate_limited_response(), healthy],
@@ -573,7 +573,7 @@ def test_graphql_gives_up_when_all_tokens_stay_rate_limited():
 
     # 2 * ntok attempts, all rate-limited.
     responses = [_rate_limited_response() for _ in range(4)]
-    with patch("open_pulse_crawler.graphql_client.time.sleep"), patch.object(
+    with patch("open_pulse_crawler.platforms.github.graphql.time.sleep"), patch.object(
         client._http, "post", side_effect=responses
     ) as post:
         body = client._graphql("query", {})

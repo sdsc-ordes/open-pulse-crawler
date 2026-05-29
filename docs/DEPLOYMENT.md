@@ -50,12 +50,39 @@ cp .env.dist .env
 Set at least:
 
 ```bash
-CRAWLER_GITHUB_TOKEN=ghp_your_token_here
+# Host-keyed (v3+, multi-platform) — recommended
+CRAWLER_PLATFORMS=github.com
+CRAWLER_TOKEN__GITHUB_COM=ghp_your_token_here
 API_TOKEN=your-api-token
 ```
 
-For multi-token rotation, use `CRAWLER_GITHUB_TOKEN_POOL` (comma-separated)
-instead of `CRAWLER_GITHUB_TOKEN`.
+For multi-token rotation, use the `_POOL` variant (comma-separated):
+
+```bash
+CRAWLER_TOKEN_POOL__GITHUB_COM=ghp_a,ghp_b,ghp_c
+```
+
+To enable GitLab alongside GitHub, list every host you want to crawl
+in `CRAWLER_PLATFORMS` and provide a matching token per host:
+
+```bash
+CRAWLER_PLATFORMS=github.com,gitlab.com,gitlab.epfl.ch
+CRAWLER_TOKEN__GITHUB_COM=ghp_…
+CRAWLER_TOKEN__GITLAB_COM=glpat-…
+CRAWLER_TOKEN__GITLAB_EPFL_CH=glpat-…
+```
+
+See [`docs/GITLAB.md`](./GITLAB.md) for the full GitLab guide.
+
+### Legacy GitHub env vars (deprecated)
+
+The v2 names still work in v3 for `github.com` (one-shot deprecation
+warning on first read); they will be removed in v4:
+
+```bash
+CRAWLER_GITHUB_TOKEN=ghp_your_token_here       # single token, github.com only
+CRAWLER_GITHUB_TOKEN_POOL=ghp_a,ghp_b          # rotation pool, github.com only
+```
 
 Optional:
 
@@ -137,7 +164,9 @@ docker build -f tools/image/Dockerfile -t open-pulse-crawler .
 docker run -d \
   --name opc-api \
   -p 8000:8000 \
-  -e CRAWLER_GITHUB_TOKEN="ghp_..." \
+  -e CRAWLER_PLATFORMS="github.com,gitlab.com" \
+  -e CRAWLER_TOKEN__GITHUB_COM="ghp_..." \
+  -e CRAWLER_TOKEN__GITLAB_COM="glpat-..." \
   -e API_TOKEN="my-secret-api-token" \
   -e OPC_DATA_DIR="/var/lib/crawler/jobs" \
   -v opc-jobs:/var/lib/crawler/jobs \
@@ -155,15 +184,26 @@ lost when the container restarts — see [API.md → Persistence](./API.md#persi
 
 #### Required
 
+| Variable                            | Description                                                                                                                          |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `CRAWLER_PLATFORMS`                 | Comma-separated list of hosts to enable, e.g. `github.com,gitlab.com,gitlab.epfl.ch`. Defaults to `github.com` when unset.            |
+| `CRAWLER_TOKEN__<HOST>`             | Single personal access token for `<HOST>`, where `<HOST>` is the host uppercased with dots → underscores (`GITLAB_EPFL_CH`).         |
+| `CRAWLER_TOKEN_POOL__<HOST>`        | Comma-separated rotation pool for `<HOST>`. Wins over `CRAWLER_TOKEN__<HOST>` when both are set.                                     |
+| `API_TOKEN`                         | Bearer token required for protected endpoints.                                                                                       |
+
+Each host listed in `CRAWLER_PLATFORMS` needs at least one of
+`CRAWLER_TOKEN__<HOST>` or `CRAWLER_TOKEN_POOL__<HOST>`. Run
+`opc doctor` to verify.
+
+##### Legacy GitHub env vars (deprecated)
+
 | Variable                      | Description                                                                                                       |
 | ----------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `CRAWLER_GITHUB_TOKEN`        | GitHub personal access token (single).                                                                            |
-| `CRAWLER_GITHUB_TOKEN_POOL`   | Comma-separated list of GitHub tokens for rotation. Wins over `CRAWLER_GITHUB_TOKEN` when both are set.           |
-| `API_TOKEN`                   | Bearer token required for protected endpoints.                                                                    |
+| `CRAWLER_GITHUB_TOKEN`        | Single GitHub PAT — still works for `github.com` in v3, **removed in v4**. Maps to `CRAWLER_TOKEN__GITHUB_COM`.    |
+| `CRAWLER_GITHUB_TOKEN_POOL`   | Rotation pool — still works for `github.com` in v3, **removed in v4**. Maps to `CRAWLER_TOKEN_POOL__GITHUB_COM`.   |
+| `GITHUB_TOKEN`                | Even-older fallback — still read in v3 with a deprecation warning, **removed in v4**.                             |
 
-Exactly one of `CRAWLER_GITHUB_TOKEN` or `CRAWLER_GITHUB_TOKEN_POOL` is required.
-The legacy `GITHUB_TOKEN` variable is still read as a deprecated fallback and
-logs a warning when used.
+Each emits a one-shot deprecation warning on first read.
 
 #### Upgrading from v1.x — operator checklist
 
@@ -295,5 +335,9 @@ uv pip install -e ".[dev]"
 uvicorn open_pulse_crawler.api:app --host 0.0.0.0 --port 8000
 ```
 
-Set `CRAWLER_GITHUB_TOKEN` (or `CRAWLER_GITHUB_TOKEN_POOL` for rotation) and
-`API_TOKEN` in your environment or a `.env` file before starting the server.
+Set `CRAWLER_PLATFORMS`, the matching `CRAWLER_TOKEN__<HOST>` (or
+`CRAWLER_TOKEN_POOL__<HOST>` for rotation), and `API_TOKEN` in your
+environment or a `.env` file before starting the server. The legacy
+GitHub-only names (`CRAWLER_GITHUB_TOKEN`, `CRAWLER_GITHUB_TOKEN_POOL`,
+`GITHUB_TOKEN`) still work for `github.com` in v3 with a deprecation
+warning, and are removed in v4.

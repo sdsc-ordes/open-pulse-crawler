@@ -1,430 +1,157 @@
 # Open Pulse Crawler
 
-A powerful GitHub crawler based on breadth-first search (BFS) strategy to discover and map relationships between users, organizations, and repositories.
+A multi-platform crawler for the open-science graph. BFS-walks public APIs across GitHub, GitLab, Zenodo, Infoscience, DataCite, and HuggingFace and emits a unified graph keyed by canonical URLs.
 
-## Features
+Powers <https://openpulse.science> — this crawler is the data plane behind the open-science observability platform there.
 
-- 🔍 **BFS Crawling**: Discovers GitHub entities layer by layer from initial seed nodes
-- 🔄 **Multi-Token Support**: Use multiple GitHub tokens for higher rate limits
-- 💾 **Smart Caching**: Avoids redundant API calls with file-based caching
-- 📊 **Multiple Output Formats**: Export data as JSON, CSV (edges & nodes)
-- 📈 **Visualization**: Generate network graphs with color-coded node types
-- ⏸️ **State Management**: Save and resume crawler state
-- 📝 **Rich Logging**: Timestamped logs with progress tracking and statistics
-- 📉 **Progress Tracking**: Real-time progress bars with percentage, ETA, and statistics using tqdm
-- 🎯 **Relationship Mapping**: Tracks ownership, contribution, forks, follows, stars, watches, org teams, and issue/PR activity
-- 🔗 **URL-keyed nodes**: Every user / org / repo / team is identified by its canonical public URL (e.g. `https://github.com/torvalds`) — designed for future multi-platform crawling (GitLab next)
-- 🔗 **Dependency Graph**: Crawl repository dependencies (SBOM) and dependents ("Used by")
-- ⚡ **GraphQL Mode**: Optional GraphQL-backed crawl that collapses dozens of REST calls into a single query per entity
-- 🚦 **Intelligent Rate Limiting**: Adaptive rate limit management with semaphores, delays, and multi-token rotation
-- ⚙️ **Concurrent Control**: Configurable request throttling to prevent API abuse
+## What it does
+
+Seed a public URL (a GitHub repo, a Zenodo record, an EPFL Infoscience handle, a DOI, an ORCID, a HuggingFace paper, …) and the crawler walks outward N rounds, discovering related entities and emitting typed edges between them. Output is a single graph (JSON / CSV / JSON-LD) with the same node-key contract across every platform: **every node is identified by its full `https://...` URL**, so a record on Zenodo and a paper on HuggingFace that reference the same arxiv ID naturally converge at the *same canonical edge target*.
+
+## Platforms
+
+| Platform | Hosts | Anonymous? | Guide |
+|---|---|---|---|
+| **GitHub** | `github.com` | Token required (60/hr anon is too low) | — |
+| **GitLab** | `gitlab.com`, `gitlab.epfl.ch`, `gitlab.ethz.ch`, `*.renkulab.io`, … | Yes — public projects/users/groups | [docs/GITLAB.md](docs/GITLAB.md) |
+| **Zenodo** | `zenodo.org`, `sandbox.zenodo.org` | Yes | [docs/ZENODO.md](docs/ZENODO.md) |
+| **Infoscience** | `infoscience.epfl.ch` (DSpace 7 + CRIS) | Yes | [docs/INFOSCIENCE.md](docs/INFOSCIENCE.md) |
+| **DataCite Commons** | `doi.org`, `ror.org`, `orcid.org`, `api.datacite.org`, `commons.datacite.org` | Yes | [docs/DATACITE.md](docs/DATACITE.md) |
+| **HuggingFace** | `huggingface.co` | Yes | [docs/HUGGINGFACE.md](docs/HUGGINGFACE.md) |
+
+Cross-platform edges work out of the box: a Zenodo record, an Infoscience publication, a DataCite work, and a HuggingFace paper that all reference the same arxiv paper produce edges to the *same* `https://arxiv.org/abs/<id>` URL — the convergence is automatic via the shared DataCite RelationType vocabulary.
 
 ## Installation
 
-Using uv (recommended):
-
 ```bash
 # Install the package
-uv pip install -e .
+pip install -e .
 
 # With visualization support
-uv pip install -e ".[viz]"
+pip install -e ".[visualization]"
 
 # With development tools
-uv pip install -e ".[dev,viz]"
+pip install -e ".[dev]"
 ```
 
-Using pip:
+## Quickstart
+
+### Configure tokens (anonymous-friendly platforms can skip this)
+
+Copy `.env.dist` to `.env` and fill in what you need. Only GitHub strictly requires a token; everything else is optional (anonymous works, tokens raise rate limits):
 
 ```bash
-pip install -e .
-# or with visualization
-pip install -e ".[viz]"
+CRAWLER_PLATFORMS=github.com,zenodo.org,huggingface.co
+CRAWLER_TOKEN__GITHUB_COM=ghp_…
+# Optional — anonymous works without these:
+# CRAWLER_TOKEN__ZENODO_ORG=…
+# CRAWLER_TOKEN__HUGGINGFACE_CO=hf_…
 ```
 
-## Testing
+Run `opc doctor` to verify which platforms are wired up — it shows tri-state per host: **OK** (token configured), **ANONYMOUS** (no token, public reads work), **MISSING** (token required but absent).
 
-Ensure dev dependencies are installed first:
+### Crawl
 
 ```bash
-uv sync --extra dev
+# Single seed, two BFS rounds
+opc crawl --rounds 2 https://huggingface.co/papers/2307.09288
+
+# Multi-platform crawl from a seed file
+opc crawl --seed-file seeds.txt --rounds 3 --output-dir ./results
+
+# Resume from saved state
+opc crawl --resume --state-file state.json
 ```
 
-Run the Python unit tests in parallel (recommended):
+Seeds accept short forms (`torvalds`, `owner/repo`) and full URLs across any supported platform. See `opc crawl --help` for the full option list (rate-limit knobs, dependency graphs, issue/PR activity, visualization).
 
-```bash
-uv run pytest -n auto
+## Node identifiers
+
+Every node in the exported graph is keyed by its **canonical public URL** — always with the `https://` scheme. The URL is the single ID used as the dict key in JSON output, the `id` column in nodes CSV, and the `source`/`target` columns in edges CSV.
+
+| Platform | Canonical graph key |
+|---|---|
+| GitHub user / repo / team | `https://github.com/torvalds`, `https://github.com/torvalds/linux`, `https://github.com/orgs/acme/teams/core` |
+| GitLab (any instance) | `https://gitlab.epfl.ch/users/bovel`, `https://gitlab.renkulab.io/<group>/<project>` |
+| Zenodo record / community / user | `https://zenodo.org/records/<id>`, `https://zenodo.org/communities/<slug>`, `https://zenodo.org/users/<id>` |
+| Infoscience handle | `https://infoscience.epfl.ch/handle/20.500.14299/<id>` |
+| DataCite work via DOI | `https://doi.org/<doi>` |
+| DataCite organization (ROR) | `https://ror.org/<id>` |
+| DataCite person (ORCID) | `https://orcid.org/<id>` |
+| DataCite repository | `https://commons.datacite.org/repositories/<id>` |
+| HuggingFace model / dataset / space | `https://huggingface.co/<owner>/<name>`, `…/datasets/<owner>/<name>`, `…/spaces/<owner>/<name>` |
+| HuggingFace paper / collection | `https://huggingface.co/papers/<arxiv-id>`, `…/collections/<owner>/<slug>` |
+
+**Why full URLs?** Browser-resolvable, JSON-LD `@id`-compatible (downstream linked-data tooling expects IRIs), and they make the cross-platform pivot work automatically — a Zenodo record, an Infoscience publication, a DataCite work, and a HuggingFace paper that all reference the same arxiv paper produce edges to the *same* canonical `https://arxiv.org/abs/<id>` URL.
+
+**Dual storage of bare identifiers.** Where it adds value, the scheme-native form of the identifier lives alongside the URL as a typed metadata field — not as a separate node:
+
+```
+DataCiteWork:         url=https://doi.org/10.6084/m9.figshare.99   doi="10.6084/m9.figshare.99"
+DataCiteOrganization: url=https://ror.org/02s376052                ror_id="02s376052"
+DataCitePerson:       url=https://orcid.org/0000-0002-1825-0097    orcid="0000-0002-1825-0097"
+HuggingFacePaper:     url=https://huggingface.co/papers/2307.09288 arxiv_id="2307.09288"
 ```
 
-Run the same fast unit-test path used in CI:
+Downstream tools that want to query by scheme-native form use the typed field; the graph itself stays URL-keyed.
 
-```bash
-uv run pytest -n auto -m "not integration"
-```
-
-If your machine has limited CPU or memory, cap workers explicitly:
-
-```bash
-uv run pytest -n 2 -m "not integration"
-# or serialize for debugging
-uv run pytest -n 1 -m "not integration"
-```
-
-Integration checks remain separate from this fast unit-test path. Run
-`tests/test_integration.sh` when you specifically want to validate the Docker stack.
-
-## Configuration
-
-Set your GitHub personal access token(s) in the environment:
-
-```bash
-# Single token
-export CRAWLER_GITHUB_TOKEN="ghp_your_token_here"
-
-# Multiple tokens for rotation (comma-separated, better effective rate limit)
-export CRAWLER_GITHUB_TOKEN_POOL="ghp_token1,ghp_token2,ghp_token3"
-```
-
-If both are set, `CRAWLER_GITHUB_TOKEN_POOL` wins. The legacy `GITHUB_TOKEN`
-variable is still read as a fallback for now but will log a deprecation warning.
-
-You can create a `.env` file in your project directory:
-
-```bash
-CRAWLER_GITHUB_TOKEN=ghp_your_token_here
-API_TOKEN=your_api_token_for_rest_api
-```
+DOI URLs matching the prefix table (`10.5281/zenodo.*`, `10.5072/zenodo.*`) are rewritten to the platform's canonical URL before BFS dispatch — so a seed of `https://doi.org/10.5281/zenodo.42` enters the graph as `https://zenodo.org/records/42`.
 
 ## REST API
 
-Open Pulse Crawler includes a FastAPI service at `/api/v1` with:
+The crawler ships a FastAPI service with two routers:
 
-- `GET /api/v1/health` (public)
-- `POST /api/v1/crawl` — start a crawl (Bearer auth)
-- `POST /api/v1/crawl/graphql` — start a GraphQL-backed crawl, same request body (Bearer auth)
-- `GET /api/v1/crawl/{job_id}` — job status (Bearer auth)
-- `POST /api/v1/crawl/{job_id}/stop` — cooperatively stop a running crawl (Bearer auth)
-- `POST /api/v1/crawl/{job_id}/resume` — resume a stopped/failed crawl from saved state (Bearer auth)
-- `GET /api/v1/graph/{job_id}` — graph data; `?partial=true` reads partial/recovered results (Bearer auth)
+- `/api/v1/*` — the legacy GitHub-only endpoints.
+- `/api/v2/*` — the unified multi-platform endpoints (recommended). Swagger UI at `/api/v1/docs` exposes ~23 example request bodies across all five platforms, including cross-platform demos (DOI prefix routing, ORCID URL canonical seed, HuggingFace collection walks, multi-platform single-POST jobs).
 
-The crawl request body supports the same core crawl controls as the CLI, including
-dependent/dependency crawling, issue/PR activity (`crawl_issues`, `crawl_prs`),
-`min_stars`, `max_dependents`, `batch_size`, and inline `epfl_entities` tagging.
+`POST /api/v2/crawl` accepts a list of seed URLs and returns a job ID; `GET /api/v2/graph/{job_id}` returns the discovered graph. `GET /api/v2/platforms` lists configured hosts + token status.
 
-Crawls are checkpointed to disk per round under `OPC_DATA_DIR`, so partial results
-survive a stop, failure, or container restart.
+See [`docs/API.md`](docs/API.md) for the full endpoint reference.
 
-Run locally:
+## Docker
 
-```bash
-export CRAWLER_GITHUB_TOKEN="ghp_..."
-export API_TOKEN="my-secret-api-token"
-uvicorn open_pulse_crawler.api:app --host 0.0.0.0 --port 8000
-```
-
-See `docs/API.md` for endpoint details and example payloads.
-
-### Node identifiers
-
-Every node in the exported graph (user, organization, repository, team) is
-keyed by its canonical public URL — for example
-`https://github.com/torvalds`, `https://github.com/torvalds/linux`, or
-`https://github.com/orgs/acme/teams/core`. This is the single ID used as
-the dict key in the JSON output, the `id` column in the nodes CSV, and the
-`source`/`target` columns in the edges CSV.
-
-Seed input still accepts short forms — `torvalds`, `owner/repo`, or a full
-GitHub URL — and they are normalized to the canonical form internally.
-Snapshots written under the old (login-keyed) format are not readable;
-operators upgrading from a previous release should re-crawl.
-
-## Docker and GUI
-
-The repository ships a three-container stack:
-
-- FastAPI backend (`api`)
-- Streamlit GUI (`gui`)
-- Nginx reverse proxy (`nginx`)
-
-Start everything with Docker Compose:
+The repository ships a three-container stack (FastAPI + Streamlit GUI + Nginx):
 
 ```bash
 cp .env.dist .env
 docker compose -f infra/docker-compose.yml up -d --build
 ```
 
-Open:
+Then open:
+- <http://localhost/> — Streamlit GUI
+- <http://localhost/api/v1/docs> — Swagger UI
+- <http://localhost/api/v1/health> — health check
 
-- `http://localhost/` for the Streamlit GUI
-- `http://localhost/api/v1/health` for API health
-- `http://localhost/api/v1/docs` for Swagger docs
+If you set `OPC_PORT=8080`, swap the port accordingly. See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) for full deployment options.
 
-If you set `OPC_PORT` (for example `OPC_PORT=8080`), replace `localhost` with
-`localhost:<port>` in the URLs above.
+## Output formats
 
-See `docs/DEPLOYMENT.md` for full deployment options and integration checks.
+The crawler emits its graph in three formats from the same in-memory representation:
 
-## Usage
+- **JSON** — full graph as nested dicts of node-URL → node payload.
+- **CSV nodes** — one row per discovered node (URL, type, is_seed, is_explored, timestamp).
+- **CSV edges** — one row per discovered edge (source URL, target URL, edge kind, source/target subkind).
+- **JSON-LD** — same graph re-emitted with `@id`/`@type` per node; downstream linked-data tooling consumes this directly.
 
-### Basic Usage
+Edge kinds are stable across platforms where the semantics overlap (`owned_by`, `contributor_of`, `related_to.<RelationType>`, `member_of`, …) and platform-specific where they don't (`uses_model` only for HuggingFace spaces, `parent_of` for GitHub teams + Infoscience org-units, `references_model` / `references_dataset` / `references_space` for HuggingFace papers, etc.). See each platform's guide for the full table.
 
-Crawl from command-line seeds:
-
-```bash
-open-pulse-crawler crawl caviri sdsc-ordes/gimie --rounds 2
-```
-
-### Using a Seed File
-
-Create a `seeds.txt` file:
-
-```txt
-caviri
-sdsc-ordes/gimie
-https://github.com/torvalds/linux
-torvalds
-```
-
-Run the crawler:
+## Development
 
 ```bash
-open-pulse-crawler crawl --seed-file seeds.txt --rounds 3
+# Install with dev tools
+pip install -e ".[dev]"
+
+# Run unit tests (live integration tests are deselected by default)
+pytest -m "not integration"
+
+# Live integration tests against real APIs (anonymous, polite)
+CRAWLER_SKIP_INTEGRATION=0 pytest -m integration
+
+# Skip integration tests explicitly
+CRAWLER_SKIP_INTEGRATION=1 pytest
 ```
 
-### Advanced Options
-
-```bash
-open-pulse-crawler crawl \
-  --seed-file seeds.txt \
-  --rounds 3 \
-  --output-dir ./results \
-  --cache-dir ./cache \
-  --state-file state.json \
-  --visualize \
-  --visualize-clusters \
-  --verbose
-```
-
-### Resume from Saved State
-
-```bash
-open-pulse-crawler crawl --resume --state-file state.json
-```
-
-### Dependency & Dependent Crawling
-
-The crawler can also discover relationships based on repository dependencies (using GitHub's SBOM) and dependents (using the "Used by" graph).
-
-```bash
-open-pulse-crawler crawl DeepLabCut/DeepLabCut \
-  --rounds 1 \
-  --crawl-dependencies \
-  --crawl-dependents \
-  --min-stars 10 \
-  --max-dependents 50
-```
-
-- `--crawl-dependencies`: Crawl downstream dependencies (what the repo uses).
-- `--crawl-dependents`: Crawl upstream dependents (who uses the repo).
-- `--min-stars N`: Filter dependents/dependencies by minimum star count (default: 0).
-- `--max-dependents N`: Limit the number of dependents to fetch per repository (default: all).
-
-### Command-Line Options
-
-#### Basic Options
-- `seeds`: Initial seed nodes (users, orgs, or repos)
-- `--seed-file, -f`: Path to file containing seed nodes (one per line)
-- `--rounds, -r`: Number of BFS rounds to perform (default: 3)
-- `--output-dir, -o`: Directory for output files (default: ./output)
-- `--cache-dir, -c`: Directory for caching API responses (default: `$OPC_CACHE_DIR` or `data/open-pulse-crawler/cache`). Cached entries expire after `$OPC_CACHE_TTL_DAYS` (default 30); see [docs/DEPLOYMENT.md → Caching](docs/DEPLOYMENT.md#caching).
-- `--no-cache`: Disable API response caching
-- `--state-file, -s`: File to save/load crawler state
-- `--resume`: Resume from saved state file
-- `--no-json`: Skip JSON output
-- `--no-csv`: Skip CSV output
-- `--visualize, -v`: Generate graph visualization (PNG)
-- `--verbose`: Enable verbose logging
-- `--epfl-list`: Path to file containing EPFL entities (one per line) to flag in output
-
-#### Dependency Options (New!)
-- `--crawl-dependencies`: Crawl downstream dependencies (SBOM)
-- `--crawl-dependents`: Crawl upstream dependents ("Used by")
-- `--min-stars`: Minimum stars for filtering dependents/dependencies (default: 0)
-- `--max-dependents`: Maximum number of dependents to fetch (default: all)
-- `--max-contributors`: Skip contributor expansion for repos with more than N contributors. The repo node still lands in the graph (with owner / fork / deps); only its contributors are not queued. Useful for avoiding mega-projects (e.g. linux kernel) that would dominate the BFS frontier. The total count is cached, so this is roughly free on re-crawls. Default: unlimited.
-
-#### Issue & PR Activity Options
-- `--crawl-issues`: Fetch issue authors and conversation commenters per repo (opt-in)
-- `--crawl-prs`: Fetch PR authors, conversation commenters, and reviewers per repo (opt-in)
-- `--issue-max`: Max issues scanned per repo when `--crawl-issues` is set (default: 100)
-- `--pr-max`: Max PRs scanned per repo when `--crawl-prs` is set (default: 100)
-
-These are opt-in because issues/PRs paginate heavily on busy repos. They emit
-`issue_author`, `pr_author`, `commented_on`, and `pr_reviewer` edges.
-
-#### Rate Limiting Options (New!)
-- `--request-delay`: Minimum delay in seconds between API requests (default: 0.0)
-- `--max-concurrent`: Maximum number of concurrent API requests (default: 5)
-- `--rate-limit-buffer`: Buffer of requests to keep before waiting (default: 50)
-
-See [docs/CONCURRENCY.md](./docs/CONCURRENCY.md) for the detailed guide on concurrency, rate limiting, and multi-token rotation.
-
-## Output Formats
-
-### JSON Output
-
-Complete graph data with all discovered entities:
-
-```json
-{
-  "users": {
-    "caviri": {
-      "login": "caviri",
-      "name": "Carlos Vivar",
-      "id": 12345,
-      "type": "User",
-      "authored_repositories": ["caviri/repo1"],
-      "forked_repositories": []
-    }
-  },
-  "orgs": {...},
-  "repos": {...}
-}
-```
-
-### CSV Output (Edges)
-
-Relationships between entities:
-
-```csv
-source,target,property,source_type,target_type
-caviri,caviri/repo1,owner_of,user,repo
-caviri,torvalds,follows,user,user
-caviri,sdsc-ordes/gimie,starred,user,repo
-repo1,repo2,parent_of,repo,repo
-repo1,lib1,depends_on,repo,repo
-```
-
-Edge `property` values:
-
-| Property         | Direction        | Meaning                                         |
-| ---------------- | ---------------- | ----------------------------------------------- |
-| `owner_of`       | user/org → repo  | Owns the repository                             |
-| `contributor_of` | user/org → repo  | Contributed to the repository                   |
-| `parent_of`      | repo → repo      | Upstream repo of a fork                         |
-| `parent_of`      | team → team      | Parent of a nested team                         |
-| `depends_on`     | repo → repo      | Dependency / dependent edge                     |
-| `follows`        | user → user      | Follows the target user                         |
-| `starred`        | user → repo      | Starred the repository                          |
-| `watching`       | user → repo      | Watching (subscribed to) the repository         |
-| `has_team`       | org → team       | Org contains the team                           |
-| `has_access`     | team → repo      | Team has access to the repository               |
-| `issue_author`   | user → repo      | Opened an issue (opt-in `--crawl-issues`)       |
-| `pr_author`      | user → repo      | Opened a pull request (opt-in `--crawl-prs`)    |
-| `commented_on`   | user → repo      | Commented on an issue/PR (opt-in)               |
-| `pr_reviewer`    | user → repo      | Reviewed a pull request (opt-in `--crawl-prs`)  |
-
-Edges are only emitted between nodes that are both present in the graph.
-
-### CSV Output (Nodes)
-
-All discovered nodes (including unexplored frontier nodes):
-
-```csv
-id,name,type,is_seed,is_explored,exploration_timestamp,is_epfl
-caviri,Carlos Vivar,user,true,true,2025-11-19T10:00:00,false
-sdsc-ordes/gimie,gimie,repo,true,true,2025-11-19T10:00:05,true
-torvalds,Linus Torvalds,user,false,false,,false
-```
-
-Node `type` is one of `user`, `org`, `repo`, or `team`.
-
-### Visualization
-
-When `--visualize` is enabled, generates a PNG image with:
-- Color-coded nodes (users=blue, orgs=red, repos=green)
-- Seed nodes shown as squares
-- Regular nodes shown as circles
-- Directed edges showing relationships
-
-## How It Works
-
-1. **Seed Parsing**: Accepts GitHub URLs, usernames, or org/repo identifiers
-2. **BFS Expansion**: For each round:
-   - Processes all nodes in the current level
-   - Discovers connected entities (repos, members, contributors)
-   - Adds new entities to the queue for the next round
-3. **Relationship Mapping**:
-   - Users/Orgs → Repos: "owner of" or "contributor of"
-   - Users → Orgs: "member of"
-   - Repos → Repos: "parent of" (for forks) or "depends_on" (for dependencies)
-4. **Caching**: Stores API responses to avoid redundant calls
-5. **Rate Limiting**: Automatically handles GitHub API rate limits with token rotation
-
-## Project Structure
-
-```
-src/open_pulse_crawler/
-├── __init__.py          # Package initialization
-├── models.py            # Pydantic models for GitHub entities
-├── github_client.py     # GitHub API client with caching
-├── crawler.py           # BFS crawler core logic
-├── io_utils.py          # Input/output handlers
-├── visualization.py     # Graph visualization
-└── cli.py              # Command-line interface
-```
-
-## Progress Tracking
-
-The crawler now includes real-time progress tracking with **tqdm** and **human-readable timestamps**:
-
-- **Overall round progress**: Shows completion percentage and ETA across all rounds
-- **Per-round progress**: Displays node processing progress within each round
-- **Live statistics**: Real-time updates of nodes, users, orgs, repos, and queue size
-- **Timestamps**: Start time, end time, and duration in human-readable format
-- **Round timestamps**: See when each BFS round begins
-
-Example progress output:
-
-```
-🚀 Crawl started at 2025-10-02 14:30:15
-📊 Target: 3 rounds
-
-Overall Progress:  67%|████████████▋      | 2/3 [00:45<00:22] nodes=156 users=12 orgs=3 repos=141 queue=234
-Round 2 [14:30:47]:   100%|████████████████████| 156/156 [00:18<00:00,  8.67node/s]
-
-✅ Crawl completed at 2025-10-02 14:31:38
-⏱️  Total duration: 1m 23s
-📦 Collected: 56 users, 8 orgs, 170 repos
-```
-
-See [PROGRESS_TRACKING.md](./docs/PROGRESS_TRACKING.md) and [TIMESTAMPS.md](./docs/TIMESTAMPS.md) for more details.
-
-## Statistics and Monitoring
-
-The crawler provides detailed statistics:
-
-- Nodes processed per round
-- API calls made and cache hits
-- Rate limit waits and token switches
-- Time taken per round
-- Total entities discovered
-
-Example output:
-
-```
-╭─────────────────────────── Crawl Statistics ────────────────────────────╮
-│ Metric                      │ Value                                     │
-├─────────────────────────────┼───────────────────────────────────────────┤
-│ Rounds Completed            │ 3                                         │
-│ Total Nodes Visited         │ 150                                       │
-│ Users Discovered            │ 45                                        │
-│ Organizations Discovered    │ 12                                        │
-│ Repositories Discovered     │ 93                                        │
-│ API Calls Made              │ 200                                       │
-│ Cache Hits                  │ 50                                        │
-╰─────────────────────────────┴───────────────────────────────────────────╯
-```
+Specs and plans for each platform live under `docs/superpowers/` — useful as architectural reference when adding a new adapter.
 
 ## License
 
@@ -432,4 +159,6 @@ Apache 2.0
 
 ## Author
 
-caviri
+Carlos Vivar Rios (`@caviri`) — Swiss Data Science Center (SDSC), EPFL.
+
+Part of the [Open Pulse](https://openpulse.science) project.

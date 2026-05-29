@@ -19,7 +19,7 @@ import httpx
 
 from open_pulse_crawler.crawler import GitHubCrawler
 from open_pulse_crawler.gimie_client import clear_stale_jsonld_error_files
-from open_pulse_crawler.github_client import GitHubClient
+from open_pulse_crawler.platforms.github import GitHubClient
 from open_pulse_crawler.token_env import resolve_github_tokens, tokens_not_set_message
 
 
