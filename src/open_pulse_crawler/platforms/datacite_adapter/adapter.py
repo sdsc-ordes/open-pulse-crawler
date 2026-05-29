@@ -343,10 +343,101 @@ class DataCiteAdapter(PlatformAdapter):
             doi_prefixes=prefixes,
         )
 
-    # ---- expand (placeholder — Task 7 implements) --------------------------
+    # ---- expand ------------------------------------------------------------
 
     def expand(self, node, opts: ExpandOpts) -> Iterable[Edge]:
-        raise NotImplementedError("Task 7 implements expand()")
+        if isinstance(node, DataCiteWork):
+            yield from self._expand_work(node, opts)
+        elif isinstance(node, DataCiteOrganization):
+            yield from self._expand_organization(node, opts)
+        elif isinstance(node, DataCitePerson):
+            yield from self._expand_person(node, opts)
+        # DataCiteClient is passive — no edges.
+
+    def _doi_target_url(self, doi: str) -> str:
+        """Map a DOI to its canonical target URL, rewriting Zenodo prefixes."""
+        return rewrite_doi_url(doi) or f"https://doi.org/{doi}"
+
+    def _expand_work(self, node: DataCiteWork, opts: ExpandOpts) -> Iterable[Edge]:
+        # authored_by — each creator with an ORCID
+        for c in node.creators or []:
+            orcid = c.get("orcid", "") if isinstance(c, dict) else ""
+            if not orcid:
+                continue
+            yield Edge(
+                src=node.url,
+                kind="authored_by",
+                dst=f"https://orcid.org/{orcid}",
+            )
+
+        # affiliated_with — each ROR affiliation
+        for a in node.affiliations or []:
+            if not isinstance(a, dict):
+                continue
+            if a.get("scheme") != "ROR":
+                continue
+            ror = a.get("ror", "")
+            if not ror:
+                continue
+            yield Edge(
+                src=node.url,
+                kind="affiliated_with",
+                dst=f"https://ror.org/{ror}",
+            )
+
+        # published_by — DataCiteClient anchor
+        if node.client_id:
+            yield Edge(
+                src=node.url,
+                kind="published_by",
+                dst=f"https://commons.datacite.org/repositories/{node.client_id}",
+            )
+
+        # related_to.<RelationType> — DataCite relatedIdentifiers via shared helper
+        for r in node.relations or []:
+            if not isinstance(r, dict):
+                continue
+            relation_type = r.get("relation_type", "") or "references"
+            scheme = (r.get("target_type", "") or "").lower()
+            ident = r.get("target", "") or ""
+            if not ident:
+                continue
+            target = synthesize_target_url(scheme, ident)
+            if not target:
+                continue
+            yield Edge(
+                src=node.url,
+                kind=f"related_to.{relation_type}",
+                dst=target,
+            )
+
+    def _expand_organization(
+        self, node: DataCiteOrganization, opts: ExpandOpts,
+    ) -> Iterable[Edge]:
+        for item in self._client.iter_dois_by_ror(node.ror_url):
+            attr = item.get("attributes", {}) if isinstance(item, dict) else {}
+            doi = attr.get("doi") or item.get("id", "")
+            if not doi:
+                continue
+            yield Edge(
+                src=node.url,
+                kind="has_publication",
+                dst=self._doi_target_url(doi),
+            )
+
+    def _expand_person(
+        self, node: DataCitePerson, opts: ExpandOpts,
+    ) -> Iterable[Edge]:
+        for item in self._client.iter_dois_by_orcid(node.orcid_url):
+            attr = item.get("attributes", {}) if isinstance(item, dict) else {}
+            doi = attr.get("doi") or item.get("id", "")
+            if not doi:
+                continue
+            yield Edge(
+                src=node.url,
+                kind="authored",
+                dst=self._doi_target_url(doi),
+            )
 
     # ---- rate_limit --------------------------------------------------------
 
