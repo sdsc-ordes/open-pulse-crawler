@@ -160,3 +160,53 @@ class HuggingFaceHTTPClient:
     def get_org_overview(self, org_name: str) -> Optional[Dict[str, Any]]:
         """Return the org overview JSON for ``<org_name>``, or None on 404."""
         return self._request_json(f"/api/organizations/{org_name}/overview")
+
+    # ---- list endpoints with Link-header cursor pagination -----------------
+
+    def _iter_with_link(
+        self, path: str, params: Dict[str, Any],
+    ) -> Iterable[Dict[str, Any]]:
+        """Yield items across all pages, following the ``Link: rel="next"`` header.
+
+        HuggingFace's list endpoints (``/api/models``, ``/api/datasets``,
+        ``/api/spaces``) return a JSON array. Pagination is signaled via the
+        ``Link`` response header; the next-page URL is absolute and has the
+        opaque ``cursor`` query parameter baked in.
+        """
+        current_path: str = path
+        current_params: Optional[Dict[str, Any]] = params
+        while True:
+            resp = self._do_get(current_path, current_params)
+            if not resp.is_success:
+                resp.raise_for_status()
+            body = resp.json()
+            if isinstance(body, list):
+                for item in body:
+                    yield item
+            link = resp.headers.get("Link") or ""
+            m = _LINK_NEXT_RE.search(link)
+            if not m:
+                return
+            current_path = m.group("url")
+            current_params = None  # next-URL has all params baked in
+
+    def iter_models_by_author(self, author: str) -> Iterable[Dict[str, Any]]:
+        """Yield model records authored by ``<author>`` (user or org name)."""
+        return self._iter_with_link(
+            "/api/models",
+            {"author": author, "limit": DEFAULT_PAGE_SIZE},
+        )
+
+    def iter_datasets_by_author(self, author: str) -> Iterable[Dict[str, Any]]:
+        """Yield dataset records authored by ``<author>`` (user or org name)."""
+        return self._iter_with_link(
+            "/api/datasets",
+            {"author": author, "limit": DEFAULT_PAGE_SIZE},
+        )
+
+    def iter_spaces_by_author(self, author: str) -> Iterable[Dict[str, Any]]:
+        """Yield space records authored by ``<author>`` (user or org name)."""
+        return self._iter_with_link(
+            "/api/spaces",
+            {"author": author, "limit": DEFAULT_PAGE_SIZE},
+        )

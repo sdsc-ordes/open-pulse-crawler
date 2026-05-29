@@ -183,3 +183,65 @@ def test_429_twice_raises(monkeypatch):
     with patch.object(c._session, "get", side_effect=responses):
         with pytest.raises(httpx.HTTPStatusError):
             c.get_model("x")
+
+
+def test_iter_models_by_author_single_page():
+    c = HuggingFaceHTTPClient(host="huggingface.co", tokens=[])
+    body = [
+        {"id": "karpathy/tinyllamas", "downloads": 0},
+        {"id": "karpathy/gpt2", "downloads": 1000},
+    ]
+    headers = {}  # no Link header → single page
+    with patch.object(c._session, "get", return_value=_make_response(200, body, headers=headers)) as g:
+        items = list(c.iter_models_by_author("karpathy"))
+    g.assert_called_once_with(
+        "/api/models",
+        params={"author": "karpathy", "limit": 100},
+    )
+    assert [m["id"] for m in items] == ["karpathy/tinyllamas", "karpathy/gpt2"]
+
+
+def test_iter_models_by_author_follows_link_next():
+    c = HuggingFaceHTTPClient(host="huggingface.co", tokens=[])
+    page1 = [{"id": "karpathy/a"}]
+    page2 = [{"id": "karpathy/b"}]
+    headers1 = {"Link": '<https://huggingface.co/api/models?author=karpathy&cursor=ABC&limit=100>; rel="next"'}
+    headers2 = {}
+    with patch.object(c._session, "get") as g:
+        g.side_effect = [
+            _make_response(200, page1, headers=headers1),
+            _make_response(200, page2, headers=headers2),
+        ]
+        items = list(c.iter_models_by_author("karpathy"))
+    assert [m["id"] for m in items] == ["karpathy/a", "karpathy/b"]
+    assert g.call_count == 2
+
+
+def test_iter_datasets_by_author_query_shape():
+    c = HuggingFaceHTTPClient(host="huggingface.co", tokens=[])
+    with patch.object(c._session, "get", return_value=_make_response(200, [], headers={})) as g:
+        list(c.iter_datasets_by_author("openai"))
+    g.assert_called_once_with(
+        "/api/datasets",
+        params={"author": "openai", "limit": 100},
+    )
+
+
+def test_iter_spaces_by_author_query_shape():
+    c = HuggingFaceHTTPClient(host="huggingface.co", tokens=[])
+    with patch.object(c._session, "get", return_value=_make_response(200, [], headers={})) as g:
+        list(c.iter_spaces_by_author("black-forest-labs"))
+    g.assert_called_once_with(
+        "/api/spaces",
+        params={"author": "black-forest-labs", "limit": 100},
+    )
+
+
+def test_iter_link_header_no_next_terminates_cleanly():
+    """A Link header with only `rel="first"` / `rel="prev"` (no `rel="next"`)
+    must NOT trigger another request — the iteration terminates."""
+    c = HuggingFaceHTTPClient(host="huggingface.co", tokens=[])
+    headers = {"Link": '<https://huggingface.co/api/models?author=karpathy>; rel="first"'}
+    with patch.object(c._session, "get", return_value=_make_response(200, [], headers=headers)) as g:
+        list(c.iter_models_by_author("karpathy"))
+    assert g.call_count == 1
