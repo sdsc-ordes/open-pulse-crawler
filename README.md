@@ -35,6 +35,11 @@ manual-test recipes).
   uploader accounts. Cross-platform `related_to.<RelationType>` edges
   follow `metadata.related_identifiers` into GitHub etc. Anonymous reads
   supported. See [docs/ZENODO.md](docs/ZENODO.md).
+- **Infoscience** (`infoscience.epfl.ch`): EPFL's DSpace 7 + DSpace-CRIS
+  repository. Publications + Resources + Researchers + Departments,
+  with DataCite `related_to.<RelationType>` edges identical to Zenodo's.
+  Anonymous reads supported (with built-in 429 retry-after handling).
+  See [docs/INFOSCIENCE.md](docs/INFOSCIENCE.md).
 
 ### Enabling platforms
 

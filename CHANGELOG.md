@@ -54,6 +54,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Per-version record nodes (versions are intra-node metadata).
 - Cross-platform identity resolution (handled by another tool).
 
+### Added (v3.2 — Infoscience adapter)
+- `InfoscienceAdapter` and `InfoscienceClient` under
+  `src/open_pulse_crawler/platforms/infoscience/`. Crawls EPFL's
+  Infoscience repository (DSpace 7.6.2 + DSpace-CRIS 2023.02.06).
+- Three subkind models: `InfosciencePerson`, `InfoscienceOrgUnit`,
+  `InfoscienceItem`. Items carry `resource_type` distinguishing
+  publications from datasets/software/etc.
+- Eight new edge kinds: `authored_by`, `affiliated_with`,
+  `related_to.<RelationType>`, `authored`, `member_of`,
+  `has_publication`, `has_member` (gated), `parent_of`.
+- Shared `platforms/datacite.py` helper for `arxiv`/`orcid`/`pmid`/
+  `pmcid`/`swh`/`doi`/`url` URL synthesis (lifted from
+  `ZenodoAdapter._synthesize_target_url`; both adapters now share it).
+- HTTP 429 retry-after handling in `InfoscienceClient` (one automatic
+  retry honoring `Retry-After` header, capped at 60s; second 429 raises).
+- CRIS-CamelCase relation-type normalization (`dc.relation.isversionof`
+  → `related_to.isVersionOf` for cross-platform consistency with Zenodo).
+- UUID → handle resolution cache on the adapter (`_uuid_to_handle`)
+  saves round-trips when the same Person co-authors multiple items.
+- `crawl_members` field on `ExpandOpts` (default `False`); gates
+  `InfoscienceOrgUnit` → `has_member` edge emission.
+- CLI registers `InfoscienceAdapter` for `infoscience.epfl.ch` and
+  any `*.infoscience.epfl.ch` host with or without tokens.
+- `tools/scripts/fetch_public_projects.py` handles
+  `infoscience.epfl.ch` via DSpace's `/server/api/discover/search/objects`
+  keyset pagination.
+- `POST /api/v2/crawl` OpenAPI examples: `infoscience_publication_handle`,
+  `infoscience_person_authored_chain`.
+- Integration test against live `infoscience.epfl.ch`
+  (`tests/integration/test_infoscience_dryrun.py`).
+- `docs/INFOSCIENCE.md`.
+
+### Fixed (v3.2)
+- `InfoscienceClient.get_item_by_handle` now uses the documented DSpace
+  PID resolver (`/server/api/pid/find?id=hdl:<handle>`) rather than the
+  undocumented `/server/api/handle/<handle>` path.
+
+### Refactored (v3.2)
+- `ZenodoAdapter._synthesize_target_url` lifted to module-level
+  `synthesize_target_url` in `platforms/datacite.py`. Zenodo behavior
+  unchanged; tests for the synthesizer moved to `tests/platforms/test_datacite.py`.
+
+### Out of scope (v3.2)
+- DSpace community/collection structural layer (OrgUnit covers the
+  canonical EPFL hierarchy).
+- DSpace-CRIS Project entities (grants, funding).
+- Cross-platform identity resolution (still downstream of this tool).
+- Other Swiss DSpace instances (UZH ZORA, UNIBE BORIS) — refactor
+  `InfoscienceAdapter` into a parameterized `DSpaceAdapter` when a
+  second instance lands.
+
 ## [2.0.0] — 2026-05-27
 
 **Breaking release.** Headlines:

@@ -58,6 +58,8 @@ flowchart LR
   crawler.
 - [Zenodo support](ZENODO.md) — multi-instance Zenodo crawling with
   cross-platform `related_to` edges.
+- [Infoscience support](INFOSCIENCE.md) — EPFL's DSpace 7 repository
+  with CRIS-backed researcher + departmental hierarchy.
 - [Deployment](DEPLOYMENT.md) — Docker Compose stack (API + GUI + Nginx), env vars,
   single-container builds, and the gimie-enrichment knobs.
 - [Concurrency & rate limiting](CONCURRENCY.md) — multi-token rotation, semaphores,
