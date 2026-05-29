@@ -640,5 +640,200 @@ def test_graphdata_accepts_datacite_subclasses_in_existing_dicts():
     assert isinstance(restored.repos["https://doi.org/10.6084/m9.figshare.99"], DataCiteWork)
 
 
+
+# --- HuggingFace subkinds (Spec 5) -------------------------------
+from open_pulse_crawler.models import (
+    HuggingFaceUser, HuggingFaceOrg, HuggingFaceRepo,
+    HuggingFacePaper, HuggingFaceCollection,
+)
+
+
+def test_huggingface_user_subkind_and_fields():
+    user = HuggingFaceUser(
+        url="https://huggingface.co/karpathy",
+        login="karpathy",
+        platform="huggingface",
+        username="karpathy",
+        fullname="Andrej Karpathy",
+        is_pro=False,
+        avatar_url="https://cdn.huggingface.co/avatars/karpathy.png",
+        num_models=30,
+        num_datasets=5,
+        num_spaces=2,
+        num_papers=12,
+        num_followers=80000,
+        member_orgs=["nanoGPT"],
+    )
+    assert user.subkind == "HuggingFaceUser"
+    assert user.username == "karpathy"
+    assert user.num_models == 30
+    assert user.followers == []  # inherited from UserModel; HF has own counter
+
+
+def test_huggingface_org_subkind_and_fields():
+    org = HuggingFaceOrg(
+        url="https://huggingface.co/meta-llama",
+        login="meta-llama",
+        platform="huggingface",
+        org_name="meta-llama",
+        fullname="Meta Llama",
+        is_verified=True,
+        plan="enterprise",
+        num_models=80,
+        num_datasets=10,
+        num_followers=5000,
+    )
+    assert org.subkind == "HuggingFaceOrg"
+    assert org.is_verified is True
+    assert org.members == []  # inherited; populated via expand if has_member ever ships
+
+
+def test_huggingface_repo_model_subkind_and_fields():
+    repo = HuggingFaceRepo(
+        url="https://huggingface.co/meta-llama/Llama-3.2-1B",
+        full_name="meta-llama/Llama-3.2-1B",
+        platform="huggingface",
+        repo_type="model",
+        repo_id="meta-llama/Llama-3.2-1B",
+        owner="meta-llama",
+        repo_name="Llama-3.2-1B",
+        sha="abc123",
+        tags=["transformers", "llama-3", "text-generation"],
+        downloads=2222053,
+        likes=2412,
+        license="llama3.2",
+        language=["en"],
+        gated=True,
+        pipeline_tag="text-generation",
+        library_name="transformers",
+    )
+    assert repo.subkind == "HuggingFaceRepo"
+    assert repo.repo_type == "model"
+    assert repo.pipeline_tag == "text-generation"
+    # Space-only and dataset-only fields stay empty for models
+    assert repo.sdk == ""
+    assert repo.used_models == []
+    assert repo.paperswithcode_id == ""
+
+
+def test_huggingface_repo_dataset_subkind_and_fields():
+    repo = HuggingFaceRepo(
+        url="https://huggingface.co/datasets/openai/gsm8k",
+        full_name="datasets/openai/gsm8k",
+        platform="huggingface",
+        repo_type="dataset",
+        repo_id="openai/gsm8k",
+        owner="openai",
+        repo_name="gsm8k",
+        paperswithcode_id="gsm8k",
+    )
+    assert repo.repo_type == "dataset"
+    assert repo.paperswithcode_id == "gsm8k"
+    assert repo.pipeline_tag == ""
+
+
+def test_huggingface_repo_space_subkind_and_fields():
+    repo = HuggingFaceRepo(
+        url="https://huggingface.co/spaces/black-forest-labs/FLUX.1-schnell",
+        full_name="spaces/black-forest-labs/FLUX.1-schnell",
+        platform="huggingface",
+        repo_type="space",
+        repo_id="black-forest-labs/FLUX.1-schnell",
+        owner="black-forest-labs",
+        repo_name="FLUX.1-schnell",
+        sdk="gradio",
+        runtime_stage="RUNNING",
+        used_models=["black-forest-labs/FLUX.1-schnell"],
+        likes=5067,
+    )
+    assert repo.repo_type == "space"
+    assert repo.sdk == "gradio"
+    assert repo.runtime_stage == "RUNNING"
+    assert "black-forest-labs/FLUX.1-schnell" in repo.used_models
+
+
+def test_huggingface_paper_subkind_and_fields():
+    paper = HuggingFacePaper(
+        url="https://huggingface.co/papers/2307.09288",
+        full_name="papers/2307.09288",
+        platform="huggingface",
+        arxiv_id="2307.09288",
+        arxiv_url="https://arxiv.org/abs/2307.09288",
+        title="Llama 2: Open Foundation and Fine-Tuned Chat Models",
+        summary="Long-form abstract.",
+        ai_summary="Short AI-generated TL;DR.",
+        ai_keywords=["llm", "fine-tuning", "instruction-tuning"],
+        authors=[{"name": "Hugo Touvron"}, {"name": "Louis Martin"}],
+        upvotes=252,
+        published_at="2023-07-18T00:00:00Z",
+        github_repo="facebookresearch/llama",
+        num_linked_models=8,
+        num_linked_datasets=2,
+        num_linked_spaces=14,
+    )
+    assert paper.subkind == "HuggingFacePaper"
+    assert paper.arxiv_id == "2307.09288"
+    assert paper.github_repo == "facebookresearch/llama"
+    assert paper.num_linked_models == 8
+
+
+def test_huggingface_collection_subkind_and_fields():
+    coll = HuggingFaceCollection(
+        url="https://huggingface.co/collections/meta-llama/metas-llama-32-language-models-and-evals-675bfd70e574a62dd0e40586",
+        login="meta-llama/metas-llama-32-language-models-and-evals-675bfd70e574a62dd0e40586",
+        platform="huggingface",
+        slug="meta-llama/metas-llama-32-language-models-and-evals-675bfd70e574a62dd0e40586",
+        owner="meta-llama",
+        title="Meta's Llama 3.2 language models & evals",
+        description="The Llama 3.2 release.",
+        upvotes=120,
+        last_updated="2024-12-01T00:00:00Z",
+    )
+    assert coll.subkind == "HuggingFaceCollection"
+    assert coll.owner == "meta-llama"
+    assert coll.title.startswith("Meta's Llama 3.2")
+
+
+def test_graphdata_accepts_huggingface_subclasses_in_existing_dicts():
+    from open_pulse_crawler.models import GraphData
+    g = GraphData()
+    g.users["https://huggingface.co/karpathy"] = HuggingFaceUser(
+        url="https://huggingface.co/karpathy",
+        login="karpathy", platform="huggingface",
+        username="karpathy",
+    )
+    g.orgs["https://huggingface.co/meta-llama"] = HuggingFaceOrg(
+        url="https://huggingface.co/meta-llama",
+        login="meta-llama", platform="huggingface",
+        org_name="meta-llama",
+    )
+    g.orgs["https://huggingface.co/collections/meta-llama/llama-32-...x"] = HuggingFaceCollection(
+        url="https://huggingface.co/collections/meta-llama/llama-32-...x",
+        login="meta-llama/llama-32-...x", platform="huggingface",
+        slug="meta-llama/llama-32-...x",
+        owner="meta-llama",
+    )
+    g.repos["https://huggingface.co/meta-llama/Llama-3.2-1B"] = HuggingFaceRepo(
+        url="https://huggingface.co/meta-llama/Llama-3.2-1B",
+        full_name="meta-llama/Llama-3.2-1B", platform="huggingface",
+        repo_type="model",
+        repo_id="meta-llama/Llama-3.2-1B",
+        owner="meta-llama",
+        repo_name="Llama-3.2-1B",
+    )
+    g.repos["https://huggingface.co/papers/2307.09288"] = HuggingFacePaper(
+        url="https://huggingface.co/papers/2307.09288",
+        full_name="papers/2307.09288", platform="huggingface",
+        arxiv_id="2307.09288",
+        arxiv_url="https://arxiv.org/abs/2307.09288",
+    )
+    restored = GraphData.model_validate_json(g.model_dump_json())
+    assert isinstance(restored.users["https://huggingface.co/karpathy"], HuggingFaceUser)
+    assert isinstance(restored.orgs["https://huggingface.co/meta-llama"], HuggingFaceOrg)
+    assert isinstance(restored.orgs["https://huggingface.co/collections/meta-llama/llama-32-...x"], HuggingFaceCollection)
+    assert isinstance(restored.repos["https://huggingface.co/meta-llama/Llama-3.2-1B"], HuggingFaceRepo)
+    assert isinstance(restored.repos["https://huggingface.co/papers/2307.09288"], HuggingFacePaper)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

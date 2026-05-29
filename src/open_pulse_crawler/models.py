@@ -520,6 +520,122 @@ class DataCiteWork(RepoModel):
     registered_url: Optional[str] = None
 
 
+# --- HuggingFace subclasses -------------------------------------------------
+#
+# HuggingFace is an ML-platform hub for models, datasets, spaces, papers,
+# and user-curated collections. The social graph is sparser than GitHub
+# (no following/forking on models in the GH sense), but HF papers are a
+# strong cross-platform pivot via arxiv IDs and linked-model cross-references.
+
+
+class HuggingFaceUser(UserModel):
+    """A HuggingFace user account. Distinguished from `HuggingFaceOrg` only
+    by which API endpoint returned 200 (``/users/<x>/overview`` vs
+    ``/organizations/<x>/overview``) — URL form is identical, so classify
+    returns ``USER_OR_ORG`` and fetch disambiguates.
+
+    Cross-platform identity stays downstream: `member_orgs` is HF-internal
+    org names only, not a cross-platform ORCID/email join.
+    """
+    subkind: Literal["HuggingFaceUser"] = "HuggingFaceUser"
+    username: str
+    fullname: str = ""
+    is_pro: bool = False
+    avatar_url: str = ""
+    num_models: int = 0
+    num_datasets: int = 0
+    num_spaces: int = 0
+    num_papers: int = 0
+    num_followers: int = 0
+    member_orgs: List[str] = Field(default_factory=list)
+
+
+class HuggingFaceOrg(OrgModel):
+    """A HuggingFace organization (e.g. meta-llama, openai, BigScience)."""
+    subkind: Literal["HuggingFaceOrg"] = "HuggingFaceOrg"
+    org_name: str
+    fullname: str = ""
+    is_verified: bool = False
+    plan: str = ""
+    avatar_url: str = ""
+    num_models: int = 0
+    num_datasets: int = 0
+    num_spaces: int = 0
+    num_papers: int = 0
+    num_users: int = 0
+    num_followers: int = 0
+
+
+class HuggingFaceRepo(RepoModel):
+    """Unified repo subkind covering models / datasets / spaces. The three
+    share git-repo plumbing (owner/name, sha, commits, files, tags,
+    downloads, likes, cardData) — only the URL path prefix and a handful
+    of typed fields differ. Mirrors the ``resource_type`` precedent across
+    ZenodoRecord / InfoscienceItem / DataCiteWork.
+    """
+    subkind: Literal["HuggingFaceRepo"] = "HuggingFaceRepo"
+    repo_type: Literal["model", "dataset", "space"]
+    repo_id: str
+    owner: str
+    repo_name: str
+    sha: str = ""
+    tags: List[str] = Field(default_factory=list)
+    downloads: int = 0
+    likes: int = 0
+    license: str = ""
+    language: List[str] = Field(default_factory=list)
+    gated: bool = False
+    # Model-only:
+    pipeline_tag: str = ""
+    library_name: str = ""
+    # Space-only:
+    sdk: str = ""
+    runtime_stage: str = ""
+    used_models: List[str] = Field(default_factory=list)
+    # Dataset-only:
+    paperswithcode_id: str = ""
+
+
+class HuggingFacePaper(RepoModel):
+    """A paper on HuggingFace — keyed by arxiv ID
+    (``huggingface.co/papers/2307.09288``). HF aggregates arxiv metadata
+    plus HF-specific cross-references (``linkedModels`` / ``linkedDatasets`` /
+    ``linkedSpaces`` / ``githubRepo``) that make papers the strongest
+    cross-platform pivot in the graph.
+
+    Authors are bare `{name}` strings without ORCID — no `authored_by` edges
+    to ORCID URLs (unlike DataCite). Cross-platform identity stays downstream.
+    """
+    subkind: Literal["HuggingFacePaper"] = "HuggingFacePaper"
+    arxiv_id: str
+    arxiv_url: str
+    title: str = ""
+    summary: str = ""
+    ai_summary: str = ""
+    ai_keywords: List[str] = Field(default_factory=list)
+    authors: List[Dict[str, Any]] = Field(default_factory=list)
+    upvotes: int = 0
+    published_at: str = ""
+    github_repo: str = ""
+    num_linked_models: int = 0
+    num_linked_datasets: int = 0
+    num_linked_spaces: int = 0
+
+
+class HuggingFaceCollection(OrgModel):
+    """A user-curated grouping (\"bucket\"): the owner picks N models /
+    datasets / spaces / papers and gives the bundle a title + description.
+    Crawled via ``contains`` edges to each item.
+    """
+    subkind: Literal["HuggingFaceCollection"] = "HuggingFaceCollection"
+    slug: str
+    owner: str
+    title: str = ""
+    description: str = ""
+    upvotes: int = 0
+    last_updated: str = ""
+
+
 # Schema version bumped when the graph contract changed. v2 added URL-keyed
 # nodes; v3 adds the ``subkind`` discriminator + ``extras`` /
 # ``external_identifiers`` slots so GitLab subclasses can coexist with the
@@ -528,22 +644,24 @@ GRAPH_SCHEMA_VERSION = 3
 
 
 # Discriminated unions on ``subkind`` let the same dict hold either the
-# GitHub concrete class or its GitLab / Zenodo / Infoscience / DataCite
-# counterpart. Pydantic v2 picks the right class on deserialization by
-# reading the literal subkind tag.
+# GitHub concrete class or its GitLab / Zenodo / Infoscience / DataCite /
+# HuggingFace counterpart. Pydantic v2 picks the right class on
+# deserialization by reading the literal subkind tag.
 UserNode = Annotated[
     Union[UserModel, GitLabUserModel, ZenodoUserModel, InfosciencePerson,
-          DataCitePerson],
+          DataCitePerson, HuggingFaceUser],
     Field(discriminator="subkind"),
 ]
 OrgNode = Annotated[
     Union[OrgModel, GitLabGroupModel, ZenodoCommunityModel, InfoscienceOrgUnit,
-          DataCiteOrganization, DataCiteClient],
+          DataCiteOrganization, DataCiteClient,
+          HuggingFaceOrg, HuggingFaceCollection],
     Field(discriminator="subkind"),
 ]
 RepoNode = Annotated[
     Union[RepoModel, GitLabProjectModel, ZenodoRecordModel, InfoscienceItem,
-          DataCiteWork],
+          DataCiteWork,
+          HuggingFaceRepo, HuggingFacePaper],
     Field(discriminator="subkind"),
 ]
 
