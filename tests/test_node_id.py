@@ -236,3 +236,5 @@ class TestParseSeed:
             NodeKind.USER_OR_ORG,
             "https://gitlab.com/torvalds",
         )
+
+

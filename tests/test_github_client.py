@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
-from open_pulse_crawler.github_client import (
+from open_pulse_crawler.platforms.github.client import (
     CACHE_DIR_ENV,
     CACHE_TTL_ENV,
     DEFAULT_CACHE_DIR,

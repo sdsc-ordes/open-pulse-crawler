@@ -7,6 +7,210 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-05-29
+
+Multi-platform crawler — major release. Single PR ships the full
+GitLab + Zenodo + Infoscience + DataCite + HuggingFace stack on top of
+the v2 GitHub crawler. URL-keyed nodes, host-keyed dispatch, anonymous-
+friendly adapters, and the shared DataCite RelationType vocabulary
+across every platform.
+
+### Added
+- GitLab support across multiple instances: `gitlab.com`, `gitlab.epfl.ch`, `gitlab.ethz.ch`, `renkulab.io`.
+- `PlatformAdapter` abstraction + `PlatformRegistry` for host-keyed dispatch.
+- Concrete `GitHubAdapter` (wrapping the existing client) and `GitLabAdapter` (new, on `python-gitlab`).
+- `subkind` discriminator on every node (`GitHubUser`, `GitHubOrganization`, `GitHubRepository`, `GitHubTeam`, `GitLabUser`, `GitLabGroup`, `GitLabProject`) with typed GitLab subclasses carrying platform-specific fields (e.g., `GitLabProjectModel.visibility`, `.namespace`, `GitLabGroupModel.parent`).
+- `extras: dict[str, Any]` and `external_identifiers: list[ExternalIdentifier]` on every node — escape hatch for fields we don't model and slot for future cross-platform identity linking.
+- `/api/v2` — unified shape including `subkind`. Endpoints: `health`, `platforms`, `crawl`, `graph/{job_id}`, `nodes` filtered listing.
+- CLI: `--platforms`, `--default-host`, `--crawl-stars` flags on `crawl`.
+- CLI: `crawler doctor` (`opc doctor`) reports enabled hosts and per-host token configuration.
+- Host-keyed env vars: `CRAWLER_TOKEN_POOL__<HOST>`, `CRAWLER_TOKEN__<HOST>`; `CRAWLER_PLATFORMS` to enable instances.
+- `python-gitlab>=4,<6` as a required dependency.
+
+### Changed
+- Snapshot schema bumped to 3; v2 state files are now refused on load with `IncompatibleStateError`.
+- Cache layout: `cache/<host>/<sha256(uri)>.json`. Existing v2 flat-cache directories are not migrated — re-crawl required.
+- Visualization color map keyed by `subkind`. GitHub subkinds keep the v2 cyan/gold/green palette so existing crawls render identically; GitLab subkinds use distinct purple/brown/pink colors.
+
+### Deprecated
+- `CRAWLER_GITHUB_TOKEN_POOL`, `CRAWLER_GITHUB_TOKEN`, `GITHUB_TOKEN`: still work for `github.com` in v3 with a one-shot deprecation warning. Removed in v4.
+- `/api/v1`: github-only crawls keep working. Non-github seeds rejected with `400 {"error": "v1 supports github.com seeds only; use /api/v2"}`. Endpoint removed in v4.
+
+### Added (v3.1 — Zenodo adapter)
+- `ZenodoAdapter` and `ZenodoClient` under `src/open_pulse_crawler/platforms/zenodo/`.
+- Three subkind models: `ZenodoUserModel`, `ZenodoCommunityModel`,
+  `ZenodoRecordModel`. Records use the concept DOI as the primary
+  identity; versions collapse into a `versions: list[dict]` field.
+- DOI URL → canonical Zenodo URL rewriting in `node_id.py`
+  (`is_zenodo_doi_url`, `rewrite_zenodo_doi_url`).
+- Five new edge kinds: `in_community`, `uploaded_by`, `uploaded`,
+  `contains`, and compound `related_to.<RelationType>` (`isSupplementTo`,
+  `cites`, `isCitedBy`, …) for cross-platform discovery.
+- CLI registers `ZenodoAdapter` for `zenodo.org`, `sandbox.zenodo.org`,
+  and any `*.zenodo.org` host with or without tokens.
+- `tools/scripts/fetch_public_projects.py` handles `zenodo.org` via
+  `/api/records` keyset pagination.
+- `POST /api/v2/crawl` OpenAPI examples: `zenodo_community_renku`,
+  `zenodo_record_doi_url`, `zenodo_record_canonical`,
+  `cross_platform_zenodo_github`.
+- Integration test against live `zenodo.org`
+  (`tests/integration/test_zenodo_dryrun.py`).
+- `docs/ZENODO.md`.
+
+### Out of scope (v3.1)
+- Community member crawling (auth-gated on production Zenodo).
+- Per-version record nodes (versions are intra-node metadata).
+- Cross-platform identity resolution (handled by another tool).
+
+### Added (v3.2 — Infoscience adapter)
+- `InfoscienceAdapter` and `InfoscienceClient` under
+  `src/open_pulse_crawler/platforms/infoscience/`. Crawls EPFL's
+  Infoscience repository (DSpace 7.6.2 + DSpace-CRIS 2023.02.06).
+- Three subkind models: `InfosciencePerson`, `InfoscienceOrgUnit`,
+  `InfoscienceItem`. Items carry `resource_type` distinguishing
+  publications from datasets/software/etc.
+- Seven new edge kinds: `authored_by`, `affiliated_with`,
+  `related_to.<RelationType>`, `authored`, `member_of`,
+  `has_publication`, `parent_of`.
+- Shared `platforms/datacite.py` helper for `arxiv`/`orcid`/`pmid`/
+  `pmcid`/`swh`/`doi`/`url` URL synthesis (lifted from
+  `ZenodoAdapter._synthesize_target_url`; both adapters now share it).
+- HTTP 429 retry-after handling in `InfoscienceClient` (one automatic
+  retry honoring `Retry-After` header, capped at 60s; second 429 raises).
+- CRIS-CamelCase relation-type normalization (`dc.relation.isversionof`
+  → `related_to.isVersionOf` for cross-platform consistency with Zenodo).
+- UUID → handle resolution cache on the adapter (`_uuid_to_handle`)
+  saves round-trips when the same Person co-authors multiple items.
+- CLI registers `InfoscienceAdapter` for `infoscience.epfl.ch` and
+  any `*.infoscience.epfl.ch` host with or without tokens.
+- `tools/scripts/fetch_public_projects.py` handles
+  `infoscience.epfl.ch` via DSpace's `/server/api/discover/search/objects`
+  keyset pagination.
+- `POST /api/v2/crawl` OpenAPI examples: `infoscience_publication_handle`,
+  `infoscience_person_authored_chain`.
+- Integration test against live `infoscience.epfl.ch`
+  (`tests/integration/test_infoscience_dryrun.py`).
+- `docs/INFOSCIENCE.md`.
+
+### Fixed (v3.2)
+- `InfoscienceClient.get_item_by_handle` now uses the documented DSpace
+  PID resolver (`/server/api/pid/find?id=hdl:<handle>`) rather than the
+  undocumented `/server/api/handle/<handle>` path.
+
+### Refactored (v3.2)
+- `ZenodoAdapter._synthesize_target_url` lifted to module-level
+  `synthesize_target_url` in `platforms/datacite.py`. Zenodo behavior
+  unchanged; tests for the synthesizer moved to `tests/platforms/test_datacite.py`.
+
+### Out of scope (v3.2)
+- DSpace community/collection structural layer (OrgUnit covers the
+  canonical EPFL hierarchy).
+- DSpace-CRIS Project entities (grants, funding).
+- Cross-platform identity resolution (still downstream of this tool).
+- Other Swiss DSpace instances (UZH ZORA, UNIBE BORIS) — refactor
+  `InfoscienceAdapter` into a parameterized `DSpaceAdapter` when a
+  second instance lands.
+
+### Added (v3.3 — DataCite Commons adapter)
+- `DataCiteAdapter` and `DataCiteHTTPClient` under
+  `src/open_pulse_crawler/platforms/datacite_adapter/`. Crawls DataCite
+  Commons — DOI-identified works (any DataCite repository), ROR
+  organizations, ORCID researchers, and DataCite-registered repositories.
+- Four subkind models: `DataCiteWork`, `DataCiteOrganization`,
+  `DataCitePerson`, `DataCiteClient`.
+- Six new edge kinds: `authored_by`, `affiliated_with`,
+  `related_to.<RelationType>`, `published_by` (from work), `has_publication`
+  (from organization), `authored` (from person). `DataCiteClient` is
+  passive — no edges emitted.
+- DOI prefix routing table (`_DOI_PREFIX_REWRITERS` in
+  `platforms/datacite.py`): Zenodo-prefix DOIs are rewritten to their
+  canonical `zenodo.org` URLs at seed-time, so the BFS routes them to
+  the Zenodo adapter (no duplicate node).
+- `PlatformRegistry.register_hosts(hosts, adapter)` for multi-host
+  registration. The DataCite adapter is registered against five hosts
+  (`doi.org`, `ror.org`, `orcid.org`, `api.datacite.org`,
+  `commons.datacite.org`); user-facing platform key is `datacite.org`.
+- `NodeKind.USER` and `NodeKind.ORG` added (alongside existing
+  `USER_OR_ORG`) — used by adapters whose URL shapes are discriminated
+  (DataCite ORCID vs ROR vs commons-repository).
+- HTTP 429 retry-after handling in `DataCiteHTTPClient` (one automatic
+  retry honoring `Retry-After` header, capped at 60s; second 429 raises).
+- DataCite client metadata enrichment via `/clients/<id>`: `clientType`,
+  `domains` (for cross-host routing hints), `re3data_doi` (cross-registry
+  anchor), `doi_prefixes` (via `/clients/<id>/relationships/prefixes`).
+- CLI registers `DataCiteAdapter` against `datacite.org` (anonymous + tokens).
+- `POST /api/v2/crawl` OpenAPI examples: `datacite_work_by_doi`,
+  `datacite_org_by_ror_epfl`, `datacite_person_by_orcid`.
+- Integration test against live `api.datacite.org`
+  (`tests/integration/test_datacite_dryrun.py`).
+- `docs/DATACITE.md`.
+
+### Refactored (v3.3)
+- `node_id.rewrite_zenodo_doi_url` and `node_id.is_zenodo_doi_url`
+  removed. Replaced by the generalized `rewrite_doi_url` /
+  `is_owned_doi_url` in `platforms/datacite.py`, table-driven via
+  `_DOI_PREFIX_REWRITERS`. Behavior is unchanged for Zenodo.
+
+### Out of scope (v3.3)
+- Crossref-issued DOIs (Nature, ACM, IEEE). A future `CrossrefAdapter`
+  could share the DOI host via the prefix routing table.
+- ROR / ORCID secondary API enrichment. Cross-platform identity
+  resolution stays downstream.
+- Active `DataCiteClient` expansion (walking all DOIs published by a
+  client). Could be added behind a `--crawl-client-works` flag.
+- `tools/scripts/fetch_public_projects.py` extension for DataCite —
+  no natural "browse all DOIs" use case yet.
+
+### Added (v3.4 — HuggingFace adapter)
+- `HuggingFaceAdapter` and `HuggingFaceHTTPClient` under
+  `src/open_pulse_crawler/platforms/huggingface/`. Crawls HuggingFace —
+  users, organizations, models, datasets, spaces, papers, and collections.
+- Five subkind models: `HuggingFaceUser`, `HuggingFaceOrg`,
+  `HuggingFaceRepo` (models/datasets/spaces unified via `repo_type:
+  Literal["model","dataset","space"]`), `HuggingFacePaper`,
+  `HuggingFaceCollection`.
+- Ten new edge kinds (twelve source/edge combinations across the five
+  subkinds): `owns`, `member_of`, `owned_by`, `uses_model`,
+  `related_to.IsIdenticalTo` (paper → arxiv), `related_to.IsSupplementedBy`
+  (paper → github), `references_model`, `references_dataset`,
+  `references_space`, `contains`.
+- Cross-platform paper bridge: a HuggingFace paper's arxiv ID emits the
+  same canonical `arxiv.org/abs/<id>` URL that Zenodo, Infoscience, and
+  DataCite records produce when they reference the same paper. The
+  shared `synthesize_target_url` helper handles the URL synthesis with
+  no HF-specific routing code.
+- USER_OR_ORG disambiguation pattern (matches GitHub): `huggingface.co/<name>`
+  classifies as `USER_OR_ORG`; `fetch` probes `/api/users/<name>/overview`
+  first and falls through to `/api/organizations/<name>/overview` on 404.
+- Reserved first-segment words (`datasets`, `spaces`, `papers`,
+  `collections`, plus HF top-level routes `blog`, `docs`, `tasks`,
+  `learn`, `pricing`, `enterprise`, `inference-endpoints`) are
+  recognized by `classify` and `normalize_uri` to prevent the
+  bare-`<owner>/<name>` model regex from misclaiming them.
+- HTTP 429 retry-after handling in `HuggingFaceHTTPClient` (one
+  automatic retry honoring `Retry-After`, capped at 60s).
+- Link-header cursor pagination on list endpoints
+  (`/api/models?author=<x>`, `/api/datasets?author=<x>`, `/api/spaces?author=<x>`).
+- CLI registers `HuggingFaceAdapter` against `huggingface.co`
+  (anonymous-friendly; tokens optional).
+- `POST /api/v2/crawl` OpenAPI examples: `huggingface_paper_llama2`,
+  `huggingface_model_llama`, `huggingface_user_karpathy`.
+- Integration test against live `huggingface.co`
+  (`tests/integration/test_huggingface_dryrun.py`) — verifies the
+  cross-platform paper bridge end-to-end with the Llama 2 paper seed.
+- `docs/HUGGINGFACE.md`.
+
+### Out of scope (v3.4)
+- `has_member` (Org → User) edges — auth-gated endpoint, same as
+  Infoscience.
+- Paper authors → ORCID linkage — paper authors are bare `{name}`
+  strings without ORCID. Cross-platform identity stays downstream.
+- Model/dataset card README parsing (`cardData.tags` arxiv extraction).
+- Discussion / community / dataset-viewer / model-leaderboard data.
+- Legacy arxiv IDs (`papers/cond-mat/0303517` form).
+- `tools/scripts/fetch_public_projects.py` extension for HF — no
+  natural "browse all HF entities" use case.
+
 ## [2.0.0] — 2026-05-27
 
 **Breaking release.** Headlines:

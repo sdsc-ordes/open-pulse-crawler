@@ -74,11 +74,18 @@ def test_legacy_emits_deprecation_warning_once(monkeypatch, caplog):
     assert POOL_ENV in msg
 
 
-def test_legacy_not_used_when_new_var_present(monkeypatch, caplog):
-    monkeypatch.setenv(TOKEN_ENV, "new")
-    monkeypatch.setenv(LEGACY_ENV, "old")
+def test_no_deprecation_when_new_var_present(monkeypatch, caplog):
+    # Reset the once-flags. Use whatever helper this test file already has;
+    # if there's no helper, reload both modules.
+    import importlib
+    import open_pulse_crawler.config as cfg
+    import open_pulse_crawler.token_env as te
+    importlib.reload(cfg); importlib.reload(te)
+
+    monkeypatch.setenv("CRAWLER_TOKEN__GITHUB_COM", "new")
+    monkeypatch.setenv("CRAWLER_GITHUB_TOKEN", "old")
     with caplog.at_level(logging.WARNING, logger="open_pulse_crawler.token_env"):
-        assert resolve_github_tokens() == ["new"]
+        assert te.resolve_github_tokens() == ["new"]
     assert not any("deprecated" in r.getMessage().lower() for r in caplog.records)
 
 

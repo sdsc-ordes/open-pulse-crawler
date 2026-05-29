@@ -1,5 +1,6 @@
 """Command-line interface for the GitHub crawler."""
 
+import json
 import sys
 import logging
 from pathlib import Path
@@ -13,8 +14,13 @@ from rich.table import Table
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from dotenv import load_dotenv
 
+from .config import enabled_instances, resolve_tokens
 from .models import GraphData
-from .github_client import GitHubClient, resolve_cache_dir
+from .platforms import PlatformRegistry
+from .platforms.github import GitHubClient, resolve_cache_dir
+from .platforms.github.adapter import GitHubAdapter
+from .platforms.gitlab.adapter import GitLabAdapter
+from .platforms.gitlab.client import GitLabClient
 from .crawler import GitHubCrawler
 from .io_utils import parse_seed_file, export_to_json, export_to_csv, export_nodes_csv
 from .token_env import POOL_ENV, TOKEN_ENV, resolve_github_tokens, tokens_not_set_message
@@ -67,6 +73,181 @@ def get_github_tokens() -> List[str]:
         sys.exit(1)
 
     return tokens
+
+
+def _token_host_for(host: str) -> str:
+    """Map a user-facing platform key to the host used for token env-var resolution.
+
+    Most platforms are 1:1 — the env-var key matches the platform key (e.g.
+    ``CRAWLER_TOKEN__GITHUB_COM`` for ``github.com``). DataCite is the
+    exception: the user-facing key is ``datacite.org`` while the actual API
+    host is ``api.datacite.org``, so the env-var is
+    ``CRAWLER_TOKEN__API_DATACITE_ORG``.
+    """
+    if host == "datacite.org":
+        return "api.datacite.org"
+    return host
+
+
+def _auth_required(host: str) -> bool:
+    """True iff the host's adapter cannot operate without tokens.
+
+    GitHub's anonymous rate limit (60 req/hour) is too low to be useful for
+    crawling, so ``_build_registry`` skips it entirely without tokens.
+
+    Every other platform registers anonymously: GitLab serves public
+    projects/users/groups, Zenodo/Infoscience/DataCite expose public APIs.
+    ``doctor`` uses this to render the right status label
+    (OK / ANONYMOUS / MISSING).
+    """
+    return host == "github.com"
+
+
+def _parse_platforms_csv(value: Optional[str]) -> List[str]:
+    """Parse a comma-separated ``--platforms`` value into a host list.
+
+    Returns ``[]`` for ``None`` or a blank string so callers can fall back
+    to :func:`enabled_instances` (which reads ``CRAWLER_PLATFORMS``).
+    """
+    if not value or not value.strip():
+        return []
+    return [h.strip() for h in value.split(",") if h.strip()]
+
+
+def _build_registry(
+    platforms_list: List[str],
+    *,
+    cache_dir: Optional[Path] = None,
+    request_delay: float = 0.0,
+    max_concurrent: int = 5,
+    rate_limit_buffer: int = 50,
+) -> tuple[PlatformRegistry, Optional[GitHubClient], List[str]]:
+    """Build a :class:`PlatformRegistry` for the given hosts.
+
+    Returns ``(registry, github_client, missing_hosts)``. ``github_client``
+    is the GitHub client built for ``github.com`` (if it's in the list and
+    has tokens), exposed separately so the legacy github-only crawl path
+    can keep using ``GitHubCrawler(client=...)`` semantics. ``missing_hosts``
+    is the list of configured hosts that have no tokens — the caller can
+    log/skip these; ``doctor`` surfaces them.
+    """
+    reg = PlatformRegistry()
+    github_client: Optional[GitHubClient] = None
+    missing: List[str] = []
+    for host in platforms_list:
+        tokens = resolve_tokens(_token_host_for(host))
+        if not tokens:
+            missing.append(host)
+            if host == "github.com":
+                # GitHub anonymous reads are rate-limited at 60/hour — practically
+                # unusable for crawling. Skip github.com without tokens; the
+                # legacy code path will report the missing token clearly.
+                continue
+            if host in ("zenodo.org", "sandbox.zenodo.org") or host.endswith(".zenodo.org"):
+                # Anonymous Zenodo: the public REST API is usable without a
+                # token (lower rate limits). Register the adapter so the host
+                # is reachable; ``missing`` still surfaces the gap via doctor.
+                from .platforms.zenodo.client import ZenodoClient
+                from .platforms.zenodo.adapter import ZenodoAdapter
+                zen_client = ZenodoClient(host=host, tokens=[])
+                reg.register(ZenodoAdapter(zen_client, instance_host=host))
+                continue
+            if host == "infoscience.epfl.ch" or host.endswith(".infoscience.epfl.ch"):
+                # Anonymous Infoscience: public items/persons/orgunits are
+                # readable without auth. ``missing`` still surfaces the gap.
+                from .platforms.infoscience.client import InfoscienceClient
+                from .platforms.infoscience.adapter import InfoscienceAdapter
+                isc = InfoscienceClient(host=host, tokens=[])
+                reg.register(InfoscienceAdapter(isc, instance_host=host))
+                continue
+            if host == "datacite.org":
+                # Anonymous DataCite: public /dois and /clients are readable
+                # without a token. ``missing`` still surfaces the gap via
+                # doctor. The user-facing platform key is ``datacite.org`` but
+                # the adapter owns 5 URL hosts (doi.org, ror.org, orcid.org,
+                # api.datacite.org, commons.datacite.org).
+                from .platforms.datacite_adapter.client import DataCiteHTTPClient
+                from .platforms.datacite_adapter.adapter import DataCiteAdapter
+                dcc = DataCiteHTTPClient(host="api.datacite.org", tokens=[])
+                adapter = DataCiteAdapter(client=dcc, instance_host="api.datacite.org")
+                reg.register_hosts(
+                    ["doi.org", "ror.org", "orcid.org",
+                     "api.datacite.org", "commons.datacite.org"],
+                    adapter,
+                )
+                continue
+            if host == "huggingface.co":
+                # Anonymous HuggingFace: public reads work for all entity
+                # endpoints. ``missing`` still surfaces the gap via doctor.
+                from .platforms.huggingface.client import HuggingFaceHTTPClient
+                from .platforms.huggingface.adapter import HuggingFaceAdapter
+                hf = HuggingFaceHTTPClient(host="huggingface.co", tokens=[])
+                reg.register(HuggingFaceAdapter(client=hf, instance_host="huggingface.co"))
+                continue
+            # Anonymous mode for GitLab instances: public projects/users/groups
+            # remain readable. `GitLabClient` handles `tokens=[]` by building
+            # an unauthenticated `gitlab.Gitlab` instance.
+            gl_client = GitLabClient(host=host, tokens=[])
+            reg.register(GitLabAdapter(gl_client, instance_host=host))
+            continue
+        if host == "github.com":
+            github_client = GitHubClient(
+                tokens,
+                cache_dir=cache_dir,
+                request_delay=request_delay,
+                max_concurrent_requests=max_concurrent,
+                rate_limit_buffer=rate_limit_buffer,
+            )
+            reg.register(GitHubAdapter(github_client, instance_host="github.com"))
+        elif host in ("zenodo.org", "sandbox.zenodo.org") or host.endswith(".zenodo.org"):
+            from .platforms.zenodo.client import ZenodoClient
+            from .platforms.zenodo.adapter import ZenodoAdapter
+            zen_client = ZenodoClient(host=host, tokens=tokens)
+            reg.register(ZenodoAdapter(zen_client, instance_host=host))
+        elif host == "infoscience.epfl.ch" or host.endswith(".infoscience.epfl.ch"):
+            from .platforms.infoscience.client import InfoscienceClient
+            from .platforms.infoscience.adapter import InfoscienceAdapter
+            isc = InfoscienceClient(host=host, tokens=tokens)
+            reg.register(InfoscienceAdapter(isc, instance_host=host))
+        elif host == "datacite.org":
+            from .platforms.datacite_adapter.client import DataCiteHTTPClient
+            from .platforms.datacite_adapter.adapter import DataCiteAdapter
+            dcc = DataCiteHTTPClient(host="api.datacite.org", tokens=tokens)
+            adapter = DataCiteAdapter(client=dcc, instance_host="api.datacite.org")
+            reg.register_hosts(
+                ["doi.org", "ror.org", "orcid.org",
+                 "api.datacite.org", "commons.datacite.org"],
+                adapter,
+            )
+        elif host == "huggingface.co":
+            from .platforms.huggingface.client import HuggingFaceHTTPClient
+            from .platforms.huggingface.adapter import HuggingFaceAdapter
+            hf = HuggingFaceHTTPClient(host="huggingface.co", tokens=tokens)
+            reg.register(HuggingFaceAdapter(client=hf, instance_host="huggingface.co"))
+        else:
+            gl_client = GitLabClient(host=host, tokens=tokens)
+            reg.register(GitLabAdapter(gl_client, instance_host=host))
+    return reg, github_client, missing
+
+
+def _normalize_seeds(seeds: List[str], default_host: str) -> List[str]:
+    """Rewrite bare logins / ``owner/repo`` seeds to full URLs on ``default_host``.
+
+    Full URLs pass through unchanged. The crawler's own ``_parse_seed`` will
+    canonicalize again — applying ``default_host`` here ensures non-URL
+    seeds for non-github hosts (e.g. ``gitlab-org/gitlab``) resolve to the
+    intended instance instead of ``github.com``.
+    """
+    out: List[str] = []
+    for seed in seeds:
+        s = seed.strip()
+        if not s:
+            continue
+        if s.startswith("http://") or s.startswith("https://"):
+            out.append(s)
+        else:
+            out.append(f"https://{default_host}/{s}")
+    return out
 
 
 @app.command()
@@ -252,6 +433,32 @@ def crawl(
         "--gimie-skip-existing-jsonld",
         help="Skip HTTP when a payload already exists under output-dir/jsonld/ (crawler output only).",
     ),
+    # ── Multi-platform options (Task 14) ──────────────────────────────────
+    platforms: Optional[str] = typer.Option(
+        None,
+        "--platforms",
+        help=(
+            "Comma-separated list of instance hosts to crawl, e.g. "
+            "'github.com,gitlab.epfl.ch'. Overrides CRAWLER_PLATFORMS. "
+            "Defaults to the env value (which itself defaults to 'github.com')."
+        ),
+    ),
+    default_host: str = typer.Option(
+        "github.com",
+        "--default-host",
+        help=(
+            "Host used to resolve bare-login or 'owner/repo' seeds into "
+            "full URLs (full URL seeds pass through unchanged)."
+        ),
+    ),
+    crawl_stars: bool = typer.Option(
+        False,
+        "--crawl-stars",
+        help=(
+            "Crawl repositories starred by users (adapter path only — "
+            "the legacy github.com BFS treats this as a no-op for now)."
+        ),
+    ),
 ):
     """
     Crawl GitHub to discover users, organizations, and repositories.
@@ -268,24 +475,26 @@ def crawl(
         open-pulse-crawler crawl --resume --state-file state.json
     """
     setup_logging(verbose)
-    
+
     # Create output directory
     output_dir.mkdir(parents=True, exist_ok=True)
-    
+
     # Collect seeds
     all_seeds = list(seeds) if seeds else []
     if seed_file:
         all_seeds.extend(parse_seed_file(seed_file))
-    
+
+    # Normalize bare-login / owner/repo seeds against --default-host so they
+    # resolve to the intended instance on non-github hosts. Full URLs pass
+    # through unchanged.
+    if all_seeds:
+        all_seeds = _normalize_seeds(all_seeds, default_host)
+
     if not all_seeds and not resume:
         console.print("[red]Error: No seed nodes provided[/red]")
         console.print("Provide seeds as arguments or use --seed-file option")
         raise typer.Exit(1)
-    
-    # Get GitHub tokens
-    tokens = get_github_tokens()
-    console.print(f"[green]✓[/green] Loaded {len(tokens)} GitHub token(s)")
-    
+
     # Resolve cache directory: --cache-dir wins, else $OPC_CACHE_DIR / default.
     # --no-cache disables caching outright.
     if no_cache:
@@ -296,12 +505,6 @@ def crawl(
         if cache_dir:
             cache_dir.mkdir(parents=True, exist_ok=True)
             console.print(f"[green]✓[/green] Cache directory: {cache_dir}")
-    
-    # ── gimie hybrid repo option wiring ─────────────────────────────────────
-    jsonld_dir: Optional[Path] = None
-    if gimie_repos:
-        if gimie_store_jsonld:
-            jsonld_dir = output_dir / "jsonld"
 
     # ── gimie hybrid repo option wiring ─────────────────────────────────────
     jsonld_dir: Optional[Path] = None
@@ -309,14 +512,49 @@ def crawl(
         if gimie_store_jsonld:
             jsonld_dir = output_dir / "jsonld"
 
-    # Initialize client and crawler
-    client = GitHubClient(
-        tokens, 
-        cache_dir=cache_dir,
-        request_delay=request_delay,
-        max_concurrent_requests=max_concurrent,
-        rate_limit_buffer=rate_limit_buffer
-    )
+    # ── Resolve enabled platforms ───────────────────────────────────────────
+    # ``--platforms`` overrides ``CRAWLER_PLATFORMS``; with neither set we
+    # fall back to ``enabled_instances()`` (which itself defaults to
+    # ``['github.com']``). The legacy github-only path is preserved when the
+    # final list is exactly ``['github.com']`` — same client construction,
+    # same crawler kwargs — so existing invocations behave identically.
+    platforms_list = _parse_platforms_csv(platforms) or enabled_instances()
+    is_legacy_github_only = platforms_list == ["github.com"]
+
+    if is_legacy_github_only:
+        # Legacy path: reuse ``get_github_tokens()`` so the existing
+        # token-resolution / .env-loading / friendly-error behaviour stays
+        # exactly the same for the common github-only invocation.
+        tokens = get_github_tokens()
+        console.print(f"[green]✓[/green] Loaded {len(tokens)} GitHub token(s)")
+        client = GitHubClient(
+            tokens,
+            cache_dir=cache_dir,
+            request_delay=request_delay,
+            max_concurrent_requests=max_concurrent,
+            rate_limit_buffer=rate_limit_buffer,
+        )
+        registry = None
+    else:
+        registry, client, missing = _build_registry(
+            platforms_list,
+            cache_dir=cache_dir,
+            request_delay=request_delay,
+            max_concurrent=max_concurrent,
+            rate_limit_buffer=rate_limit_buffer,
+        )
+        for host in missing:
+            console.print(
+                f"[yellow]⚠[/yellow] No tokens configured for {host}; skipping "
+                f"(run 'open-pulse-crawler doctor' for details)"
+            )
+        if not registry.hosts():
+            console.print("[red]Error: no platforms have tokens configured[/red]")
+            raise typer.Exit(1)
+        console.print(
+            f"[green]✓[/green] Registered adapters for: {', '.join(registry.hosts())}"
+        )
+
     crawler = GitHubCrawler(
         client,
         max_rounds=rounds,
@@ -335,6 +573,12 @@ def crawl(
         gimie_api_base=gimie_api_base,
         gimie_store_jsonld_dir=jsonld_dir,
         gimie_skip_existing_jsonld=gimie_skip_existing_jsonld,
+        registry=registry,
+    )
+    # ``crawl_stars`` lives only on ``ExpandOpts``; thread it through the
+    # crawler's already-built opts so adapter ``expand`` calls see it.
+    crawler._expand_opts = crawler._expand_opts.model_copy(
+        update={"crawl_stars": crawl_stars}
     )
     
     # Setup incremental export callback if requested
@@ -421,18 +665,20 @@ def crawl(
             table.add_row("  Organizations Queued", str(last_round.get('queued_orgs', 0)))
             table.add_row("  Repositories Queued", str(last_round.get('queued_repos', 0)))
     
-    table.add_row("[bold]API Statistics[/bold]", "")
-    table.add_row("  API Calls Made", str(stats['api_stats']['api_calls']))
-    table.add_row("  Cache Hits", str(stats['api_stats']['cache_hits']))
-    table.add_row("  Rate Limit Waits", str(stats['api_stats']['rate_limit_waits']))
-    table.add_row("  Token Switches", str(stats['api_stats']['token_switches']))
-    table.add_row("  Throttle Waits", str(stats['api_stats'].get('throttle_waits', 0)))
-    
-    # Show efficiency metrics
-    if 'efficiency' in stats['api_stats']:
-        eff = stats['api_stats']['efficiency']
-        table.add_row("Cache Hit Rate", f"{eff['cache_hit_rate']:.1f}%")
-        table.add_row("Requests per Wait", f"{eff['requests_per_wait']:.1f}")
+    if stats.get('api_stats') is not None:
+        api_stats = stats['api_stats']
+        table.add_row("[bold]API Statistics[/bold]", "")
+        table.add_row("  API Calls Made", str(api_stats['api_calls']))
+        table.add_row("  Cache Hits", str(api_stats['cache_hits']))
+        table.add_row("  Rate Limit Waits", str(api_stats['rate_limit_waits']))
+        table.add_row("  Token Switches", str(api_stats['token_switches']))
+        table.add_row("  Throttle Waits", str(api_stats.get('throttle_waits', 0)))
+
+        # Show efficiency metrics
+        if 'efficiency' in api_stats:
+            eff = api_stats['efficiency']
+            table.add_row("Cache Hit Rate", f"{eff['cache_hit_rate']:.1f}%")
+            table.add_row("Requests per Wait", f"{eff['requests_per_wait']:.1f}")
     
     console.print(table)
     
@@ -522,6 +768,67 @@ def crawl(
                     console.print(f"[red]✗[/red] Cluster visualization failed: {e}")
     
     console.print(f"\n[bold green]All done! 🎉[/bold green]")
+
+
+@app.command()
+def doctor(
+    as_json: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit a machine-readable JSON array instead of the Rich table.",
+    ),
+):
+    """Report enabled platforms, configured token counts, and per-host status.
+
+    Reads ``CRAWLER_PLATFORMS`` plus ``CRAWLER_TOKEN__<HOST>`` /
+    ``CRAWLER_TOKEN_POOL__<HOST>`` (and the legacy ``GITHUB_TOKEN``
+    family for ``github.com``) and prints an OK / ANONYMOUS / MISSING
+    summary per host.
+
+    Three states:
+
+    * **OK** — at least one token configured. Crawling uses authenticated
+      requests with the full rate limit.
+    * **ANONYMOUS** — no token configured but the adapter can still operate
+      against public endpoints. Applies to GitLab, Zenodo, Infoscience,
+      DataCite. Crawling works; rate limits are tighter.
+    * **MISSING** — no token AND the adapter requires one (github.com only,
+      whose anonymous limit is too low to be useful).
+
+    # TODO(post-task-18): wire a real token-health check that does
+    # GET /user (GitHub) or /user (GitLab) per host.
+    """
+    rows = []
+    for host in enabled_instances():
+        tokens = resolve_tokens(_token_host_for(host))
+        n = len(tokens)
+        auth_required = _auth_required(host)
+        rows.append({
+            "host": host,
+            "tokens": n,
+            "auth_required": auth_required,
+            # `ok` stays True whenever the adapter can crawl — either
+            # authenticated (n > 0) or anonymous (not auth_required).
+            "ok": n > 0 or not auth_required,
+        })
+
+    if as_json:
+        typer.echo(json.dumps(rows, indent=2))
+        return
+
+    console.print("Enabled platforms:")
+    for r in rows:
+        if r["tokens"] > 0:
+            status, colour = "OK", "green"
+        elif not r["auth_required"]:
+            status, colour = "ANONYMOUS", "yellow"
+        else:
+            status, colour = "MISSING", "red"
+        suffix = "" if r["tokens"] == 1 else "s"
+        console.print(
+            f"  {r['host']}: {r['tokens']} token{suffix} "
+            f"[{colour}][{status}][/{colour}]"
+        )
 
 
 @app.command()

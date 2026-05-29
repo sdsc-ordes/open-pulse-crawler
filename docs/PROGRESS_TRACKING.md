@@ -61,7 +61,7 @@ Round 2 [14:30:47]:   100%|█████████████████�
 When using the crawler as a library:
 
 ```python
-from open_pulse_crawler.github_client import GitHubClient
+from open_pulse_crawler.platforms.github import GitHubClient
 from open_pulse_crawler.crawler import GitHubCrawler
 
 client = GitHubClient(tokens)

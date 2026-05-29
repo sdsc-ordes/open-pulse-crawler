@@ -1,10 +1,17 @@
 """Resolve GitHub PAT(s) from environment variables.
 
-Priority (highest to lowest):
-  1. ``CRAWLER_GITHUB_TOKEN_POOL`` — comma-separated list of tokens for rotation.
-  2. ``CRAWLER_GITHUB_TOKEN`` — single token (also tolerates a comma list).
-  3. ``GITHUB_TOKEN`` — legacy, comma-separated list. Emits a deprecation
-     warning the first time it is read in the current process.
+This module is a thin compatibility wrapper around
+:func:`open_pulse_crawler.config.resolve_tokens` for the ``github.com`` host.
+
+Priority (highest to lowest), via :mod:`open_pulse_crawler.config`:
+
+  1. ``CRAWLER_TOKEN_POOL__GITHUB_COM`` — canonical, comma-separated list.
+  2. ``CRAWLER_TOKEN__GITHUB_COM`` — canonical, single token.
+  3. Legacy GitHub-only vars (all comma-separated for v2 compatibility):
+     ``CRAWLER_GITHUB_TOKEN_POOL`` → ``CRAWLER_GITHUB_TOKEN`` → ``GITHUB_TOKEN``.
+     Reading any of these emits both a :class:`DeprecationWarning` (from
+     :mod:`config`) and a one-shot ``logger.warning(...)`` (from this module),
+     each fired at most once per process.
 
 Callers receive a list of tokens (possibly empty) and decide how to fail.
 """
@@ -15,11 +22,20 @@ import logging
 import os
 from typing import List
 
+from open_pulse_crawler import config
+
 logger = logging.getLogger(__name__)
 
-POOL_ENV = "CRAWLER_GITHUB_TOKEN_POOL"
-TOKEN_ENV = "CRAWLER_GITHUB_TOKEN"
-LEGACY_ENV = "GITHUB_TOKEN"
+# Legacy env-var names re-exported for backwards compatibility. ``POOL_ENV``
+# and ``TOKEN_ENV`` were the v2 "new" names; in v3 they are legacy aliases
+# kept around for operators still using them.
+POOL_ENV = config.LEGACY_GITHUB_POOL_ENV
+TOKEN_ENV = config.LEGACY_GITHUB_TOKEN_ENV
+LEGACY_ENV = config.LEGACY_GITHUB_BARE_ENV
+
+# Canonical v3 env-var names for GitHub.
+NEW_POOL_ENV = f"{config.TOKEN_POOL_PREFIX}GITHUB_COM"
+NEW_TOKEN_ENV = f"{config.TOKEN_PREFIX}GITHUB_COM"
 
 _warned_legacy = False
 
@@ -48,25 +64,33 @@ def reset_deprecation_warning() -> None:
     _warned_legacy = False
 
 
-def resolve_github_tokens() -> List[str]:
-    """Return tokens from the environment following the priority chain.
+def _new_var_set() -> bool:
+    """Return True if either canonical v3 GitHub env var has a non-blank value."""
+    for var in (NEW_POOL_ENV, NEW_TOKEN_ENV):
+        if os.environ.get(var, "").strip():
+            return True
+    return False
 
+
+def _any_legacy_var_set() -> bool:
+    """Return True if any legacy GitHub env var has a non-blank value."""
+    for var in (POOL_ENV, TOKEN_ENV, LEGACY_ENV):
+        if os.environ.get(var, "").strip():
+            return True
+    return False
+
+
+def resolve_github_tokens() -> List[str]:
+    """Return tokens for GitHub from the environment.
+
+    Thin wrapper around :func:`open_pulse_crawler.config.resolve_tokens` that
+    additionally emits a one-shot ``logger.warning`` when the result will come
+    from a legacy fallback (preserves v2's ``caplog``-based test contract).
     Returns an empty list when no source variable is set.
     """
-    pool = os.environ.get(POOL_ENV, "")
-    if pool.strip():
-        return _split(pool)
-
-    single = os.environ.get(TOKEN_ENV, "")
-    if single.strip():
-        return _split(single)
-
-    legacy = os.environ.get(LEGACY_ENV, "")
-    if legacy.strip():
+    if not _new_var_set() and _any_legacy_var_set():
         _warn_legacy_once()
-        return _split(legacy)
-
-    return []
+    return config.resolve_tokens("github.com")
 
 
 def tokens_not_set_message() -> str:

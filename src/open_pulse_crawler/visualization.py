@@ -33,6 +33,44 @@ except ImportError as e:
         logger.warning("Visualization libraries not available. Install networkx and matplotlib for graph visualization.")
 
 
+# Legacy abstract-kind palette used for backward-compat fallback and for the
+# top-level legend (which still shows the three abstract buckets).
+color_map = {
+    'user': '#00d9ff',     # Cyan/Electric Blue
+    'org': '#ffcc00',      # Gold/Yellow
+    'repo': '#00ff88',     # Bright Green
+}
+
+# Per-subkind override colors. Falls through to color_map when subkind is unknown.
+# GitHub entries reuse the legacy cyan/gold/green palette so GitHub-only crawls
+# render identically to pre-v3. GitLab entries are distinct purples/browns/pinks.
+SUBKIND_COLOR = {
+    "GitHubUser":         "#00d9ff",   # cyan — same as color_map['user']
+    "GitHubOrganization": "#ffcc00",   # gold — same as color_map['org']
+    "GitHubRepository":   "#00ff88",   # green — same as color_map['repo']
+    "GitHubTeam":         "#bcbd22",   # olive — teams previously had no dedicated color
+    "GitLabUser":         "#9467bd",
+    "GitLabGroup":        "#8c564b",
+    "GitLabProject":      "#e377c2",
+}
+DEFAULT_SUBKIND_COLOR = "#7f7f7f"
+
+
+def _node_color(attrs: dict) -> str:
+    """Pick a node color preferring concrete ``subkind`` over abstract ``node_type``.
+
+    GitLab and GitHub nodes can share the same abstract bucket (``user``,
+    ``org``, ``repo``) but should render in distinct colors so multi-platform
+    crawls are visually disambiguable. Falls back to the legacy ``color_map``
+    keyed by ``node_type`` when subkind is missing or unknown (e.g. for
+    discovered-but-unexplored nodes that only carry an abstract kind).
+    """
+    sk = attrs.get("subkind")
+    if sk and sk in SUBKIND_COLOR:
+        return SUBKIND_COLOR[sk]
+    return color_map.get(attrs.get("node_type", "user"), DEFAULT_SUBKIND_COLOR)
+
+
 def visualize_graph(
     graph: GraphData,
     output_path: Path,
@@ -89,29 +127,32 @@ def visualize_graph(
             G.add_node(
                 user.login,
                 node_type='user',
+                subkind=getattr(user, 'subkind', None),
                 is_seed=user.login in seed_nodes,
                 is_explored=True,  # All nodes in graph are explored
                 label=user.login  # Use GitHub handle instead of name
             )
-        
+
         for org in graph.orgs.values():
             G.add_node(
                 org.login,
                 node_type='org',
+                subkind=getattr(org, 'subkind', None),
                 is_seed=org.login in seed_nodes,
                 is_explored=True,  # All nodes in graph are explored
                 label=org.login  # Use GitHub handle instead of name
             )
-        
+
         for repo in graph.repos.values():
             G.add_node(
                 repo.full_name,
                 node_type='repo',
+                subkind=getattr(repo, 'subkind', None),
                 is_seed=repo.full_name in seed_nodes,
                 is_explored=True,  # All nodes in graph are explored
                 label=repo.name or repo.full_name  # Keep repo name for brevity
             )
-        
+
         # Add discovered (unexplored) nodes
         for node_id, (node_type, parent_id, parent_type) in discovered_nodes.items():
             if node_id not in G:  # Don't add if already in graph
@@ -121,10 +162,11 @@ def visualize_graph(
                     label = node_id
                 else:
                     label = node_id
-                    
+
                 G.add_node(
                     node_id,
                     node_type=node_type,
+                    subkind=None,  # Discovered nodes are abstract-only; color falls back to node_type
                     is_seed=False,
                     is_explored=False,  # These are unexplored
                     label=label
@@ -349,13 +391,10 @@ def visualize_graph(
             ])
             pos[node] = current_pos + jitter
         
-        # Modern technical diagram color palette (dark theme)
-        color_map = {
-            'user': '#00d9ff',     # Cyan/Electric Blue
-            'org': '#ffcc00',      # Gold/Yellow
-            'repo': '#00ff88',     # Bright Green
-        }
-        
+        # Modern technical diagram color palette (dark theme).
+        # ``color_map`` is now defined at module scope so ``_node_color`` can
+        # share it; we re-bind locally for the legend builder + existing reads.
+
         # Edge color mapping by relationship type
         edge_color_map = {
             'owner_of': '#ff6b6b',        # Red - ownership
@@ -406,12 +445,13 @@ def visualize_graph(
                 ax=ax
             )
         
-        # Draw explored users (circles)
+        # Draw explored users (circles) — per-node color to distinguish
+        # GitHubUser vs GitLabUser when both are present.
         if explored_users:
             nx.draw_networkx_nodes(
                 G, pos,
                 nodelist=explored_users,
-                node_color=color_map['user'],
+                node_color=[_node_color(G.nodes[n]) for n in explored_users],
                 node_size=180,
                 node_shape='o',
                 alpha=0.85,
@@ -419,13 +459,13 @@ def visualize_graph(
                 linewidths=1.5,
                 ax=ax
             )
-        
-        # Draw explored orgs (circles)
+
+        # Draw explored orgs (circles) — per-node color (GitHubOrg vs GitLabGroup).
         if explored_orgs:
             nx.draw_networkx_nodes(
                 G, pos,
                 nodelist=explored_orgs,
-                node_color=color_map['org'],
+                node_color=[_node_color(G.nodes[n]) for n in explored_orgs],
                 node_size=180,
                 node_shape='o',
                 alpha=0.85,
@@ -433,13 +473,13 @@ def visualize_graph(
                 linewidths=1.5,
                 ax=ax
             )
-        
-        # Draw explored repos (circles)
+
+        # Draw explored repos (circles) — per-node color (GitHubRepo vs GitLabProject).
         if explored_repos:
             nx.draw_networkx_nodes(
                 G, pos,
                 nodelist=explored_repos,
-                node_color=color_map['repo'],
+                node_color=[_node_color(G.nodes[n]) for n in explored_repos],
                 node_size=180,
                 node_shape='o',
                 alpha=0.85,
@@ -447,11 +487,10 @@ def visualize_graph(
                 linewidths=1.5,
                 ax=ax
             )
-        
+
         # Draw seed nodes on top (squares) with thicker borders
         if seed_nodes_list:
-            seed_colors = [color_map.get(G.nodes[n].get('node_type', 'user'), '#00d9ff') 
-                          for n in seed_nodes_list]
+            seed_colors = [_node_color(G.nodes[n]) for n in seed_nodes_list]
             nx.draw_networkx_nodes(
                 G, pos,
                 nodelist=seed_nodes_list,
@@ -656,24 +695,27 @@ def visualize_clusters(
             G.add_node(
                 user.login,
                 node_type='user',
+                subkind=getattr(user, 'subkind', None),
                 is_seed=user.login in seed_nodes,
                 is_explored=user.login in visited_nodes,
                 label=user.login  # Use GitHub handle instead of name
             )
-        
+
         for org in graph.orgs.values():
             G.add_node(
                 org.login,
                 node_type='org',
+                subkind=getattr(org, 'subkind', None),
                 is_seed=org.login in seed_nodes,
                 is_explored=org.login in visited_nodes,
                 label=org.login  # Use GitHub handle instead of name
             )
-        
+
         for repo in graph.repos.values():
             G.add_node(
                 repo.full_name,
                 node_type='repo',
+                subkind=getattr(repo, 'subkind', None),
                 is_seed=repo.full_name in seed_nodes,
                 is_explored=repo.full_name in visited_nodes,
                 label=repo.name or repo.full_name  # Keep repo name for brevity
@@ -730,6 +772,7 @@ def visualize_clusters(
                 G.add_node(
                     node_id,
                     node_type=node_type,
+                    subkind=None,  # Discovered nodes are abstract-only; color falls back to node_type
                     is_seed=False,
                     is_explored=False,
                     label=node_id
@@ -766,13 +809,10 @@ def visualize_clusters(
         # Create output directory if it doesn't exist
         output_dir.mkdir(parents=True, exist_ok=True)
         
-        # Modern technical diagram color palette
-        color_map = {
-            'user': '#00d9ff',
-            'org': '#ffcc00',
-            'repo': '#00ff88',
-        }
-        
+        # Modern technical diagram color palette.
+        # ``color_map`` is module-level so ``_node_color`` can share it; the
+        # legend builder below still reads from it for the abstract buckets.
+
         # Edge color mapping by relationship type
         edge_color_map = {
             'owner_of': '#ff6b6b',
@@ -860,7 +900,7 @@ def visualize_clusters(
             
             # Draw explored regular nodes
             if component_explored_nodes:
-                explored_colors = [color_map.get(subgraph.nodes[n].get('node_type', 'user'), '#ffffff') 
+                explored_colors = [_node_color(subgraph.nodes[n])
                                 for n in component_explored_nodes]
                 nx.draw_networkx_nodes(
                     subgraph, pos,
@@ -873,10 +913,10 @@ def visualize_clusters(
                     linewidths=1.5,
                     ax=ax
                 )
-            
+
             # Draw seed nodes (always explored)
             if component_seed_nodes:
-                seed_colors = [color_map.get(subgraph.nodes[n].get('node_type', 'user'), '#ffffff') 
+                seed_colors = [_node_color(subgraph.nodes[n])
                               for n in component_seed_nodes]
                 nx.draw_networkx_nodes(
                     subgraph, pos,
