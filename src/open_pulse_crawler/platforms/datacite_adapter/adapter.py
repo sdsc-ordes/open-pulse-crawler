@@ -127,10 +127,221 @@ class DataCiteAdapter(PlatformAdapter):
             return NodeKind.ORG
         return None
 
-    # ---- fetch (placeholder — Task 6 implements) ---------------------------
+    # ---- fetch -------------------------------------------------------------
 
     def fetch(self, uri: str):
-        raise NotImplementedError("Task 6 implements fetch()")
+        uri = self.normalize_uri(uri)
+        parts = urlsplit(uri)
+        host = parts.netloc.lower()
+        path_inner = (parts.path or "/").lstrip("/").rstrip("/")
+
+        # doi.org/<DOI> → DataCiteWork via API
+        if host == "doi.org":
+            m = _DOI_PATH.match(path_inner)
+            if m:
+                doi = m.group("doi")
+                raw = self._client.get_doi(doi)
+                if raw is None:
+                    return None
+                return self._build_work(uri, raw)
+
+        # ror.org/<id> → bare DataCiteOrganization (no API call)
+        if host == "ror.org":
+            m = _ROR_PATH.match(path_inner)
+            if m:
+                return self._build_org_bare(uri, m.group("id"))
+
+        # orcid.org/<id> → bare DataCitePerson (no API call)
+        if host == "orcid.org":
+            m = _ORCID_PATH.match(path_inner)
+            if m:
+                return self._build_person_bare(uri, m.group("id"))
+
+        # commons.datacite.org/repositories/<client_id> → DataCiteClient via API
+        if host == "commons.datacite.org":
+            m = _COMMONS_REPO_PATH.match(path_inner)
+            if m:
+                client_id = m.group("id")
+                raw = self._client.get_client(client_id)
+                if raw is None:
+                    return None
+                prefixes = self._client.get_client_prefixes(client_id)
+                return self._build_client(uri, raw, prefixes)
+
+        return None
+
+    # ---- builders ----------------------------------------------------------
+
+    def _build_work(self, uri: str, raw: Dict[str, Any]) -> DataCiteWork:
+        attr = raw.get("attributes", {}) or {}
+        types = attr.get("types", {}) or {}
+        titles = attr.get("titles", []) or []
+        title = titles[0].get("title", "") if titles and isinstance(titles[0], dict) else ""
+        descriptions = attr.get("descriptions", []) or []
+        abstract = ""
+        for d in descriptions:
+            if isinstance(d, dict) and d.get("descriptionType") == "Abstract":
+                abstract = d.get("description", "") or ""
+                break
+
+        creators = []
+        affiliations_dedup: List[Dict[str, Any]] = []
+        seen_ror: set = set()
+        for c in attr.get("creators", []) or []:
+            if not isinstance(c, dict):
+                continue
+            orcid = ""
+            for nid in c.get("nameIdentifiers", []) or []:
+                if (isinstance(nid, dict) and
+                        nid.get("nameIdentifierScheme") == "ORCID"):
+                    raw_id = nid.get("nameIdentifier", "") or ""
+                    # Normalize "https://orcid.org/0000-…" → "0000-…"
+                    orcid = raw_id.rsplit("/", 1)[-1] if raw_id else ""
+                    break
+            affs: List[Dict[str, Any]] = []
+            for a in c.get("affiliation", []) or []:
+                if isinstance(a, dict):
+                    raw_id = a.get("affiliationIdentifier", "") or ""
+                    ror = ""
+                    scheme = a.get("affiliationIdentifierScheme", "") or ""
+                    if scheme == "ROR" and raw_id:
+                        ror = raw_id.rsplit("/", 1)[-1]
+                    entry = {"name": a.get("name", "") or "",
+                             "ror": ror, "scheme": scheme}
+                    affs.append(entry)
+                    if ror and ror not in seen_ror:
+                        seen_ror.add(ror)
+                        affiliations_dedup.append(entry)
+                elif isinstance(a, str):
+                    # String-form affiliation (no identifier scheme)
+                    affs.append({"name": a, "ror": "", "scheme": ""})
+            creators.append({
+                "name": c.get("name", "") or "",
+                "orcid": orcid,
+                "affiliations": affs,
+            })
+
+        relations = []
+        for r in attr.get("relatedIdentifiers", []) or []:
+            if not isinstance(r, dict):
+                continue
+            relations.append({
+                "relation_type": r.get("relationType", "") or "",
+                "target_type": r.get("relatedIdentifierType", "") or "",
+                "target": r.get("relatedIdentifier", "") or "",
+            })
+
+        subjects = []
+        for s in attr.get("subjects", []) or []:
+            if isinstance(s, dict):
+                v = s.get("subject", "") or ""
+                if v:
+                    subjects.append(v)
+
+        container_title = ""
+        container = attr.get("container", {})
+        if isinstance(container, dict):
+            container_title = container.get("title", "") or ""
+
+        client_id = None
+        rels = raw.get("relationships", {})
+        if isinstance(rels, dict):
+            client_rel = rels.get("client", {}).get("data", {})
+            if isinstance(client_rel, dict):
+                client_id = client_rel.get("id") or None
+
+        pub_year_raw = attr.get("publicationYear")
+        try:
+            pub_year = int(pub_year_raw) if pub_year_raw is not None else None
+        except (TypeError, ValueError):
+            pub_year = None
+
+        return DataCiteWork(
+            url=uri,
+            full_name=attr.get("doi", raw.get("id", "")),
+            platform="datacite",
+            name=title,
+            doi=attr.get("doi", raw.get("id", "")) or "",
+            resource_type=types.get("resourceTypeGeneral", "") or "",
+            resource_type_detail=types.get("resourceType", "") or "",
+            title=title,
+            publication_year=pub_year,
+            publisher=attr.get("publisher", "") or "",
+            client_id=client_id,
+            creators=creators,
+            affiliations=affiliations_dedup,
+            relations=relations,
+            subjects=subjects,
+            abstract=abstract,
+            container_title=container_title,
+            language=attr.get("language", "") or "",
+            registered_url=attr.get("url") or None,
+        )
+
+    def _build_org_bare(self, uri: str, ror_id: str) -> DataCiteOrganization:
+        return DataCiteOrganization(
+            url=uri,
+            login=ror_id,
+            platform="datacite",
+            ror_id=ror_id,
+            ror_url=f"https://ror.org/{ror_id}",
+        )
+
+    def _build_person_bare(self, uri: str, orcid: str) -> DataCitePerson:
+        return DataCitePerson(
+            url=uri,
+            login=orcid,
+            platform="datacite",
+            orcid=orcid,
+            orcid_url=f"https://orcid.org/{orcid}",
+        )
+
+    def _build_client(
+        self, uri: str, raw: Dict[str, Any], prefixes: List[str],
+    ) -> DataCiteClient:
+        attr = raw.get("attributes", {}) or {}
+        domains_raw = attr.get("domains", "") or ""
+        if isinstance(domains_raw, str):
+            domains = [d.strip() for d in domains_raw.split(",") if d.strip()]
+        elif isinstance(domains_raw, list):
+            domains = [str(d) for d in domains_raw if d]
+        else:
+            domains = []
+        repo_type_raw = attr.get("repositoryType")
+        if isinstance(repo_type_raw, list):
+            repo_type = [str(r) for r in repo_type_raw]
+        elif isinstance(repo_type_raw, str) and repo_type_raw:
+            repo_type = [repo_type_raw]
+        else:
+            repo_type = []
+        year_raw = attr.get("year")
+        try:
+            year = int(year_raw) if year_raw is not None else None
+        except (TypeError, ValueError):
+            year = None
+        is_active_raw = attr.get("isActive", True)
+        if isinstance(is_active_raw, str):
+            is_active = is_active_raw.lower() == "true"
+        else:
+            is_active = bool(is_active_raw)
+        return DataCiteClient(
+            url=uri,
+            login=raw.get("id", "") or "",
+            platform="datacite",
+            name=attr.get("name", "") or "",
+            client_id=raw.get("id", "") or "",
+            repository_name=attr.get("name", "") or "",
+            alternate_name=attr.get("alternateName", "") or "",
+            client_type=attr.get("clientType", "") or "",
+            repository_type=repo_type,
+            description=attr.get("description", "") or "",
+            repository_url=attr.get("url", "") or "",
+            domains=domains,
+            re3data_doi=attr.get("re3data", "") or "",
+            year_registered=year,
+            is_active=is_active,
+            doi_prefixes=prefixes,
+        )
 
     # ---- expand (placeholder — Task 7 implements) --------------------------
 
