@@ -1,4 +1,5 @@
 """Tests for the HuggingFace PlatformAdapter."""
+from typing import Dict, List
 from unittest.mock import MagicMock
 import pytest
 
@@ -8,6 +9,7 @@ from open_pulse_crawler.models import (
 )
 from open_pulse_crawler.node_id import NodeKind
 from open_pulse_crawler.platforms.huggingface.adapter import HuggingFaceAdapter
+from open_pulse_crawler.platforms.base import ExpandOpts, Edge
 
 
 @pytest.fixture
@@ -261,3 +263,212 @@ def test_fetch_collection_returns_collection(adapter):
 
 def test_fetch_unknown_url_form_returns_none(adapter):
     assert adapter.fetch("https://huggingface.co/blog/some-post") is None
+
+
+# --- expand: HuggingFaceUser ----------------------------------------
+
+def test_expand_user_emits_owns_and_member_of(adapter):
+    adapter._client.iter_models_by_author.return_value = iter([
+        {"id": "karpathy/tinyllamas"}, {"id": "karpathy/gpt2"},
+    ])
+    adapter._client.iter_datasets_by_author.return_value = iter([
+        {"id": "karpathy/lecun-mnist"},
+    ])
+    adapter._client.iter_spaces_by_author.return_value = iter([])
+    user = HuggingFaceUser(
+        url="https://huggingface.co/karpathy",
+        login="karpathy", platform="huggingface",
+        username="karpathy",
+        member_orgs=["nanoGPT", "deeplearningorg"],
+    )
+    edges = list(adapter.expand(user, ExpandOpts()))
+    owns_dsts = sorted(e.dst for e in edges if e.kind == "owns")
+    member_dsts = sorted(e.dst for e in edges if e.kind == "member_of")
+    assert owns_dsts == [
+        "https://huggingface.co/datasets/karpathy/lecun-mnist",
+        "https://huggingface.co/karpathy/gpt2",
+        "https://huggingface.co/karpathy/tinyllamas",
+    ]
+    assert member_dsts == [
+        "https://huggingface.co/deeplearningorg",
+        "https://huggingface.co/nanoGPT",
+    ]
+
+
+# --- expand: HuggingFaceOrg -----------------------------------------
+
+def test_expand_org_emits_owns(adapter):
+    adapter._client.iter_models_by_author.return_value = iter([
+        {"id": "meta-llama/Llama-3.2-1B"},
+    ])
+    adapter._client.iter_datasets_by_author.return_value = iter([])
+    adapter._client.iter_spaces_by_author.return_value = iter([
+        {"id": "meta-llama/space-demo"},
+    ])
+    org = HuggingFaceOrg(
+        url="https://huggingface.co/meta-llama",
+        login="meta-llama", platform="huggingface",
+        org_name="meta-llama",
+    )
+    edges = [e for e in adapter.expand(org, ExpandOpts()) if e.kind == "owns"]
+    assert sorted(e.dst for e in edges) == [
+        "https://huggingface.co/meta-llama/Llama-3.2-1B",
+        "https://huggingface.co/spaces/meta-llama/space-demo",
+    ]
+
+
+# --- expand: HuggingFaceRepo ----------------------------------------
+
+def test_expand_repo_emits_owned_by(adapter):
+    repo = HuggingFaceRepo(
+        url="https://huggingface.co/meta-llama/Llama-3.2-1B",
+        full_name="meta-llama/Llama-3.2-1B", platform="huggingface",
+        repo_type="model",
+        repo_id="meta-llama/Llama-3.2-1B",
+        owner="meta-llama",
+        repo_name="Llama-3.2-1B",
+    )
+    edges = [e for e in adapter.expand(repo, ExpandOpts()) if e.kind == "owned_by"]
+    assert edges == [Edge(
+        src=repo.url, kind="owned_by",
+        dst="https://huggingface.co/meta-llama",
+    )]
+
+
+def test_expand_repo_space_emits_uses_model(adapter):
+    """Spaces emit uses_model edges to each entry in `used_models`."""
+    space = HuggingFaceRepo(
+        url="https://huggingface.co/spaces/foo/bar",
+        full_name="spaces/foo/bar", platform="huggingface",
+        repo_type="space",
+        repo_id="foo/bar",
+        owner="foo",
+        repo_name="bar",
+        used_models=["meta-llama/Llama-3.2-1B", "openai/whisper-base"],
+    )
+    edges = [e for e in adapter.expand(space, ExpandOpts()) if e.kind == "uses_model"]
+    assert sorted(e.dst for e in edges) == [
+        "https://huggingface.co/meta-llama/Llama-3.2-1B",
+        "https://huggingface.co/openai/whisper-base",
+    ]
+
+
+def test_expand_repo_model_emits_no_uses_model(adapter):
+    """Only Spaces emit uses_model — Models with empty `used_models` emit no edges."""
+    model = HuggingFaceRepo(
+        url="https://huggingface.co/meta-llama/Llama-3.2-1B",
+        full_name="meta-llama/Llama-3.2-1B", platform="huggingface",
+        repo_type="model",
+        repo_id="meta-llama/Llama-3.2-1B",
+        owner="meta-llama",
+        repo_name="Llama-3.2-1B",
+    )
+    edges = [e for e in adapter.expand(model, ExpandOpts()) if e.kind == "uses_model"]
+    assert edges == []
+
+
+# --- expand: HuggingFacePaper ---------------------------------------
+
+def test_expand_paper_emits_arxiv_and_github_and_linked_repos(adapter):
+    adapter._client.get_paper.return_value = {
+        "id": "2307.09288",
+        "linkedModels": [
+            {"id": "meta-llama/Llama-2-7b"},
+            {"id": "meta-llama/Llama-2-13b"},
+        ],
+        "linkedDatasets": [{"id": "some/dataset"}],
+        "linkedSpaces": [{"id": "demo/llama-chat"}],
+    }
+    paper = HuggingFacePaper(
+        url="https://huggingface.co/papers/2307.09288",
+        full_name="papers/2307.09288", platform="huggingface",
+        arxiv_id="2307.09288",
+        arxiv_url="https://arxiv.org/abs/2307.09288",
+        github_repo="facebookresearch/llama",
+    )
+    edges = list(adapter.expand(paper, ExpandOpts()))
+    by_kind: Dict[str, List[str]] = {}
+    for e in edges:
+        by_kind.setdefault(e.kind, []).append(e.dst)
+    assert by_kind["related_to.IsIdenticalTo"] == [
+        "https://arxiv.org/abs/2307.09288",
+    ]
+    assert by_kind["related_to.IsSupplementedBy"] == [
+        "https://github.com/facebookresearch/llama",
+    ]
+    assert sorted(by_kind["references_model"]) == [
+        "https://huggingface.co/meta-llama/Llama-2-13b",
+        "https://huggingface.co/meta-llama/Llama-2-7b",
+    ]
+    assert by_kind["references_dataset"] == [
+        "https://huggingface.co/datasets/some/dataset",
+    ]
+    assert by_kind["references_space"] == [
+        "https://huggingface.co/spaces/demo/llama-chat",
+    ]
+
+
+def test_expand_paper_skips_github_when_field_empty(adapter):
+    adapter._client.get_paper.return_value = {"id": "2307.09288"}
+    paper = HuggingFacePaper(
+        url="https://huggingface.co/papers/2307.09288",
+        full_name="papers/2307.09288", platform="huggingface",
+        arxiv_id="2307.09288",
+        arxiv_url="https://arxiv.org/abs/2307.09288",
+        github_repo="",
+    )
+    edges = [e for e in adapter.expand(paper, ExpandOpts())
+             if e.kind == "related_to.IsSupplementedBy"]
+    assert edges == []
+
+
+# --- expand: HuggingFaceCollection ----------------------------------
+
+def test_expand_collection_emits_owned_by_and_contains(adapter):
+    adapter._client.get_collection.return_value = {
+        "slug": "meta-llama/llama-32-x-675bfd70",
+        "owner": {"name": "meta-llama"},
+        "items": [
+            {"type": "model", "id": "meta-llama/Llama-3.2-1B"},
+            {"type": "dataset", "id": "openai/gsm8k"},
+            {"type": "space", "id": "demo/llama-chat"},
+            {"type": "paper", "id": "2307.09288"},
+        ],
+    }
+    coll = HuggingFaceCollection(
+        url="https://huggingface.co/collections/meta-llama/llama-32-x-675bfd70",
+        login="meta-llama/llama-32-x-675bfd70", platform="huggingface",
+        slug="meta-llama/llama-32-x-675bfd70",
+        owner="meta-llama",
+    )
+    edges = list(adapter.expand(coll, ExpandOpts()))
+    by_kind: Dict[str, List[str]] = {}
+    for e in edges:
+        by_kind.setdefault(e.kind, []).append(e.dst)
+    assert by_kind["owned_by"] == ["https://huggingface.co/meta-llama"]
+    assert sorted(by_kind["contains"]) == [
+        "https://huggingface.co/datasets/openai/gsm8k",
+        "https://huggingface.co/meta-llama/Llama-3.2-1B",
+        "https://huggingface.co/papers/2307.09288",
+        "https://huggingface.co/spaces/demo/llama-chat",
+    ]
+
+
+def test_expand_collection_skips_items_with_unknown_type(adapter):
+    """Items with an unrecognized `type` field should be skipped, not crash."""
+    adapter._client.get_collection.return_value = {
+        "slug": "x/y-1",
+        "owner": {"name": "x"},
+        "items": [
+            {"type": "model", "id": "meta-llama/Llama-3.2-1B"},
+            {"type": "unknown-future-type", "id": "x/y"},
+        ],
+    }
+    coll = HuggingFaceCollection(
+        url="https://huggingface.co/collections/x/y-1",
+        login="x/y-1", platform="huggingface",
+        slug="x/y-1", owner="x",
+    )
+    edges = [e for e in adapter.expand(coll, ExpandOpts()) if e.kind == "contains"]
+    assert len(edges) == 1
+    assert edges[0].dst == "https://huggingface.co/meta-llama/Llama-3.2-1B"

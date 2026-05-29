@@ -339,10 +339,161 @@ class HuggingFaceAdapter(PlatformAdapter):
             last_updated=raw.get("lastUpdated", "") or "",
         )
 
-    # ---- expand (placeholder — Task 7 implements) --------------------------
+    # ---- expand ------------------------------------------------------------
 
     def expand(self, node, opts: ExpandOpts) -> Iterable[Edge]:
-        raise NotImplementedError("Task 7 implements expand()")
+        if isinstance(node, HuggingFaceUser):
+            yield from self._expand_user(node, opts)
+        elif isinstance(node, HuggingFaceOrg):
+            yield from self._expand_org(node, opts)
+        elif isinstance(node, HuggingFaceRepo):
+            yield from self._expand_repo(node, opts)
+        elif isinstance(node, HuggingFacePaper):
+            yield from self._expand_paper(node, opts)
+        elif isinstance(node, HuggingFaceCollection):
+            yield from self._expand_collection(node, opts)
+
+    def _repo_url(self, repo_id: str, repo_type: str) -> str:
+        """Build the canonical HF URL for a repo of the given type.
+
+        Model:   huggingface.co/<owner>/<name>
+        Dataset: huggingface.co/datasets/<owner>/<name>
+        Space:   huggingface.co/spaces/<owner>/<name>
+        """
+        if repo_type == "model":
+            return f"https://{self.instance_host}/{repo_id}"
+        return f"https://{self.instance_host}/{repo_type}s/{repo_id}"
+
+    def _expand_user(self, node: HuggingFaceUser, opts: ExpandOpts) -> Iterable[Edge]:
+        # owns — models / datasets / spaces by this user
+        for item in self._client.iter_models_by_author(node.username):
+            rid = item.get("id") if isinstance(item, dict) else None
+            if rid:
+                yield Edge(src=node.url, kind="owns", dst=self._repo_url(rid, "model"))
+        for item in self._client.iter_datasets_by_author(node.username):
+            rid = item.get("id") if isinstance(item, dict) else None
+            if rid:
+                yield Edge(src=node.url, kind="owns", dst=self._repo_url(rid, "dataset"))
+        for item in self._client.iter_spaces_by_author(node.username):
+            rid = item.get("id") if isinstance(item, dict) else None
+            if rid:
+                yield Edge(src=node.url, kind="owns", dst=self._repo_url(rid, "space"))
+        # member_of — each org name
+        for org_name in node.member_orgs or []:
+            if not org_name:
+                continue
+            yield Edge(
+                src=node.url,
+                kind="member_of",
+                dst=f"https://{self.instance_host}/{org_name}",
+            )
+
+    def _expand_org(self, node: HuggingFaceOrg, opts: ExpandOpts) -> Iterable[Edge]:
+        for item in self._client.iter_models_by_author(node.org_name):
+            rid = item.get("id") if isinstance(item, dict) else None
+            if rid:
+                yield Edge(src=node.url, kind="owns", dst=self._repo_url(rid, "model"))
+        for item in self._client.iter_datasets_by_author(node.org_name):
+            rid = item.get("id") if isinstance(item, dict) else None
+            if rid:
+                yield Edge(src=node.url, kind="owns", dst=self._repo_url(rid, "dataset"))
+        for item in self._client.iter_spaces_by_author(node.org_name):
+            rid = item.get("id") if isinstance(item, dict) else None
+            if rid:
+                yield Edge(src=node.url, kind="owns", dst=self._repo_url(rid, "space"))
+
+    def _expand_repo(self, node: HuggingFaceRepo, opts: ExpandOpts) -> Iterable[Edge]:
+        # owned_by — let the BFS resolve user-vs-org via classify+fetch.
+        if node.owner:
+            yield Edge(
+                src=node.url,
+                kind="owned_by",
+                dst=f"https://{self.instance_host}/{node.owner}",
+            )
+        # uses_model — Spaces only.
+        if node.repo_type == "space":
+            for mid in node.used_models or []:
+                if not mid:
+                    continue
+                yield Edge(
+                    src=node.url,
+                    kind="uses_model",
+                    dst=self._repo_url(mid, "model"),
+                )
+
+    def _expand_paper(self, node: HuggingFacePaper, opts: ExpandOpts) -> Iterable[Edge]:
+        # related_to.IsIdenticalTo — arxiv URL via shared synthesizer
+        target = synthesize_target_url("arxiv", node.arxiv_id)
+        if target:
+            yield Edge(
+                src=node.url,
+                kind="related_to.IsIdenticalTo",
+                dst=target,
+            )
+        # related_to.IsSupplementedBy — github repo URL (when populated)
+        if node.github_repo:
+            yield Edge(
+                src=node.url,
+                kind="related_to.IsSupplementedBy",
+                dst=f"https://github.com/{node.github_repo}",
+            )
+        # references_model / dataset / space — re-fetch the paper to get
+        # the linkedX[] lists (the stored node doesn't carry them).
+        raw = self._client.get_paper(node.arxiv_id)
+        if raw is None:
+            return
+        for m in raw.get("linkedModels") or []:
+            rid = m.get("id") if isinstance(m, dict) else None
+            if rid:
+                yield Edge(src=node.url, kind="references_model",
+                           dst=self._repo_url(rid, "model"))
+        for d in raw.get("linkedDatasets") or []:
+            rid = d.get("id") if isinstance(d, dict) else None
+            if rid:
+                yield Edge(src=node.url, kind="references_dataset",
+                           dst=self._repo_url(rid, "dataset"))
+        for s in raw.get("linkedSpaces") or []:
+            rid = s.get("id") if isinstance(s, dict) else None
+            if rid:
+                yield Edge(src=node.url, kind="references_space",
+                           dst=self._repo_url(rid, "space"))
+
+    def _expand_collection(
+        self, node: HuggingFaceCollection, opts: ExpandOpts,
+    ) -> Iterable[Edge]:
+        # owned_by — let BFS resolve user vs org
+        if node.owner:
+            yield Edge(
+                src=node.url,
+                kind="owned_by",
+                dst=f"https://{self.instance_host}/{node.owner}",
+            )
+        # contains — re-fetch to get items[]
+        raw = self._client.get_collection(node.slug)
+        if raw is None:
+            return
+        for item in raw.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            item_type = item.get("type", "")
+            item_id = item.get("id", "")
+            if not item_id:
+                continue
+            if item_type == "model":
+                dst = self._repo_url(item_id, "model")
+            elif item_type == "dataset":
+                dst = self._repo_url(item_id, "dataset")
+            elif item_type == "space":
+                dst = self._repo_url(item_id, "space")
+            elif item_type == "paper":
+                dst = f"https://{self.instance_host}/papers/{item_id}"
+            else:
+                logger.warning(
+                    "Skipping collection item with unknown type %r in %s",
+                    item_type, node.url,
+                )
+                continue
+            yield Edge(src=node.url, kind="contains", dst=dst)
 
     # ---- rate_limit --------------------------------------------------------
 
