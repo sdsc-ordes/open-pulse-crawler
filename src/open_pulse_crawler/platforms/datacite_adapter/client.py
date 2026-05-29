@@ -80,3 +80,102 @@ class DataCiteHTTPClient:
             return
         self._idx = (self._idx + 1) % len(self.tokens)
         self._apply_current_token()
+
+    # ---- single-entity fetches with 429 retry ------------------------------
+
+    def _do_get(self, path: str, params: Optional[Dict[str, Any]] = None,
+                _retried: bool = False) -> httpx.Response:
+        """GET ``path`` with one automatic retry on HTTP 429.
+
+        Honors the ``Retry-After`` header (capped at ``MAX_RETRY_AFTER_SECONDS``).
+        Second 429 raises via the caller's ``raise_for_status``.
+        """
+        resp = (self._session.get(path, params=params)
+                if params is not None else self._session.get(path))
+        if resp.status_code == 429 and not _retried:
+            retry_after_raw = resp.headers.get("Retry-After", "5")
+            try:
+                retry_after = float(retry_after_raw)
+            except (TypeError, ValueError):
+                retry_after = 5.0
+            retry_after = min(max(retry_after, 0.0), MAX_RETRY_AFTER_SECONDS)
+            logger.warning(
+                "%s on %s returned 429; sleeping %.1fs then retrying once.",
+                path, self.host, retry_after,
+            )
+            time.sleep(retry_after)
+            return self._do_get(path, params=params, _retried=True)
+        return resp
+
+    def _request_data(
+        self, path: str, params: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Any]:
+        """GET ``path`` and return the JSON:API ``data`` payload.
+
+        404 → ``None``. Any other non-2xx raises ``httpx.HTTPStatusError``.
+        """
+        resp = self._do_get(path, params)
+        if resp.status_code == 404:
+            return None
+        if not resp.is_success:
+            resp.raise_for_status()
+        body = resp.json()
+        return body.get("data")
+
+    def get_doi(self, doi: str) -> Optional[Dict[str, Any]]:
+        """Return the JSON:API ``data`` for the given DOI, or ``None`` on 404."""
+        return self._request_data(f"/dois/{doi}")
+
+    def get_client(self, client_id: str) -> Optional[Dict[str, Any]]:
+        """Return the JSON:API ``data`` for the given DataCite client id,
+        or ``None`` on 404.
+        """
+        return self._request_data(f"/clients/{client_id}")
+
+    def get_client_prefixes(self, client_id: str) -> List[str]:
+        """Return the DOI prefixes owned by the given client (empty on 404)."""
+        data = self._request_data(f"/clients/{client_id}/relationships/prefixes")
+        if not data:
+            return []
+        return [p.get("id", "") for p in data if isinstance(p, dict) and p.get("id")]
+
+    # ---- cursor-paginated search ------------------------------------------
+
+    def _iter_dois_query(
+        self, query: str,
+    ) -> Iterable[Dict[str, Any]]:
+        """Yield DOI records across all pages of a /dois search.
+
+        First page uses ``page[cursor]=1``; subsequent pages follow
+        ``links.next`` (absolute URL, params baked in).
+        """
+        path: str = "/dois"
+        current_params: Optional[Dict[str, Any]] = {
+            "query": query,
+            "page[size]": DEFAULT_PAGE_SIZE,
+            "page[cursor]": 1,
+        }
+        while True:
+            resp = self._do_get(path, current_params)
+            if not resp.is_success:
+                resp.raise_for_status()
+            body = resp.json()
+            for item in body.get("data") or []:
+                yield item
+            next_link = (body.get("links") or {}).get("next")
+            if not next_link:
+                return
+            path = next_link
+            current_params = None  # next-link is absolute, params already in URL
+
+    def iter_dois_by_ror(self, ror_url: str) -> Iterable[Dict[str, Any]]:
+        """Yield DOI records affiliated with the given ROR organization."""
+        return self._iter_dois_query(
+            f'creators.affiliation.affiliationIdentifier:"{ror_url}"',
+        )
+
+    def iter_dois_by_orcid(self, orcid_url: str) -> Iterable[Dict[str, Any]]:
+        """Yield DOI records authored by the given ORCID identifier."""
+        return self._iter_dois_query(
+            f'creators.nameIdentifiers.nameIdentifier:"{orcid_url}"',
+        )
