@@ -376,18 +376,6 @@ class InfoscienceAdapter(PlatformAdapter):
                 dst=f"https://{self.instance_host}/handle/{handle}",
             )
 
-        # has_member — gated by opts.crawl_members
-        if opts.crawl_members:
-            for person in self._client.iter_orgunit_persons(node.uuid):
-                handle = person.get("handle")
-                if not handle:
-                    continue
-                yield Edge(
-                    src=node.url,
-                    kind="has_member",
-                    dst=f"https://{self.instance_host}/handle/{handle}",
-                )
-
     # ---- rate_limit --------------------------------------------------------
 
     def rate_limit_state(self) -> RateLimitInfo:

@@ -289,30 +289,19 @@ def test_expand_orgunit_emits_has_publication_and_parent_of(adapter):
     assert parent_of[0].dst == "https://infoscience.epfl.ch/handle/20.500.14299/2"
 
 
-def test_expand_orgunit_members_gated_off_by_default(adapter):
-    """crawl_members defaults to False — iter_orgunit_persons must not be called."""
-    adapter._client.iter_orgunit_items.return_value = iter([])
-    adapter._client._iter_paginated = MagicMock(return_value=iter([]))
-    ou = InfoscienceOrgUnit(
-        url="https://infoscience.epfl.ch/handle/20.500.14299/77777",
-        login="TRANSP-OR", platform="infoscience",
-        handle="20.500.14299/77777", uuid="ou-uuid-1",
-    )
-    list(adapter.expand(ou, ExpandOpts()))
-    adapter._client.iter_orgunit_persons.assert_not_called()
-
-
-def test_expand_orgunit_members_emitted_when_crawl_members_true(adapter):
-    adapter._client.iter_orgunit_items.return_value = iter([])
-    adapter._client._iter_paginated = MagicMock(return_value=iter([]))
-    adapter._client.iter_orgunit_persons.return_value = iter([
-        {"uuid": "p1", "handle": "20.500.14299/9001"},
+def test_expand_orgunit_never_emits_has_member(adapter):
+    """has_member is permanently removed — no scenario should emit it."""
+    adapter._client.iter_orgunit_items.return_value = iter([
+        {"uuid": "i1", "handle": "20.500.14299/1"},
     ])
+    adapter._client._iter_paginated = MagicMock(return_value=iter([
+        {"uuid": "child-uuid", "handle": "20.500.14299/2"},
+    ]))
     ou = InfoscienceOrgUnit(
         url="https://infoscience.epfl.ch/handle/20.500.14299/77777",
         login="TRANSP-OR", platform="infoscience",
         handle="20.500.14299/77777", uuid="ou-uuid-1",
     )
-    edges = list(adapter.expand(ou, ExpandOpts(crawl_members=True)))
+    edges = list(adapter.expand(ou, ExpandOpts()))
     has_member = [e for e in edges if e.kind == "has_member"]
-    assert has_member[0].dst == "https://infoscience.epfl.ch/handle/20.500.14299/9001"
+    assert has_member == []

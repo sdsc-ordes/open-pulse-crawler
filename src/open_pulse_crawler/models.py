@@ -388,9 +388,8 @@ class InfoscienceOrgUnit(OrgModel):
 
     Forms the canonical EPFL hierarchy: school → faculty → department →
     laboratory. Parent pointer is set when CRIS exposes a parent relation.
-    ``members`` (inherited from ``OrgModel``) stays empty by default;
-    population is opt-in via ``opts.crawl_members=True`` on the expand
-    call to avoid fetching potentially-large member lists.
+    ``members`` (inherited from ``OrgModel``) stays empty — Infoscience has
+    no direct Person→OrgUnit index so member enumeration is not possible.
     """
     subkind: Literal["InfoscienceOrgUnit"] = "InfoscienceOrgUnit"
     handle: str

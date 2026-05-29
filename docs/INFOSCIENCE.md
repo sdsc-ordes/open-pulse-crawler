@@ -28,7 +28,6 @@ built into the client.
 | `InfosciencePerson` | `authored` | `InfoscienceItem` |
 | `InfosciencePerson` | `member_of` | `InfoscienceOrgUnit` |
 | `InfoscienceOrgUnit` | `has_publication` | `InfoscienceItem` |
-| `InfoscienceOrgUnit` | `has_member` | `InfosciencePerson` (gated by `--crawl-members`) |
 | `InfoscienceOrgUnit` | `parent_of` | `InfoscienceOrgUnit` (parent → child) |
 
 `related_to.<RelationType>` reuses the DataCite RelationType vocabulary
@@ -92,8 +91,7 @@ opc crawl --platforms infoscience.epfl.ch \
 ```
 
 Round 1 emits `has_publication` edges to all items affiliated with the
-department + `parent_of` edges to child OrgUnits. `has_member` is
-gated behind the `--crawl-members` CLI flag (off by default).
+department + `parent_of` edges to child OrgUnits.
 
 ### Cross-platform (Infoscience + GitHub)
 
@@ -118,8 +116,13 @@ pointing at GitHub repos spawn cross-platform discovery.
   Would require a new `ProjectModel` base class — out of scope for v3.2.
 - **EPFL DOI URLs are not auto-resolved.** The `10.5075` prefix covers
   multiple EPFL services; the adapter doesn't try to special-case them.
-- **`has_member` is gated** behind `--crawl-members` (default off) —
-  EPFL departments can have hundreds of researchers.
+- **No `has_member` edge.** Infoscience's CRIS doesn't expose a direct
+  Person→OrgUnit index; queries against all known candidate fields
+  (`person.affiliation.authority`, `cris.virtual.parent-organization.authority`,
+  `organization.authority`, `parent-organization.authority`,
+  `oairecerif.author.affiliation.authority`) return 0 results for real
+  OrgUnit UUIDs. To enumerate researchers in a department, iterate
+  `has_publication` edges then deduplicate authors downstream.
 - **Heavy rate-limiting.** Anonymous probes routinely return 429. The
   client honors `Retry-After` with one automatic retry; second 429
   raises. Provision a token if you crawl at scale.

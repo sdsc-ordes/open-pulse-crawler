@@ -61,9 +61,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Three subkind models: `InfosciencePerson`, `InfoscienceOrgUnit`,
   `InfoscienceItem`. Items carry `resource_type` distinguishing
   publications from datasets/software/etc.
-- Eight new edge kinds: `authored_by`, `affiliated_with`,
+- Seven new edge kinds: `authored_by`, `affiliated_with`,
   `related_to.<RelationType>`, `authored`, `member_of`,
-  `has_publication`, `has_member` (gated), `parent_of`.
+  `has_publication`, `parent_of`.
 - Shared `platforms/datacite.py` helper for `arxiv`/`orcid`/`pmid`/
   `pmcid`/`swh`/`doi`/`url` URL synthesis (lifted from
   `ZenodoAdapter._synthesize_target_url`; both adapters now share it).
@@ -73,8 +73,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   → `related_to.isVersionOf` for cross-platform consistency with Zenodo).
 - UUID → handle resolution cache on the adapter (`_uuid_to_handle`)
   saves round-trips when the same Person co-authors multiple items.
-- `crawl_members` field on `ExpandOpts` (default `False`); gates
-  `InfoscienceOrgUnit` → `has_member` edge emission.
 - CLI registers `InfoscienceAdapter` for `infoscience.epfl.ch` and
   any `*.infoscience.epfl.ch` host with or without tokens.
 - `tools/scripts/fetch_public_projects.py` handles

@@ -195,11 +195,3 @@ class InfoscienceClient:
              "size": DEFAULT_PAGE_SIZE},
         )
 
-    def iter_orgunit_persons(self, orgunit_uuid: str) -> Iterable[Dict[str, Any]]:
-        """Person entities affiliated with the given OrgUnit UUID."""
-        return self._iter_paginated(
-            "/server/api/discover/search/objects",
-            {"dsoType": "item",
-             "query": f"dspace.entity.type:Person AND author.parent-organization.authority:{orgunit_uuid}",
-             "size": DEFAULT_PAGE_SIZE},
-        )
