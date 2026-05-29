@@ -20,7 +20,7 @@ canonicalized URLs.
 from __future__ import annotations
 
 from enum import Enum
-from typing import Optional, Tuple
+from typing import Tuple
 from urllib.parse import urlparse
 
 
