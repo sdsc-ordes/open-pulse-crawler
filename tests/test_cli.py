@@ -121,18 +121,32 @@ def test_doctor_json_marks_gitlab_anonymous_when_no_token(monkeypatch):
 # ──────────────────────────────────────────────────────────────────────────
 
 
+import re as _re
+
+_ANSI_RE = _re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+
+
+def _help_text(app_, args):
+    """Invoke ``--help`` and return plain text — strip ANSI codes and wrap
+    on a wide terminal so Rich doesn't truncate long option names with
+    ellipsis (which is what was breaking in CI's narrow runner terminal).
+    """
+    r = runner.invoke(app_, args, env={"COLUMNS": "240", "TERM": "dumb"})
+    return r, _ANSI_RE.sub("", r.output)
+
+
 def test_crawl_accepts_crawl_stars_flag():
-    r = runner.invoke(app, ["crawl", "--help"])
+    r, text = _help_text(app, ["crawl", "--help"])
     assert r.exit_code == 0, r.output
-    assert "--crawl-stars" in r.output
+    assert "--crawl-stars" in text
 
 
 def test_crawl_help_lists_new_options():
-    r = runner.invoke(app, ["crawl", "--help"])
+    r, text = _help_text(app, ["crawl", "--help"])
     assert r.exit_code == 0, r.output
-    assert "--platforms" in r.output
-    assert "--default-host" in r.output
-    assert "--crawl-stars" in r.output
+    assert "--platforms" in text
+    assert "--default-host" in text
+    assert "--crawl-stars" in text
 
 
 def test_crawl_accepts_platforms_option(monkeypatch):
