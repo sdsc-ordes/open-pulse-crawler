@@ -351,6 +351,25 @@ class GitHubCrawler:
         crawler's own type strings (``"user_or_org"`` / ``"repo"`` /
         ``"team"``) for compatibility with the queue tuple shape.
         """
+        # Multi-platform seeds: if the seed is a URL whose host is owned by a
+        # registered non-github adapter, let the adapter normalize it and
+        # queue it as ``user_or_org``. The GitHub-centric ``node_id.kind_of``
+        # only understands 1-segment (user_or_org) and 2-segment (repo) paths
+        # and raises ``ValueError`` on anything deeper — e.g. Infoscience's
+        # ``/handle/<prefix>/<id>`` (3 segments) or some DataCite DOIs. The
+        # adapter dispatch (`_process_one_via_adapter`) re-routes popped items
+        # by host and ignores the queued kind, so ``user_or_org`` is a safe
+        # placeholder for every adapter-routed seed.
+        if seed.startswith("http://") or seed.startswith("https://"):
+            host = urlparse(seed).netloc.lower()
+            if host and host != "github.com":
+                try:
+                    adapter = self.registry.adapter_for(seed)
+                except KeyError:
+                    adapter = None
+                if adapter is not None:
+                    return ('user_or_org', adapter.normalize_uri(seed))
+
         kind, url = parse_seed_url(seed)
         if kind == NodeKind.REPO:
             return ('repo', url)

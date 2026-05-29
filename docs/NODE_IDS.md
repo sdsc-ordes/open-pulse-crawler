@@ -101,8 +101,24 @@ default_host="gitlab.com")` returns
 | Model edge-list fields (`followers`, `contributors`, `dependencies`, `members`, ...) | login / full_name | **unchanged** — these stay as bare shorthand internally; the CSV/JSON exporter converts to URLs at write time. |
 
 The hybrid choice — URLs at the *identity* boundary, bare shorthand on
-internal edge lists — keeps the on-the-wire model compact while ensuring
-every external artifact joins on a single uniform key.
+internal edge lists — keeps the on-the-wire model compact.
+
+> **All public outputs are URL-joined.** Node *identifiers* are canonical
+> URLs everywhere (dict keys, CSV `id`, edges CSV `source`/`target`, JSON-LD
+> `@id`). The **edge-list fields on a node** are stored as bare shorthand
+> *internally* (compact), but every public boundary normalizes them to
+> canonical URLs: the CSV/JSON-LD exporters at write time, and the REST
+> `GET /api/v*/graph` + `GET /api/v2/nodes` responses at the boundary
+> (host-aware — each shorthand resolves against its owning node's host, so
+> non-github edges get the correct host). A consumer can therefore join an
+> edge endpoint directly against a node key with no normalization of its own.
+>
+> Scope: only node-reference edge lists (`followers`, `contributors`,
+> `members`, `*_repositories`, `dependencies`/`dependents`, `forked_from`,
+> issue/PR activity, plus HuggingFace `member_orgs`/`used_models`) are
+> rewritten. Platform-specific typed fields that aren't bare refs — `authors`
+> / `creators` (dict lists), `relations`, `affiliations`, `tags`, `keywords`,
+> … — keep their native shape.
 
 ## Looking ahead: multi-platform
 

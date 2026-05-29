@@ -17,9 +17,115 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from urllib.parse import urlparse
+
 from pydantic import BaseModel, Field
 
 from ..models import GRAPH_SCHEMA_VERSION, GraphData
+from ..node_id import canonical_url
+
+
+# ---------------------------------------------------------------------------
+# Graph edge-URL normalization (finding A)
+# ---------------------------------------------------------------------------
+#
+# Node *keys* in the graph are canonical URLs, but per-node edge-list fields
+# store bare platform shorthand (a login like ``"caviri"`` or an
+# ``"owner/repo"`` full_name) — a compact internal representation. The CSV /
+# JSON-LD exporters normalize these to URLs at write time; the REST ``/graph``
+# response now does the same so consumers get a fully URL-joined graph and
+# never have to re-derive the join key themselves.
+#
+# Normalization is **host-aware**: each shorthand entry resolves against the
+# OWNING node's own host (via ``canonical_url``), which reproduces exactly how
+# the target node is keyed — correct for GitHub, GitLab (incl. multi-segment
+# group paths), Zenodo, Infoscience, DataCite, and HuggingFace alike. It is
+# NOT GitHub-centric (the older CSV exporter's ``user_url`` defaulted to
+# github.com, which would mis-resolve non-github edges).
+#
+# Only these curated fields are rewritten — they are the known node-reference
+# edge lists. Typed dict-lists (``authors``, ``creators``, ``relations``,
+# ``affiliations``, ``versions``) and non-reference scalar lists (``tags``,
+# ``keywords``, ``ai_keywords``, ``subjects``, ``language``, ``domains``,
+# ``doi_prefixes``, ``repository_type``) are left untouched.
+_EDGE_LIST_FIELDS = frozenset({
+    # login / name → user/org URL
+    "followers", "following", "members", "contributors",
+    "issue_authors", "pr_authors", "commenters", "pr_reviewers",
+    "member_orgs",          # HuggingFaceUser → org names
+    # full_name / repo_id → repo URL
+    "authored_repositories", "forked_repositories",
+    "starred_repositories", "watched_repositories",
+    "dependents", "dependencies", "repositories",
+    "used_models",          # HuggingFaceRepo (space) → model repo ids
+})
+# Single-value (scalar) node-reference fields.
+_EDGE_SCALAR_FIELDS = frozenset({"forked_from"})
+
+
+def _shorthand_to_url(value: str, host: str) -> str:
+    """Map a bare shorthand ref to a canonical URL under ``host``.
+
+    Idempotent: an entry that is already an ``http(s)://`` URL is returned
+    unchanged. Anything that can't be canonicalized is returned as-is rather
+    than raising, so a malformed entry never breaks the whole response.
+    """
+    if not isinstance(value, str) or not value:
+        return value
+    if value.startswith(("http://", "https://")):
+        return value
+    try:
+        return canonical_url(host, value)
+    except Exception:
+        return value
+
+
+def _normalize_node_edges(node_url: str, node: Dict[str, Any]) -> None:
+    """In-place: rewrite a node dict's edge-list fields to canonical URLs."""
+    host = ""
+    own_url = node.get("url") or node_url
+    if isinstance(own_url, str):
+        host = urlparse(own_url).netloc
+    if not host:
+        return
+    for field_name in _EDGE_LIST_FIELDS:
+        seq = node.get(field_name)
+        if isinstance(seq, list):
+            node[field_name] = [_shorthand_to_url(v, host) for v in seq]
+    for field_name in _EDGE_SCALAR_FIELDS:
+        val = node.get(field_name)
+        if isinstance(val, str) and val:
+            node[field_name] = _shorthand_to_url(val, host)
+
+
+def normalize_graph_edge_urls(graph: Dict[str, Any]) -> Dict[str, Any]:
+    """Return ``graph`` with every node's edge-list endpoints as canonical URLs.
+
+    Mutates and returns the same dict (it is a fresh ``model_dump()`` result
+    at every call site, so in-place mutation is safe). Walks the
+    ``users`` / ``orgs`` / ``repos`` / ``teams`` collections; unknown shapes
+    pass through untouched.
+    """
+    if not isinstance(graph, dict):
+        return graph
+    for collection in ("users", "orgs", "repos", "teams"):
+        nodes = graph.get(collection)
+        if isinstance(nodes, dict):
+            for key, node in nodes.items():
+                if isinstance(node, dict):
+                    _normalize_node_edges(key, node)
+    return graph
+
+
+def normalize_node_edge_urls(node: Dict[str, Any]) -> Dict[str, Any]:
+    """Edge-URL-normalize a single flat node dict (for ``GET /api/v2/nodes``).
+
+    Same host-aware rewrite as :func:`normalize_graph_edge_urls`, applied to
+    one node keyed by its own ``url``. Mutates and returns ``node``.
+    """
+    if isinstance(node, dict):
+        _normalize_node_edges(node.get("url", ""), node)
+    return node
 
 logger = logging.getLogger(__name__)
 
