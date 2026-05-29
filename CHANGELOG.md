@@ -103,6 +103,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `InfoscienceAdapter` into a parameterized `DSpaceAdapter` when a
   second instance lands.
 
+### Added (v3.3 — DataCite Commons adapter)
+- `DataCiteAdapter` and `DataCiteHTTPClient` under
+  `src/open_pulse_crawler/platforms/datacite_adapter/`. Crawls DataCite
+  Commons — DOI-identified works (any DataCite repository), ROR
+  organizations, ORCID researchers, and DataCite-registered repositories.
+- Four subkind models: `DataCiteWork`, `DataCiteOrganization`,
+  `DataCitePerson`, `DataCiteClient`.
+- Six new edge kinds: `authored_by`, `affiliated_with`,
+  `related_to.<RelationType>`, `published_by` (from work), `has_publication`
+  (from organization), `authored` (from person). `DataCiteClient` is
+  passive — no edges emitted.
+- DOI prefix routing table (`_DOI_PREFIX_REWRITERS` in
+  `platforms/datacite.py`): Zenodo-prefix DOIs are rewritten to their
+  canonical `zenodo.org` URLs at seed-time, so the BFS routes them to
+  the Zenodo adapter (no duplicate node).
+- `PlatformRegistry.register_hosts(hosts, adapter)` for multi-host
+  registration. The DataCite adapter is registered against five hosts
+  (`doi.org`, `ror.org`, `orcid.org`, `api.datacite.org`,
+  `commons.datacite.org`); user-facing platform key is `datacite.org`.
+- `NodeKind.USER` and `NodeKind.ORG` added (alongside existing
+  `USER_OR_ORG`) — used by adapters whose URL shapes are discriminated
+  (DataCite ORCID vs ROR vs commons-repository).
+- HTTP 429 retry-after handling in `DataCiteHTTPClient` (one automatic
+  retry honoring `Retry-After` header, capped at 60s; second 429 raises).
+- DataCite client metadata enrichment via `/clients/<id>`: `clientType`,
+  `domains` (for cross-host routing hints), `re3data_doi` (cross-registry
+  anchor), `doi_prefixes` (via `/clients/<id>/relationships/prefixes`).
+- CLI registers `DataCiteAdapter` against `datacite.org` (anonymous + tokens).
+- `POST /api/v2/crawl` OpenAPI examples: `datacite_work_by_doi`,
+  `datacite_org_by_ror_epfl`, `datacite_person_by_orcid`.
+- Integration test against live `api.datacite.org`
+  (`tests/integration/test_datacite_dryrun.py`).
+- `docs/DATACITE.md`.
+
+### Refactored (v3.3)
+- `node_id.rewrite_zenodo_doi_url` and `node_id.is_zenodo_doi_url`
+  removed. Replaced by the generalized `rewrite_doi_url` /
+  `is_owned_doi_url` in `platforms/datacite.py`, table-driven via
+  `_DOI_PREFIX_REWRITERS`. Behavior is unchanged for Zenodo.
+
+### Out of scope (v3.3)
+- Crossref-issued DOIs (Nature, ACM, IEEE). A future `CrossrefAdapter`
+  could share the DOI host via the prefix routing table.
+- ROR / ORCID secondary API enrichment. Cross-platform identity
+  resolution stays downstream.
+- Active `DataCiteClient` expansion (walking all DOIs published by a
+  client). Could be added behind a `--crawl-client-works` flag.
+- `tools/scripts/fetch_public_projects.py` extension for DataCite —
+  no natural "browse all DOIs" use case yet.
+
 ## [2.0.0] — 2026-05-27
 
 **Breaking release.** Headlines:

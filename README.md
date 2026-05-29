@@ -40,6 +40,13 @@ manual-test recipes).
   with DataCite `related_to.<RelationType>` edges identical to Zenodo's.
   Anonymous reads supported (with built-in 429 retry-after handling).
   See [docs/INFOSCIENCE.md](docs/INFOSCIENCE.md).
+- **DataCite Commons** (`doi.org` / `ror.org` / `orcid.org` /
+  `api.datacite.org` / `commons.datacite.org`): the DataCite-indexed
+  cross-repository graph. DOI-identified works (Figshare, Dryad, ETH
+  WSL, …), ROR-identified organizations, ORCID-identified researchers,
+  and DataCite-registered repositories. Anonymous reads supported.
+  Routes Zenodo DOIs back to the Zenodo adapter via DOI prefix table.
+  See [docs/DATACITE.md](docs/DATACITE.md).
 
 ### Enabling platforms
 
