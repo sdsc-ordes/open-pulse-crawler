@@ -338,7 +338,12 @@ class ZenodoAdapter(PlatformAdapter):
             if not isinstance(rel, dict):
                 continue
             ident = rel.get("identifier") or ""
-            relation = rel.get("relation") or "isReferencedBy"
+            # When `relation` is missing, default to "references" (this
+            # record references the target). Matches DataCite's _expand_work
+            # default — the canonical reading when a record's
+            # related_identifier points AT something. Previously this was
+            # "isReferencedBy" which inverted the directional semantics.
+            relation = rel.get("relation") or "references"
             scheme = (rel.get("scheme") or "").lower()
             target_url = synthesize_target_url(scheme, ident)
             if not target_url:

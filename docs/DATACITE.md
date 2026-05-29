@@ -53,6 +53,21 @@ is owned by a sibling adapter. The `_DOI_PREFIX_REWRITERS` table in
 Other DOI prefixes route through DataCite. New entries can be added as
 sibling adapters land.
 
+> **Heads-up: cross-platform crawls need every target platform enabled.**
+> The prefix rewrite happens *before* BFS dispatch, so a Zenodo-prefix DOI
+> seeded as `https://doi.org/10.5281/zenodo.42` becomes
+> `https://zenodo.org/records/42` — which then needs a registered Zenodo
+> adapter to crawl. If you run `--platforms datacite.org` alone, the
+> rewritten URL has nowhere to go and the BFS drops it. To follow
+> Zenodo-prefix DOIs, enable both:
+>
+> ```bash
+> CRAWLER_PLATFORMS=datacite.org,zenodo.org
+> ```
+>
+> The same applies for any future DOI-prefix entry: enable its target
+> platform alongside `datacite.org`.
+
 ## Configuring tokens
 
 Anonymous reads work for `/dois`, `/clients`, `/dois?query=…`. Tokens

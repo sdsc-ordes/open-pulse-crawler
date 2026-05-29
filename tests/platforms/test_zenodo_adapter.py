@@ -245,6 +245,23 @@ def test_expand_record_emits_related_to_with_relation_in_kind():
     ]
 
 
+def test_expand_record_relation_missing_defaults_to_references():
+    """When a related_identifier omits its `relation` field, the edge kind
+    falls back to `related_to.references` (matches DataCite's _expand_work).
+    Previously this was `isReferencedBy` which inverted the directional
+    semantics (a related_identifier points FROM this record TO the target,
+    so "references" is the natural reading).
+    """
+    a = ZenodoAdapter(client=MagicMock(), instance_host="zenodo.org")
+    record = _stub_record(a, related=[
+        # No `relation` field at all — must fall back to "references".
+        {"identifier": "https://github.com/foo/bar", "scheme": "url"},
+    ])
+    edges = [e for e in a.expand(record, ExpandOpts()) if e.kind.startswith("related_to.")]
+    assert len(edges) == 1
+    assert edges[0].kind == "related_to.references"
+
+
 def test_expand_record_emits_all_synthesized_schemes():
     """End-to-end: a record with five different scheme entries emits five
     edges with the right target URLs and the relation in the kind."""
