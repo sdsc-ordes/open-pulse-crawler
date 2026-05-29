@@ -17,11 +17,9 @@ from ...models import (
 from ...node_id import (
     NodeKind,
     canonical_url,
-    is_zenodo_doi_url,
-    rewrite_zenodo_doi_url,
 )
 from ..base import Edge, ExpandOpts, PlatformAdapter, RateLimitInfo
-from ..datacite import synthesize_target_url
+from ..datacite import is_owned_doi_url, rewrite_doi_url, synthesize_target_url
 from .client import ZenodoClient
 
 logger = logging.getLogger(__name__)
@@ -66,9 +64,9 @@ class ZenodoAdapter(PlatformAdapter):
             raise ValueError(f"empty or non-string seed: {raw!r}")
 
         # DOI URL?
-        if is_zenodo_doi_url(raw):
-            rewritten = rewrite_zenodo_doi_url(raw)
-            assert rewritten is not None  # is_zenodo_doi_url guarantees this
+        if is_owned_doi_url(raw):
+            rewritten = rewrite_doi_url(raw)
+            assert rewritten is not None  # is_owned_doi_url guarantees this
             return rewritten
 
         if raw.startswith("https://doi.org/") or raw.startswith("http://doi.org/"):

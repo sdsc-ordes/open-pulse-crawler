@@ -12,9 +12,8 @@ identifier can't be made into a URL.
 """
 from __future__ import annotations
 
-from typing import Optional
-
-from ..node_id import rewrite_zenodo_doi_url
+import re as _re
+from typing import Dict, Optional, Tuple
 
 
 def synthesize_target_url(scheme: str, ident: str) -> Optional[str]:
@@ -48,8 +47,7 @@ def synthesize_target_url(scheme: str, ident: str) -> Optional[str]:
         return None  # url scheme but identifier wasn't a URL — drop
 
     if scheme == "doi":
-        rewritten = rewrite_zenodo_doi_url(f"https://doi.org/{ident}")
-        return rewritten or f"https://doi.org/{ident}"
+        return rewrite_doi_url(ident) or f"https://doi.org/{ident}"
 
     if scheme == "arxiv":
         arxiv_id = ident
@@ -83,3 +81,81 @@ def synthesize_target_url(scheme: str, ident: str) -> Optional[str]:
         return f"https://archive.softwareheritage.org/{ident.strip()}"
 
     return None
+
+
+# ---- DOI prefix routing -----------------------------------------------------
+# Maps DOI prefix → (canonical host, URL template, optional suffix regex).
+# The URL template uses {suffix} for the post-prefix tail (or the first capture
+# group of the suffix regex when one is supplied).
+# When a DOI matches, BFS dispatch routes to the sibling adapter (Zenodo today;
+# future Spec entries can add Infoscience or Crossref handlers here).
+#
+# Tuple shape: (canonical_host, url_template, suffix_re_or_None)
+#   suffix_re: compiled regex applied to the raw suffix (everything after the
+#              prefix slash).  When provided, group(1) is used as {suffix}.
+#              When None, the raw suffix is used verbatim.
+_DOI_PREFIX_REWRITERS: Dict[str, Tuple[str, str, Optional["_re.Pattern[str]"]]] = {
+    "10.5281": (
+        "zenodo.org",
+        "https://zenodo.org/records/{suffix}",
+        _re.compile(r"^zenodo\.(\d+)/?$", _re.IGNORECASE),
+    ),
+    "10.5072": (
+        "sandbox.zenodo.org",
+        "https://sandbox.zenodo.org/records/{suffix}",
+        _re.compile(r"^zenodo\.(\d+)/?$", _re.IGNORECASE),
+    ),
+    # 10.5075 (EPFL) intentionally absent — opaque suffixes, no formulaic mapping
+    # to Infoscience handles. Those DOIs flow through DataCite.
+}
+
+
+def rewrite_doi_url(doi_or_url: str) -> Optional[str]:
+    """Map a doi.org URL or bare DOI to a sibling-adapter platform URL when
+    the DOI's prefix is owned by another adapter (Zenodo today).
+
+    Returns ``None`` to leave the DOI with DataCite. Accepts both forms:
+
+        rewrite_doi_url("https://doi.org/10.5281/zenodo.42")  → "https://zenodo.org/records/42"
+        rewrite_doi_url("10.5281/zenodo.42")                  → "https://zenodo.org/records/42"
+        rewrite_doi_url("10.6084/m9.figshare.99")             → None
+    """
+    if not isinstance(doi_or_url, str) or not doi_or_url:
+        return None
+    # Strip doi.org URL form to bare DOI.
+    bare = doi_or_url
+    for prefix_url in ("https://doi.org/", "http://doi.org/"):
+        if bare.startswith(prefix_url):
+            bare = bare[len(prefix_url):]
+            break
+    # Bare DOI must look like "10.<prefix>/<suffix>".
+    if "/" not in bare:
+        return None
+    prefix, _, raw_suffix = bare.partition("/")
+    if not prefix.startswith("10.") or not raw_suffix:
+        return None
+    entry = _DOI_PREFIX_REWRITERS.get(prefix)
+    if not entry:
+        return None
+    _host, template, suffix_re = entry
+    if suffix_re is not None:
+        m = suffix_re.match(raw_suffix)
+        if not m:
+            return None
+        suffix = m.group(1)
+    else:
+        suffix = raw_suffix
+    return template.format(suffix=suffix)
+
+
+def is_owned_doi_url(raw: str) -> bool:
+    """True iff ``rewrite_doi_url(raw)`` would return a non-None URL.
+
+    Only matches the ``doi.org`` URL form (so already-rewritten Zenodo URLs
+    return False — they're "owned" by Zenodo's host, not by the DOI prefix).
+    """
+    if not isinstance(raw, str):
+        return False
+    if not (raw.startswith("https://doi.org/") or raw.startswith("http://doi.org/")):
+        return False
+    return rewrite_doi_url(raw) is not None

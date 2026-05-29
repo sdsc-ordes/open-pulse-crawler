@@ -57,3 +57,47 @@ def test_synthesize_empty_inputs():
     assert synthesize_target_url("doi", "") is None
     assert synthesize_target_url("url", "") is None
     assert synthesize_target_url("", "") is None
+
+
+# --- _DOI_PREFIX_REWRITERS / rewrite_doi_url -----------------------
+from open_pulse_crawler.platforms.datacite import (
+    rewrite_doi_url, is_owned_doi_url,
+)
+
+
+def test_rewrite_doi_url_zenodo_url_form():
+    assert rewrite_doi_url("https://doi.org/10.5281/zenodo.42") == \
+        "https://zenodo.org/records/42"
+
+
+def test_rewrite_doi_url_zenodo_bare_doi():
+    """The helper accepts a bare DOI string too, not just the URL form."""
+    assert rewrite_doi_url("10.5281/zenodo.42") == "https://zenodo.org/records/42"
+
+
+def test_rewrite_doi_url_sandbox_zenodo():
+    assert rewrite_doi_url("https://doi.org/10.5072/zenodo.99") == \
+        "https://sandbox.zenodo.org/records/99"
+    assert rewrite_doi_url("10.5072/zenodo.99") == \
+        "https://sandbox.zenodo.org/records/99"
+
+
+def test_rewrite_doi_url_unowned_prefix_returns_none():
+    assert rewrite_doi_url("https://doi.org/10.6084/m9.figshare.99") is None
+    assert rewrite_doi_url("10.6084/m9.figshare.99") is None
+    assert rewrite_doi_url("https://doi.org/10.5075/epfl-thesis-12345") is None
+
+
+def test_rewrite_doi_url_empty_or_malformed():
+    assert rewrite_doi_url("") is None
+    assert rewrite_doi_url("not-a-doi") is None
+    assert rewrite_doi_url("https://example.com/not-doi") is None
+
+
+def test_is_owned_doi_url_matches_rewrite_result():
+    """`is_owned_doi_url` is the predicate form — True iff rewrite would succeed."""
+    assert is_owned_doi_url("https://doi.org/10.5281/zenodo.42") is True
+    assert is_owned_doi_url("https://doi.org/10.5072/zenodo.42") is True
+    assert is_owned_doi_url("https://doi.org/10.6084/m9.figshare.99") is False
+    assert is_owned_doi_url("https://zenodo.org/records/42") is False  # already-rewritten URL
+    assert is_owned_doi_url("") is False
