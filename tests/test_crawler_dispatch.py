@@ -128,3 +128,41 @@ def test_pure_registry_mode_get_statistics_returns_none_api_stats():
     c = GitHubCrawler(registry=reg, max_rounds=1)
     stats = c.get_statistics()
     assert stats["api_stats"] is None
+
+
+def test_add_seeds_accepts_multi_segment_adapter_url():
+    """Regression (v2 Infoscience bug): a seed URL whose host is owned by a
+    registered non-github adapter and whose path has 3+ segments must NOT
+    crash ``add_seeds``.
+
+    ``node_id.kind_of`` only understands 1-segment (user_or_org) and
+    2-segment (repo) GitHub paths and raises ``ValueError`` on anything
+    deeper — e.g. Infoscience's ``/handle/<prefix>/<id>`` (3 segments).
+    Before the fix this propagated up through ``add_seeds`` →
+    ``_seed_or_resume`` → ``_run_crawl_v2`` and failed the whole v2 crawl
+    during seeding ("kind_of: cannot infer kind for URL ...").
+
+    The seed-enqueue path now consults the registry: for adapter-routed
+    hosts it normalizes via the adapter and queues ``user_or_org`` (the
+    adapter dispatch re-routes by host and ignores the queued kind).
+    """
+    reg = PlatformRegistry()
+    reg.register(FakePlatformAdapter(instance_host="infoscience.epfl.ch"))
+    crawler = GitHubCrawler(registry=reg, max_rounds=1)
+
+    seed = "https://infoscience.epfl.ch/handle/20.500.14299/182247"
+    crawler.add_seeds([seed])  # must not raise ValueError
+
+    queued = {(t, u) for (t, u, _r) in crawler.queue}
+    assert ("user_or_org", seed) in queued
+
+
+def test_add_seeds_github_url_still_uses_github_classification():
+    """github.com seeds must keep their existing kind_of-based classification
+    (2-segment path → repo) — the registry shortcut only applies to
+    non-github hosts so legacy behaviour is untouched."""
+    client = MagicMock()
+    crawler = GitHubCrawler(client=client, max_rounds=1)
+    crawler.add_seeds(["https://github.com/torvalds/linux"])
+    queued = {(t, u) for (t, u, _r) in crawler.queue}
+    assert ("repo", "https://github.com/torvalds/linux") in queued

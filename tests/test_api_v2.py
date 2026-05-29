@@ -120,7 +120,7 @@ def test_v2_build_registry_from_env_includes_datacite(monkeypatch):
     monkeypatch.setenv("CRAWLER_PLATFORMS", "datacite.org")
     monkeypatch.delenv("CRAWLER_TOKEN__API_DATACITE_ORG", raising=False)
     monkeypatch.delenv("CRAWLER_TOKEN_POOL__API_DATACITE_ORG", raising=False)
-    registry = _build_registry_from_env()
+    registry, _gh = _build_registry_from_env()
     a = registry.adapter_for("https://doi.org/10.6084/m9.figshare.99")
     assert isinstance(a, DataCiteAdapter)
 
@@ -137,7 +137,7 @@ def test_v2_build_registry_from_env_includes_zenodo_and_infoscience(monkeypatch)
                 "CRAWLER_TOKEN__INFOSCIENCE_EPFL_CH",
                 "CRAWLER_TOKEN_POOL__INFOSCIENCE_EPFL_CH"):
         monkeypatch.delenv(var, raising=False)
-    registry = _build_registry_from_env()
+    registry, _gh = _build_registry_from_env()
     assert isinstance(
         registry.adapter_for("https://zenodo.org/records/42"),
         ZenodoAdapter,
@@ -146,6 +146,33 @@ def test_v2_build_registry_from_env_includes_zenodo_and_infoscience(monkeypatch)
         registry.adapter_for("https://infoscience.epfl.ch/handle/20.500.14299/1"),
         InfoscienceAdapter,
     )
+
+
+def test_v2_build_registry_from_env_returns_github_client(monkeypatch):
+    """Regression (v2 GitHub bug): the v2 path discarded the GitHub client
+    (`registry, _gh_client, missing = ...`), leaving `GitHubCrawler.client`
+    None. github.com seeds then hit the pass-through `GitHubAdapter.fetch`
+    stub (which returns a raw PyGithub object, not a Pydantic model) and were
+    silently dropped as "unknown node type". `_build_registry_from_env` must
+    surface the GitHub client so `_run_crawl_v2` can pass it to the crawler,
+    routing github.com through the model-building legacy path."""
+    from open_pulse_crawler.api.v2 import _build_registry_from_env
+    from open_pulse_crawler.platforms.github import GitHubClient
+
+    _clear_legacy_github_env(monkeypatch)
+    monkeypatch.setenv("CRAWLER_PLATFORMS", "github.com")
+    monkeypatch.setenv("CRAWLER_TOKEN__GITHUB_COM", "ghp_fake_for_offline_construction")
+    registry, github_client = _build_registry_from_env()
+    assert github_client is not None
+    assert isinstance(github_client, GitHubClient)
+    # And the registry still routes github.com (adapter registered too).
+    assert "github.com" in registry.hosts()
+
+
+def _clear_legacy_github_env(monkeypatch) -> None:
+    for var in ("CRAWLER_TOKEN__GITHUB_COM", "CRAWLER_TOKEN_POOL__GITHUB_COM",
+                "CRAWLER_GITHUB_TOKEN_POOL", "CRAWLER_GITHUB_TOKEN", "GITHUB_TOKEN"):
+        monkeypatch.delenv(var, raising=False)
 
 
 def test_v2_crawl_openapi_examples_include_huggingface():

@@ -508,7 +508,7 @@ def list_platforms() -> PlatformsResponse:
 # ---------------------------------------------------------------------------
 
 
-def _build_registry_from_env() -> "object":
+def _build_registry_from_env():
     """Build a :class:`PlatformRegistry` for every host in CRAWLER_PLATFORMS.
 
     Delegates to :func:`cli._build_registry` so every adapter the CLI knows
@@ -516,12 +516,19 @@ def _build_registry_from_env() -> "object":
     from ``/api/v2/crawl``. Anonymous-friendly adapters (Zenodo, Infoscience,
     DataCite) register without tokens; ``missing`` is logged but doesn't
     skip them. GitHub still requires a token to be useful.
+
+    Returns ``(registry, github_client)``. The GitHub client is surfaced
+    (not discarded) so ``_run_crawl_v2`` can pass it to ``GitHubCrawler`` —
+    github.com seeds must run through the model-building legacy
+    ``_process_*`` path, not the pass-through ``GitHubAdapter.fetch`` stub
+    (which returns raw PyGithub objects the BFS engine drops as "unknown
+    node type").
     """
     from ..cli import _build_registry
     from ..platforms.github import resolve_cache_dir
 
     cache_dir = resolve_cache_dir(default=_api_cache_dir())
-    registry, _gh_client, missing = _build_registry(
+    registry, github_client, missing = _build_registry(
         list(enabled_instances()),
         cache_dir=cache_dir,
     )
@@ -530,7 +537,7 @@ def _build_registry_from_env() -> "object":
             "Hosts without tokens (anonymous adapters still register): %s",
             ", ".join(missing),
         )
-    return registry
+    return registry, github_client
 
 
 def _run_crawl_v2(
@@ -552,8 +559,9 @@ def _run_crawl_v2(
     """Run a multi-platform crawl in the background.
 
     Builds a :class:`PlatformRegistry` from every host in ``CRAWLER_PLATFORMS``
-    that has a token, then hands the registry to ``GitHubCrawler`` in
-    pure-registry mode (no ``client=`` argument). Mirrors :func:`_run_crawl`
+    that has a token, then hands both the registry AND the GitHub client to
+    ``GitHubCrawler`` — github.com seeds use the model-building legacy
+    path while every other host uses the adapter path. Mirrors :func:`_run_crawl`
     in terms of job-record bookkeeping + per-round snapshotting.
     """
     record = _jobs[job_id]
@@ -564,7 +572,7 @@ def _run_crawl_v2(
         from ..crawler import GitHubCrawler
 
         try:
-            registry = _build_registry_from_env()
+            registry, github_client = _build_registry_from_env()
         except Exception as exc:
             record.status = JobStatus.FAILED
             record.detail = f"Failed to build platform registry: {exc}"
@@ -582,6 +590,7 @@ def _run_crawl_v2(
             return
 
         crawler = GitHubCrawler(
+            client=github_client,
             registry=registry,
             max_rounds=max_rounds,
             state_file=_state_path(job_id),
