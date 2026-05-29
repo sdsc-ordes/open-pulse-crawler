@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-05-29
+
+Multi-platform crawler — major release. Single PR ships the full
+GitLab + Zenodo + Infoscience + DataCite + HuggingFace stack on top of
+the v2 GitHub crawler. URL-keyed nodes, host-keyed dispatch, anonymous-
+friendly adapters, and the shared DataCite RelationType vocabulary
+across every platform.
+
 ### Added
 - GitLab support across multiple instances: `gitlab.com`, `gitlab.epfl.ch`, `gitlab.ethz.ch`, `renkulab.io`.
 - `PlatformAdapter` abstraction + `PlatformRegistry` for host-keyed dispatch.
