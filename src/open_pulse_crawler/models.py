@@ -436,6 +436,90 @@ class InfoscienceItem(RepoModel):
     isbn: str = ""
 
 
+# --- DataCite subclasses ----------------------------------------------------
+#
+# DataCite is a global DOI registration agency. Its Commons portal exposes
+# Works (DOI metadata), Organizations (ROR-identified institutions), Persons
+# (ORCID-identified researchers), and Clients (registered data repositories).
+# Social graph fields inherited from the base models stay empty — DataCite
+# has no follower / star / fork concept.
+
+
+class DataCitePerson(UserModel):
+    """A person identified by ORCID. Bare anchor — name populated
+    opportunistically from creator entries seen in DataCiteWork fetches.
+    NOT enriched via pub.orcid.org.
+
+    Cross-platform identity resolution stays downstream — a `DataCitePerson`
+    is purely a DataCite-vocabulary anchor, distinct from
+    `InfosciencePerson` / `ZenodoUser` that may carry the same ORCID.
+    """
+    subkind: Literal["DataCitePerson"] = "DataCitePerson"
+    orcid: str
+    orcid_url: str
+
+
+class DataCiteOrganization(OrgModel):
+    """An organization identified by ROR. Bare anchor — name populated
+    opportunistically from creator affiliation entries seen in DataCiteWork
+    fetches. NOT enriched via api.ror.org.
+    """
+    subkind: Literal["DataCiteOrganization"] = "DataCiteOrganization"
+    ror_id: str
+    ror_url: str
+
+
+class DataCiteClient(OrgModel):
+    """A DataCite-registered repository (cern.zenodo, figshare.ars, dryad.dryad…).
+    Passive node — ``expand`` emits no edges. Populated when DataCiteWork
+    nodes carry ``published_by`` edges pointing at this client.
+
+    Enriched from ``/clients/<id>`` on the round it's fetched: repo type,
+    owned domains (cross-host routing hints for downstream tooling), and
+    re3data registry cross-reference.
+    """
+    subkind: Literal["DataCiteClient"] = "DataCiteClient"
+    client_id: str
+    repository_name: str = ""
+    alternate_name: str = ""
+    client_type: str = ""
+    repository_type: List[str] = Field(default_factory=list)
+    description: str = ""
+    repository_url: str = ""
+    domains: List[str] = Field(default_factory=list)
+    re3data_doi: str = ""
+    year_registered: Optional[int] = None
+    is_active: bool = True
+    doi_prefixes: List[str] = Field(default_factory=list)
+
+
+class DataCiteWork(RepoModel):
+    """A DOI registered with DataCite. Cross-repository node —
+    could be a Figshare dataset, Dryad submission, ETH WSL dataset, etc.
+
+    `DataCiteWork` is intentionally NEVER produced for DOIs whose prefix
+    matches `_DOI_PREFIX_REWRITERS` in `platforms/datacite.py` —
+    those URLs are rewritten before classify, so a sibling adapter
+    (Zenodo today) handles them.
+    """
+    subkind: Literal["DataCiteWork"] = "DataCiteWork"
+    doi: str
+    resource_type: str = ""
+    resource_type_detail: str = ""
+    title: str = ""
+    publication_year: Optional[int] = None
+    publisher: str = ""
+    client_id: Optional[str] = None
+    creators: List[Dict[str, Any]] = Field(default_factory=list)
+    affiliations: List[Dict[str, Any]] = Field(default_factory=list)
+    relations: List[Dict[str, Any]] = Field(default_factory=list)
+    subjects: List[str] = Field(default_factory=list)
+    abstract: str = ""
+    container_title: str = ""
+    language: str = ""
+    registered_url: Optional[str] = None
+
+
 # Schema version bumped when the graph contract changed. v2 added URL-keyed
 # nodes; v3 adds the ``subkind`` discriminator + ``extras`` /
 # ``external_identifiers`` slots so GitLab subclasses can coexist with the
@@ -444,19 +528,22 @@ GRAPH_SCHEMA_VERSION = 3
 
 
 # Discriminated unions on ``subkind`` let the same dict hold either the
-# GitHub concrete class or its GitLab / Zenodo / Infoscience counterpart.
-# Pydantic v2 picks the right class on deserialization by reading the
-# literal subkind tag.
+# GitHub concrete class or its GitLab / Zenodo / Infoscience / DataCite
+# counterpart. Pydantic v2 picks the right class on deserialization by
+# reading the literal subkind tag.
 UserNode = Annotated[
-    Union[UserModel, GitLabUserModel, ZenodoUserModel, InfosciencePerson],
+    Union[UserModel, GitLabUserModel, ZenodoUserModel, InfosciencePerson,
+          DataCitePerson],
     Field(discriminator="subkind"),
 ]
 OrgNode = Annotated[
-    Union[OrgModel, GitLabGroupModel, ZenodoCommunityModel, InfoscienceOrgUnit],
+    Union[OrgModel, GitLabGroupModel, ZenodoCommunityModel, InfoscienceOrgUnit,
+          DataCiteOrganization, DataCiteClient],
     Field(discriminator="subkind"),
 ]
 RepoNode = Annotated[
-    Union[RepoModel, GitLabProjectModel, ZenodoRecordModel, InfoscienceItem],
+    Union[RepoModel, GitLabProjectModel, ZenodoRecordModel, InfoscienceItem,
+          DataCiteWork],
     Field(discriminator="subkind"),
 ]
 

@@ -519,5 +519,126 @@ def test_infoscience_item_typed_relations_and_affiliations():
     assert item.relations[0]["qualifier"] == "isversionof"
 
 
+# --- DataCite subkinds (Spec 4) ------------------------------------
+from open_pulse_crawler.models import (
+    DataCiteWork, DataCiteOrganization, DataCitePerson, DataCiteClient,
+)
+
+
+def test_datacite_work_subkind_and_fields():
+    work = DataCiteWork(
+        url="https://doi.org/10.6084/m9.figshare.99",
+        full_name="10.6084/m9.figshare.99",
+        platform="datacite",
+        doi="10.6084/m9.figshare.99",
+        resource_type="Dataset",
+        resource_type_detail="Tabular dataset",
+        title="My dataset",
+        publication_year=2024,
+        publisher="figshare",
+        client_id="figshare.ars",
+        creators=[
+            {"name": "Doe, J.", "orcid": "0000-0001-2345-6789",
+             "affiliations": [{"name": "EPFL", "ror": "02s376052", "scheme": "ROR"}]},
+        ],
+        affiliations=[{"name": "EPFL", "ror": "02s376052", "scheme": "ROR"}],
+        relations=[{"relation_type": "IsSupplementTo", "target_type": "URL",
+                    "target": "https://github.com/foo/bar"}],
+        subjects=["genomics", "open data"],
+        abstract="A short description.",
+        container_title="Nature",
+        language="en",
+        registered_url="https://figshare.com/articles/dataset/My_dataset/99",
+    )
+    assert work.subkind == "DataCiteWork"
+    assert work.doi == "10.6084/m9.figshare.99"
+    assert work.publication_year == 2024
+    assert work.client_id == "figshare.ars"
+    assert work.is_fork is False  # inherited; no DataCite fork concept
+    assert work.dependents == []
+
+
+def test_datacite_organization_subkind_and_fields():
+    org = DataCiteOrganization(
+        url="https://ror.org/02s376052",
+        login="02s376052",
+        platform="datacite",
+        ror_id="02s376052",
+        ror_url="https://ror.org/02s376052",
+    )
+    assert org.subkind == "DataCiteOrganization"
+    assert org.ror_id == "02s376052"
+    assert org.members == []  # bare anchor — never populated
+
+
+def test_datacite_person_subkind_and_fields():
+    person = DataCitePerson(
+        url="https://orcid.org/0000-0002-1825-0097",
+        login="0000-0002-1825-0097",
+        platform="datacite",
+        orcid="0000-0002-1825-0097",
+        orcid_url="https://orcid.org/0000-0002-1825-0097",
+    )
+    assert person.subkind == "DataCitePerson"
+    assert person.orcid == "0000-0002-1825-0097"
+    assert person.followers == []  # bare anchor — DataCite has no social graph
+
+
+def test_datacite_client_subkind_and_fields():
+    client = DataCiteClient(
+        url="https://commons.datacite.org/repositories/cern.zenodo",
+        login="cern.zenodo",
+        platform="datacite",
+        client_id="cern.zenodo",
+        repository_name="Zenodo",
+        alternate_name="Research. Shared",
+        client_type="repository",
+        repository_type=["disciplinary"],
+        description="ZENODO builds and operates a simple and innovative service…",
+        repository_url="https://zenodo.org/",
+        domains=["openaire.cern.ch", "zenodo.org"],
+        re3data_doi="https://doi.org/10.17616/R3QP53",
+        year_registered=2013,
+        is_active=True,
+        doi_prefixes=["10.5281", "10.5072"],
+    )
+    assert client.subkind == "DataCiteClient"
+    assert client.client_id == "cern.zenodo"
+    assert "zenodo.org" in client.domains
+    assert client.is_active is True
+
+
+def test_graphdata_accepts_datacite_subclasses_in_existing_dicts():
+    from open_pulse_crawler.models import GraphData
+    g = GraphData()
+    g.users["https://orcid.org/0000-0002-1825-0097"] = DataCitePerson(
+        url="https://orcid.org/0000-0002-1825-0097",
+        login="0000-0002-1825-0097", platform="datacite",
+        orcid="0000-0002-1825-0097",
+        orcid_url="https://orcid.org/0000-0002-1825-0097",
+    )
+    g.orgs["https://ror.org/02s376052"] = DataCiteOrganization(
+        url="https://ror.org/02s376052",
+        login="02s376052", platform="datacite",
+        ror_id="02s376052",
+        ror_url="https://ror.org/02s376052",
+    )
+    g.orgs["https://commons.datacite.org/repositories/cern.zenodo"] = DataCiteClient(
+        url="https://commons.datacite.org/repositories/cern.zenodo",
+        login="cern.zenodo", platform="datacite",
+        client_id="cern.zenodo",
+    )
+    g.repos["https://doi.org/10.6084/m9.figshare.99"] = DataCiteWork(
+        url="https://doi.org/10.6084/m9.figshare.99",
+        full_name="10.6084/m9.figshare.99", platform="datacite",
+        doi="10.6084/m9.figshare.99",
+    )
+    restored = GraphData.model_validate_json(g.model_dump_json())
+    assert isinstance(restored.users["https://orcid.org/0000-0002-1825-0097"], DataCitePerson)
+    assert isinstance(restored.orgs["https://ror.org/02s376052"], DataCiteOrganization)
+    assert isinstance(restored.orgs["https://commons.datacite.org/repositories/cern.zenodo"], DataCiteClient)
+    assert isinstance(restored.repos["https://doi.org/10.6084/m9.figshare.99"], DataCiteWork)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
