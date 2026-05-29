@@ -47,6 +47,11 @@ manual-test recipes).
   and DataCite-registered repositories. Anonymous reads supported.
   Routes Zenodo DOIs back to the Zenodo adapter via DOI prefix table.
   See [docs/DATACITE.md](docs/DATACITE.md).
+- **HuggingFace** (`huggingface.co`): models, datasets, spaces, papers,
+  users, organizations, and collections. Papers carry `linkedModels` /
+  `linkedDatasets` / `linkedSpaces` + `githubRepo` + arxiv ID — the
+  strongest cross-platform pivot in the graph. Anonymous reads
+  supported. See [docs/HUGGINGFACE.md](docs/HUGGINGFACE.md).
 
 ### Enabling platforms
 

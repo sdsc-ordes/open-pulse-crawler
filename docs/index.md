@@ -62,6 +62,9 @@ flowchart LR
   with CRIS-backed researcher + departmental hierarchy.
 - [DataCite Commons support](DATACITE.md) — DOI / ROR / ORCID graph
   with the shared DataCite RelationType vocabulary.
+- [HuggingFace support](HUGGINGFACE.md) — models / datasets / spaces /
+  papers / collections, with the strongest cross-platform paper bridge
+  (arxiv + github + linked HF repos).
 - [Deployment](DEPLOYMENT.md) — Docker Compose stack (API + GUI + Nginx), env vars,
   single-container builds, and the gimie-enrichment knobs.
 - [Concurrency & rate limiting](CONCURRENCY.md) — multi-token rotation, semaphores,

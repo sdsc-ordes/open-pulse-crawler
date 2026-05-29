@@ -153,6 +153,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `tools/scripts/fetch_public_projects.py` extension for DataCite —
   no natural "browse all DOIs" use case yet.
 
+### Added (v3.4 — HuggingFace adapter)
+- `HuggingFaceAdapter` and `HuggingFaceHTTPClient` under
+  `src/open_pulse_crawler/platforms/huggingface/`. Crawls HuggingFace —
+  users, organizations, models, datasets, spaces, papers, and collections.
+- Five subkind models: `HuggingFaceUser`, `HuggingFaceOrg`,
+  `HuggingFaceRepo` (models/datasets/spaces unified via `repo_type:
+  Literal["model","dataset","space"]`), `HuggingFacePaper`,
+  `HuggingFaceCollection`.
+- Twelve new edge kinds: `owns`, `member_of`, `owned_by`, `uses_model`,
+  `related_to.IsIdenticalTo` (paper → arxiv), `related_to.IsSupplementedBy`
+  (paper → github), `references_model`, `references_dataset`,
+  `references_space`, `contains`.
+- Cross-platform paper bridge: a HuggingFace paper's arxiv ID emits the
+  same canonical `arxiv.org/abs/<id>` URL that Zenodo, Infoscience, and
+  DataCite records produce when they reference the same paper. The
+  shared `synthesize_target_url` helper handles the URL synthesis with
+  no HF-specific routing code.
+- USER_OR_ORG disambiguation pattern (matches GitHub): `huggingface.co/<name>`
+  classifies as `USER_OR_ORG`; `fetch` probes `/api/users/<name>/overview`
+  first and falls through to `/api/organizations/<name>/overview` on 404.
+- Reserved first-segment words (`datasets`, `spaces`, `papers`,
+  `collections`, plus HF top-level routes `blog`, `docs`, `tasks`,
+  `learn`, `pricing`, `enterprise`, `inference-endpoints`) are
+  recognized by `classify` and `normalize_uri` to prevent the
+  bare-`<owner>/<name>` model regex from misclaiming them.
+- HTTP 429 retry-after handling in `HuggingFaceHTTPClient` (one
+  automatic retry honoring `Retry-After`, capped at 60s).
+- Link-header cursor pagination on list endpoints
+  (`/api/models?author=<x>`, `/api/datasets?author=<x>`, `/api/spaces?author=<x>`).
+- CLI registers `HuggingFaceAdapter` against `huggingface.co`
+  (anonymous-friendly; tokens optional).
+- `POST /api/v2/crawl` OpenAPI examples: `huggingface_paper_llama2`,
+  `huggingface_model_llama`, `huggingface_user_karpathy`.
+- Integration test against live `huggingface.co`
+  (`tests/integration/test_huggingface_dryrun.py`) — verifies the
+  cross-platform paper bridge end-to-end with the Llama 2 paper seed.
+- `docs/HUGGINGFACE.md`.
+
+### Out of scope (v3.4)
+- `has_member` (Org → User) edges — auth-gated endpoint, same as
+  Infoscience.
+- Paper authors → ORCID linkage — paper authors are bare `{name}`
+  strings without ORCID. Cross-platform identity stays downstream.
+- Model/dataset card README parsing (`cardData.tags` arxiv extraction).
+- Discussion / community / dataset-viewer / model-leaderboard data.
+- Legacy arxiv IDs (`papers/cond-mat/0303517` form).
+- `tools/scripts/fetch_public_projects.py` extension for HF — no
+  natural "browse all HF entities" use case.
+
 ## [2.0.0] — 2026-05-27
 
 **Breaking release.** Headlines:
