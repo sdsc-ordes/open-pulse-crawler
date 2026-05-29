@@ -287,8 +287,8 @@ class InfoscienceAdapter(PlatformAdapter):
         elif isinstance(node, InfoscienceOrgUnit):
             yield from self._expand_orgunit(node, opts)
 
-    def _person_url_from_uuid(self, uuid: str) -> str:
-        """Resolve a Person UUID to its canonical handle URL when known,
+    def _entity_url_from_uuid(self, uuid: str) -> str:
+        """Resolve an entity UUID to its canonical handle URL when known,
         else return the UUID-form URL (the BFS will canonicalize on the
         round-trip fetch)."""
         handle = self._uuid_to_handle.get(uuid)
@@ -305,7 +305,7 @@ class InfoscienceAdapter(PlatformAdapter):
             yield Edge(
                 src=node.url,
                 kind="authored_by",
-                dst=self._person_url_from_uuid(authority),
+                dst=self._entity_url_from_uuid(authority),
             )
 
         # affiliated_with — from typed affiliations field
@@ -316,7 +316,7 @@ class InfoscienceAdapter(PlatformAdapter):
             yield Edge(
                 src=node.url,
                 kind="affiliated_with",
-                dst=self._person_url_from_uuid(authority),
+                dst=self._entity_url_from_uuid(authority),
             )
 
         # related_to.<RelationType> via DataCite synthesizer
@@ -353,7 +353,7 @@ class InfoscienceAdapter(PlatformAdapter):
             yield Edge(
                 src=node.url,
                 kind="member_of",
-                dst=self._person_url_from_uuid(node.affiliation_uuid),
+                dst=self._entity_url_from_uuid(node.affiliation_uuid),
             )
 
     def _expand_orgunit(self, node: InfoscienceOrgUnit, opts: ExpandOpts) -> Iterable[Edge]:
@@ -369,13 +369,7 @@ class InfoscienceAdapter(PlatformAdapter):
             )
 
         # parent_of — child OrgUnits (parent → child direction)
-        children = self._client._iter_paginated(
-            "/server/api/discover/search/objects",
-            {"dsoType": "item",
-             "query": f"dspace.entity.type:OrgUnit AND organization.parentOrganization.authority:{node.uuid}",
-             "size": 100},
-        )
-        for child in children:
+        for child in self._client.iter_child_orgunits(node.uuid):
             handle = child.get("handle")
             if not handle:
                 continue

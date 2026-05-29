@@ -282,10 +282,9 @@ def test_expand_orgunit_emits_has_publication_and_parent_of(adapter):
     adapter._client.iter_orgunit_items.return_value = iter([
         {"uuid": "i1", "handle": "20.500.14299/1"},
     ])
-    # No children: filter for entity_type:OrgUnit + parent.authority = us
-    adapter._client._iter_paginated = MagicMock(return_value=iter([
+    adapter._client.iter_child_orgunits.return_value = iter([
         {"uuid": "child-uuid", "handle": "20.500.14299/2"},
-    ]))
+    ])
     ou = InfoscienceOrgUnit(
         url="https://infoscience.epfl.ch/handle/20.500.14299/77777",
         login="TRANSP-OR", platform="infoscience",
@@ -303,9 +302,9 @@ def test_expand_orgunit_never_emits_has_member(adapter):
     adapter._client.iter_orgunit_items.return_value = iter([
         {"uuid": "i1", "handle": "20.500.14299/1"},
     ])
-    adapter._client._iter_paginated = MagicMock(return_value=iter([
+    adapter._client.iter_child_orgunits.return_value = iter([
         {"uuid": "child-uuid", "handle": "20.500.14299/2"},
-    ]))
+    ])
     ou = InfoscienceOrgUnit(
         url="https://infoscience.epfl.ch/handle/20.500.14299/77777",
         login="TRANSP-OR", platform="infoscience",
@@ -314,3 +313,11 @@ def test_expand_orgunit_never_emits_has_member(adapter):
     edges = list(adapter.expand(ou, ExpandOpts()))
     has_member = [e for e in edges if e.kind == "has_member"]
     assert has_member == []
+
+
+def test_expand_item_unknown_relation_qualifier_preserves_raw(adapter):
+    item = _stub_item(adapter, relations=[
+        {"qualifier": "foobar", "value": "https://example.com/x"},
+    ])
+    edges = [e for e in adapter.expand(item, ExpandOpts()) if e.kind.startswith("related_to.")]
+    assert edges and edges[0].kind == "related_to.foobar"

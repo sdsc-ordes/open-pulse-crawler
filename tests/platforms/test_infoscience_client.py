@@ -170,3 +170,18 @@ def test_iter_orgunit_items_query():
         params={"dsoType": "item", "query": "author.parent-organization.authority:orgunit-uuid", "size": 100},
     )
 
+
+def test_iter_child_orgunits_query():
+    c = InfoscienceClient(host="infoscience.epfl.ch", tokens=[])
+    body = {"_embedded": {"searchResult": {"_embedded": {"objects": []}, "_links": {}}}}
+    with patch.object(c._session, "get", return_value=_make_response(200, body)) as g:
+        list(c.iter_child_orgunits("orgunit-uuid"))
+    g.assert_called_once_with(
+        "/server/api/discover/search/objects",
+        params={
+            "dsoType": "item",
+            "query": "dspace.entity.type:OrgUnit AND organization.parentOrganization.authority:orgunit-uuid",
+            "size": 100,
+        },
+    )
+

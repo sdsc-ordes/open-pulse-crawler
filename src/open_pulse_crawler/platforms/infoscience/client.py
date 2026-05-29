@@ -195,3 +195,12 @@ class InfoscienceClient:
              "size": DEFAULT_PAGE_SIZE},
         )
 
+    def iter_child_orgunits(self, orgunit_uuid: str) -> Iterable[Dict[str, Any]]:
+        """OrgUnit entities whose parentOrganization authority is the given UUID."""
+        return self._iter_paginated(
+            "/server/api/discover/search/objects",
+            {"dsoType": "item",
+             "query": f"dspace.entity.type:OrgUnit AND organization.parentOrganization.authority:{orgunit_uuid}",
+             "size": DEFAULT_PAGE_SIZE},
+        )
+
