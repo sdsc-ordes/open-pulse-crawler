@@ -273,6 +273,44 @@ _CRAWL_V2_REQUEST_EXAMPLES = {
             "max_rounds": 2,
         },
     },
+    "datacite_work_by_doi": {
+        "summary": "DataCite work via doi.org URL (non-Zenodo prefix)",
+        "description": (
+            "Fetches a Figshare or Dryad DOI. Round 1 walks `authored_by` "
+            "(per creator ORCID), `affiliated_with` (per creator ROR), "
+            "`published_by` (DataCite client), and `related_to.<RelationType>` "
+            "edges from the work's `relatedIdentifiers`."
+        ),
+        "value": {
+            "seeds": ["https://doi.org/10.6084/m9.figshare.99"],
+            "max_rounds": 2,
+        },
+    },
+    "datacite_org_by_ror_epfl": {
+        "summary": "All DataCite works affiliated with EPFL (via ROR)",
+        "description": (
+            "Seed EPFL's ROR; round 1 emits `has_publication` edges to every "
+            "DOI in DataCite tagged with `https://ror.org/02s376052` as a "
+            "creator affiliation. Note: only the subset of EPFL output deposited "
+            "in external DataCite repositories — Infoscience's own publications "
+            "are not necessarily ROR-tagged."
+        ),
+        "value": {
+            "seeds": ["https://ror.org/02s376052"],
+            "max_rounds": 2,
+        },
+    },
+    "datacite_person_by_orcid": {
+        "summary": "All DataCite works for a researcher (by ORCID)",
+        "description": (
+            "Seed an ORCID; round 1 emits `authored` edges to every DOI in "
+            "DataCite whose `creators[].nameIdentifiers[]` includes this ORCID."
+        ),
+        "value": {
+            "seeds": ["https://orcid.org/0000-0002-1825-0097"],
+            "max_rounds": 2,
+        },
+    },
 }
 
 

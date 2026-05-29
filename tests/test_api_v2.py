@@ -94,3 +94,16 @@ def test_v2_crawl_openapi_examples_include_infoscience():
     examples = body.get("examples", {})
     assert "infoscience_publication_handle" in examples
     assert "infoscience_person_authored_chain" in examples
+
+
+def test_v2_crawl_openapi_examples_include_datacite():
+    from fastapi.testclient import TestClient
+    from open_pulse_crawler.api import app
+    client = TestClient(app)
+    spec = client.get("/api/v1/openapi.json").json()
+    crawl_path = spec["paths"]["/api/v2/crawl"]
+    body = crawl_path["post"]["requestBody"]["content"]["application/json"]
+    examples = body.get("examples", {})
+    assert "datacite_work_by_doi" in examples
+    assert "datacite_org_by_ror_epfl" in examples
+    assert "datacite_person_by_orcid" in examples
