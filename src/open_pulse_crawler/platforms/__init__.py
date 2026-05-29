@@ -27,6 +27,26 @@ class PlatformRegistry:
             raise ValueError(f"adapter already registered for host {host!r}")
         self._adapters[host] = adapter
 
+    def register_hosts(self, hosts: list[str], adapter: PlatformAdapter) -> None:
+        """Register the same adapter instance under multiple hosts.
+
+        Used when one adapter owns several URL hosts (e.g., DataCite owns
+        doi.org / ror.org / orcid.org / api.datacite.org / commons.datacite.org).
+        Raises ``ValueError`` on any conflict; partial registrations from
+        this call are rolled back so the registry's state is unchanged on
+        failure.
+        """
+        lowered = [h.lower() for h in hosts]
+        conflicts = [h for h in lowered if h in self._adapters]
+        if conflicts:
+            raise ValueError(
+                f"adapter already registered for host(s): {conflicts!r}"
+            )
+        # All-or-nothing: assign in one pass; there's nothing to roll back
+        # because we checked upfront.
+        for h in lowered:
+            self._adapters[h] = adapter
+
     def adapter_for(self, uri: str) -> PlatformAdapter:
         """Return the adapter responsible for `uri`'s host."""
         host = urlparse(uri).netloc.lower()

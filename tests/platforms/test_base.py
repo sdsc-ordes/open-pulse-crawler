@@ -119,3 +119,35 @@ def test_registry_rejects_duplicate_host_registration():
     r.register(FA("example.com"))
     with pytest.raises(ValueError, match="already registered"):
         r.register(FA("EXAMPLE.COM"))  # case-insensitive — same host
+
+
+def test_register_hosts_registers_under_multiple_hosts():
+    """The same adapter instance can own multiple URL hosts."""
+    from open_pulse_crawler.platforms import PlatformRegistry
+    from tests.platforms._fake_adapter import FakePlatformAdapter
+
+    reg = PlatformRegistry()
+    adapter = FakePlatformAdapter(instance_host="api.example.org")
+    reg.register_hosts(["a.example.com", "b.example.com"], adapter)
+    assert reg.adapter_for("https://a.example.com/x") is adapter
+    assert reg.adapter_for("https://b.example.com/y") is adapter
+    # The adapter's own instance_host is NOT auto-registered by register_hosts;
+    # callers list it explicitly if needed.
+
+
+def test_register_hosts_raises_on_conflict_and_rolls_back():
+    """If any host in the list is already registered, raise and undo
+    any partial registrations from this call."""
+    from open_pulse_crawler.platforms import PlatformRegistry
+    from tests.platforms._fake_adapter import FakePlatformAdapter
+
+    reg = PlatformRegistry()
+    a = FakePlatformAdapter(instance_host="a.example.com")
+    reg.register(a)
+    b = FakePlatformAdapter(instance_host="other.example.com")
+    with pytest.raises(ValueError, match="already registered"):
+        reg.register_hosts(["c.example.com", "a.example.com"], b)
+    # Partial rollback: c.example.com should NOT be registered after the failure.
+    assert "c.example.com" not in reg.hosts()
+    # And the pre-existing a.example.com still points at its original adapter.
+    assert reg.adapter_for("https://a.example.com/x") is a
