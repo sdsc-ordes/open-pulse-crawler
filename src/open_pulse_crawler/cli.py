@@ -89,6 +89,20 @@ def _token_host_for(host: str) -> str:
     return host
 
 
+def _auth_required(host: str) -> bool:
+    """True iff the host's adapter cannot operate without tokens.
+
+    GitHub's anonymous rate limit (60 req/hour) is too low to be useful for
+    crawling, so ``_build_registry`` skips it entirely without tokens.
+
+    Every other platform registers anonymously: GitLab serves public
+    projects/users/groups, Zenodo/Infoscience/DataCite expose public APIs.
+    ``doctor`` uses this to render the right status label
+    (OK / ANONYMOUS / MISSING).
+    """
+    return host == "github.com"
+
+
 def _parse_platforms_csv(value: Optional[str]) -> List[str]:
     """Parse a comma-separated ``--platforms`` value into a host list.
 
@@ -755,7 +769,18 @@ def doctor(
 
     Reads ``CRAWLER_PLATFORMS`` plus ``CRAWLER_TOKEN__<HOST>`` /
     ``CRAWLER_TOKEN_POOL__<HOST>`` (and the legacy ``GITHUB_TOKEN``
-    family for ``github.com``) and prints an OK / MISSING summary per host.
+    family for ``github.com``) and prints an OK / ANONYMOUS / MISSING
+    summary per host.
+
+    Three states:
+
+    * **OK** — at least one token configured. Crawling uses authenticated
+      requests with the full rate limit.
+    * **ANONYMOUS** — no token configured but the adapter can still operate
+      against public endpoints. Applies to GitLab, Zenodo, Infoscience,
+      DataCite. Crawling works; rate limits are tighter.
+    * **MISSING** — no token AND the adapter requires one (github.com only,
+      whose anonymous limit is too low to be useful).
 
     # TODO(post-task-18): wire a real token-health check that does
     # GET /user (GitHub) or /user (GitLab) per host.
@@ -763,7 +788,16 @@ def doctor(
     rows = []
     for host in enabled_instances():
         tokens = resolve_tokens(_token_host_for(host))
-        rows.append({"host": host, "tokens": len(tokens), "ok": bool(tokens)})
+        n = len(tokens)
+        auth_required = _auth_required(host)
+        rows.append({
+            "host": host,
+            "tokens": n,
+            "auth_required": auth_required,
+            # `ok` stays True whenever the adapter can crawl — either
+            # authenticated (n > 0) or anonymous (not auth_required).
+            "ok": n > 0 or not auth_required,
+        })
 
     if as_json:
         typer.echo(json.dumps(rows, indent=2))
@@ -771,8 +805,12 @@ def doctor(
 
     console.print("Enabled platforms:")
     for r in rows:
-        status = "OK" if r["ok"] else "MISSING"
-        colour = "green" if r["ok"] else "red"
+        if r["tokens"] > 0:
+            status, colour = "OK", "green"
+        elif not r["auth_required"]:
+            status, colour = "ANONYMOUS", "yellow"
+        else:
+            status, colour = "MISSING", "red"
         suffix = "" if r["tokens"] == 1 else "s"
         console.print(
             f"  {r['host']}: {r['tokens']} token{suffix} "

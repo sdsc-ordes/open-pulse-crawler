@@ -50,14 +50,17 @@ def test_doctor_lists_hosts(monkeypatch):
     _clear_token_env(monkeypatch)
     monkeypatch.setenv("CRAWLER_PLATFORMS", "github.com,gitlab.epfl.ch")
     monkeypatch.setenv("CRAWLER_TOKEN__GITHUB_COM", "tok")
-    # gitlab.epfl.ch deliberately has no tokens — should show MISSING.
+    # gitlab.epfl.ch deliberately has no tokens — should show ANONYMOUS
+    # (GitLab's anonymous mode reads public projects without auth, so it's
+    # functional without a token — unlike github.com whose 60/hour
+    # anonymous limit makes it effectively unusable).
 
     r = runner.invoke(app, ["doctor"])
     assert r.exit_code == 0, r.output
     assert "github.com" in r.output
     assert "gitlab.epfl.ch" in r.output
     assert "OK" in r.output
-    assert "MISSING" in r.output
+    assert "ANONYMOUS" in r.output
 
 
 def test_doctor_json_output(monkeypatch):
@@ -83,15 +86,34 @@ def test_doctor_default_to_github_only(monkeypatch):
     assert "github.com" in r.output
 
 
-def test_doctor_json_marks_missing_tokens(monkeypatch):
-    """A host with no tokens must serialize with ``ok=False, tokens=0``."""
+def test_doctor_json_marks_github_missing_when_no_token(monkeypatch):
+    """github.com is the only host that strictly requires a token —
+    its anonymous rate limit (60/hour) is too low to be useful for crawling.
+    With no token, doctor must report `ok=False, auth_required=True`."""
+    _clear_token_env(monkeypatch)
+    monkeypatch.setenv("CRAWLER_PLATFORMS", "github.com")
+
+    r = runner.invoke(app, ["doctor", "--json"])
+    assert r.exit_code == 0, r.output
+    payload = json.loads(r.output)
+    assert payload == [
+        {"host": "github.com", "tokens": 0, "auth_required": True, "ok": False},
+    ]
+
+
+def test_doctor_json_marks_gitlab_anonymous_when_no_token(monkeypatch):
+    """GitLab without tokens registers in anonymous mode (public projects /
+    users / groups remain readable). doctor must report `ok=True,
+    auth_required=False` so users don't see a misleading "MISSING" status."""
     _clear_token_env(monkeypatch)
     monkeypatch.setenv("CRAWLER_PLATFORMS", "gitlab.epfl.ch")
 
     r = runner.invoke(app, ["doctor", "--json"])
     assert r.exit_code == 0, r.output
     payload = json.loads(r.output)
-    assert payload == [{"host": "gitlab.epfl.ch", "tokens": 0, "ok": False}]
+    assert payload == [
+        {"host": "gitlab.epfl.ch", "tokens": 0, "auth_required": False, "ok": True},
+    ]
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -314,8 +336,11 @@ def test_doctor_resolves_datacite_token_via_api_host(monkeypatch):
     assert datacite_row["ok"] is True
 
 
-def test_doctor_datacite_without_token_reports_missing(monkeypatch):
-    """Without `CRAWLER_TOKEN__API_DATACITE_ORG`, doctor reports MISSING."""
+def test_doctor_datacite_without_token_reports_anonymous(monkeypatch):
+    """Without `CRAWLER_TOKEN__API_DATACITE_ORG`, doctor reports ANONYMOUS
+    (not MISSING): DataCite's public reads work without auth. `ok=True`
+    because the adapter can crawl; `auth_required=False` because no
+    token is strictly needed."""
     _clear_token_env(monkeypatch)
     monkeypatch.setenv("CRAWLER_PLATFORMS", "datacite.org")
     monkeypatch.delenv("CRAWLER_TOKEN__API_DATACITE_ORG", raising=False)
@@ -326,4 +351,34 @@ def test_doctor_datacite_without_token_reports_missing(monkeypatch):
     datacite_row = next((p for p in payload if p["host"] == "datacite.org"), None)
     assert datacite_row is not None
     assert datacite_row["tokens"] == 0
-    assert datacite_row["ok"] is False
+    assert datacite_row["auth_required"] is False
+    assert datacite_row["ok"] is True
+
+
+def test_doctor_text_output_renders_three_states(monkeypatch):
+    """Smoke-test the rich-text output picks OK/ANONYMOUS/MISSING correctly."""
+    _clear_token_env(monkeypatch)
+    monkeypatch.setenv(
+        "CRAWLER_PLATFORMS",
+        "github.com,gitlab.epfl.ch,datacite.org",
+    )
+    # github.com gets a token → OK
+    monkeypatch.setenv("CRAWLER_TOKEN__GITHUB_COM", "ghp_test")
+    # gitlab.epfl.ch + datacite.org get no token → ANONYMOUS
+    r = runner.invoke(app, ["doctor"])
+    assert r.exit_code == 0, r.output
+    assert "github.com" in r.output and "OK" in r.output
+    assert "ANONYMOUS" in r.output
+    # MISSING should NOT appear in this configuration (only github has a token,
+    # but it's set, so no host triggers MISSING).
+    assert "MISSING" not in r.output
+
+
+def test_doctor_text_output_renders_missing_for_github_without_token(monkeypatch):
+    """Sanity: github.com without tokens shows MISSING (it's the only
+    auth-required platform). Symmetrical with the previous test."""
+    _clear_token_env(monkeypatch)
+    monkeypatch.setenv("CRAWLER_PLATFORMS", "github.com")
+    r = runner.invoke(app, ["doctor"])
+    assert r.exit_code == 0, r.output
+    assert "MISSING" in r.output
