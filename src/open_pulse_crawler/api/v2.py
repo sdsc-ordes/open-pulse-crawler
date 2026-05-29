@@ -311,6 +311,46 @@ _CRAWL_V2_REQUEST_EXAMPLES = {
             "max_rounds": 2,
         },
     },
+    "huggingface_paper_llama2": {
+        "summary": "Cross-platform paper bridge (HF paper → arxiv + github + linked repos)",
+        "description": (
+            "Seed an HF paper. Round 1 emits cross-platform "
+            "`related_to.IsIdenticalTo` (arxiv.org URL), "
+            "`related_to.IsSupplementedBy` (github.com URL), plus typed "
+            "`references_model` / `references_dataset` / `references_space` "
+            "edges into the HF graph. Pair with `huggingface.co,github.com` "
+            "to follow the GitHub edge into the source repository."
+        ),
+        "value": {
+            "seeds": ["https://huggingface.co/papers/2307.09288"],
+            "max_rounds": 2,
+        },
+    },
+    "huggingface_model_llama": {
+        "summary": "Single HF model (with owner fan-out in round 2)",
+        "description": (
+            "Seed a model. Round 1 emits `owned_by` → the owner "
+            "(user or org — fetch disambiguates). Round 2 walks the "
+            "owner's `owns` edges to every model / dataset / space they "
+            "publish on HuggingFace."
+        ),
+        "value": {
+            "seeds": ["https://huggingface.co/meta-llama/Llama-3.2-1B"],
+            "max_rounds": 2,
+        },
+    },
+    "huggingface_user_karpathy": {
+        "summary": "Seed a HuggingFace user → walk their models/datasets/spaces + orgs",
+        "description": (
+            "Round 0 fetches the User (`/api/users/<name>/overview`). "
+            "Round 1 walks `owns` edges to every model / dataset / space "
+            "authored by them, plus `member_of` to each org they belong to."
+        ),
+        "value": {
+            "seeds": ["https://huggingface.co/karpathy"],
+            "max_rounds": 2,
+        },
+    },
 }
 
 

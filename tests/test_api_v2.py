@@ -146,3 +146,16 @@ def test_v2_build_registry_from_env_includes_zenodo_and_infoscience(monkeypatch)
         registry.adapter_for("https://infoscience.epfl.ch/handle/20.500.14299/1"),
         InfoscienceAdapter,
     )
+
+
+def test_v2_crawl_openapi_examples_include_huggingface():
+    from fastapi.testclient import TestClient
+    from open_pulse_crawler.api import app
+    client = TestClient(app)
+    spec = client.get("/api/v1/openapi.json").json()
+    crawl_path = spec["paths"]["/api/v2/crawl"]
+    body = crawl_path["post"]["requestBody"]["content"]["application/json"]
+    examples = body.get("examples", {})
+    assert "huggingface_paper_llama2" in examples
+    assert "huggingface_model_llama" in examples
+    assert "huggingface_user_karpathy" in examples
