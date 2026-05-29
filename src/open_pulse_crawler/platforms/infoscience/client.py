@@ -129,8 +129,17 @@ class InfoscienceClient:
         return resp.json()
 
     def get_item_by_handle(self, handle: str) -> Optional[Dict[str, Any]]:
-        """Return the item JSON for the given handle, or ``None`` on 404."""
-        return self._request_json(f"/server/api/handle/{handle}")
+        """Return the item JSON for the given handle, or ``None`` on 404.
+
+        Uses the DSpace 7 ``/server/api/pid/find`` endpoint with the
+        ``hdl:`` prefix scheme, which is the standard resolver for Handle
+        System persistent identifiers in DSpace 7.x.  The legacy
+        ``/server/api/handle/{handle}`` path is not exposed by Infoscience.
+        """
+        return self._request_json(
+            "/server/api/pid/find",
+            params={"id": f"hdl:{handle}"},
+        )
 
     def get_item_by_uuid(self, uuid: str) -> Optional[Dict[str, Any]]:
         """Return the item JSON for the given UUID, or ``None`` on 404."""

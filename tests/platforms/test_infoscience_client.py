@@ -56,7 +56,7 @@ def test_get_item_by_handle_200_returns_dict():
     payload = {"uuid": "abc", "handle": "20.500.14299/182247", "entityType": "Publication"}
     with patch.object(c._session, "get", return_value=_make_response(200, payload)) as g:
         result = c.get_item_by_handle("20.500.14299/182247")
-    g.assert_called_once_with("/server/api/handle/20.500.14299/182247")
+    g.assert_called_once_with("/server/api/pid/find", params={"id": "hdl:20.500.14299/182247"})
     assert result == payload
 
 
