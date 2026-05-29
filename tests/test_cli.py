@@ -382,3 +382,44 @@ def test_doctor_text_output_renders_missing_for_github_without_token(monkeypatch
     r = runner.invoke(app, ["doctor"])
     assert r.exit_code == 0, r.output
     assert "MISSING" in r.output
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# HuggingFace adapter registration (Task 8)
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def test_build_registry_registers_huggingface_anonymous(monkeypatch):
+    from open_pulse_crawler.cli import _build_registry
+    from open_pulse_crawler.platforms.huggingface.adapter import HuggingFaceAdapter
+    monkeypatch.delenv("CRAWLER_TOKEN__HUGGINGFACE_CO", raising=False)
+    monkeypatch.delenv("CRAWLER_TOKEN_POOL__HUGGINGFACE_CO", raising=False)
+    registry, _gh, missing = _build_registry(["huggingface.co"])
+    assert "huggingface.co" in missing
+    a = registry.adapter_for("https://huggingface.co/karpathy")
+    assert isinstance(a, HuggingFaceAdapter)
+
+
+def test_build_registry_registers_huggingface_with_token(monkeypatch):
+    from open_pulse_crawler.cli import _build_registry
+    from open_pulse_crawler.platforms.huggingface.adapter import HuggingFaceAdapter
+    monkeypatch.setenv("CRAWLER_TOKEN__HUGGINGFACE_CO", "hf_test")
+    registry, _gh, missing = _build_registry(["huggingface.co"])
+    assert "huggingface.co" not in missing
+    a = registry.adapter_for("https://huggingface.co/karpathy")
+    assert isinstance(a, HuggingFaceAdapter)
+
+
+def test_doctor_huggingface_without_token_reports_anonymous(monkeypatch):
+    """HuggingFace is anonymous-friendly; doctor must show ANONYMOUS, not MISSING."""
+    _clear_token_env(monkeypatch)
+    monkeypatch.setenv("CRAWLER_PLATFORMS", "huggingface.co")
+    monkeypatch.delenv("CRAWLER_TOKEN__HUGGINGFACE_CO", raising=False)
+    r = runner.invoke(app, ["doctor", "--json"])
+    assert r.exit_code == 0, r.output
+    payload = json.loads(r.output)
+    row = next((p for p in payload if p["host"] == "huggingface.co"), None)
+    assert row is not None
+    assert row["tokens"] == 0
+    assert row["auth_required"] is False
+    assert row["ok"] is True

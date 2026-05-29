@@ -176,6 +176,14 @@ def _build_registry(
                     adapter,
                 )
                 continue
+            if host == "huggingface.co":
+                # Anonymous HuggingFace: public reads work for all entity
+                # endpoints. ``missing`` still surfaces the gap via doctor.
+                from .platforms.huggingface.client import HuggingFaceHTTPClient
+                from .platforms.huggingface.adapter import HuggingFaceAdapter
+                hf = HuggingFaceHTTPClient(host="huggingface.co", tokens=[])
+                reg.register(HuggingFaceAdapter(client=hf, instance_host="huggingface.co"))
+                continue
             # Anonymous mode for GitLab instances: public projects/users/groups
             # remain readable. `GitLabClient` handles `tokens=[]` by building
             # an unauthenticated `gitlab.Gitlab` instance.
@@ -211,6 +219,11 @@ def _build_registry(
                  "api.datacite.org", "commons.datacite.org"],
                 adapter,
             )
+        elif host == "huggingface.co":
+            from .platforms.huggingface.client import HuggingFaceHTTPClient
+            from .platforms.huggingface.adapter import HuggingFaceAdapter
+            hf = HuggingFaceHTTPClient(host="huggingface.co", tokens=tokens)
+            reg.register(HuggingFaceAdapter(client=hf, instance_host="huggingface.co"))
         else:
             gl_client = GitLabClient(host=host, tokens=tokens)
             reg.register(GitLabAdapter(gl_client, instance_host=host))
