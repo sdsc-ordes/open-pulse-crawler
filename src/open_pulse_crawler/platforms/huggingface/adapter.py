@@ -15,7 +15,6 @@ from ...models import (
 )
 from ...node_id import NodeKind, canonical_url
 from ..base import Edge, ExpandOpts, PlatformAdapter, RateLimitInfo
-from ..datacite import synthesize_target_url
 from .client import HuggingFaceHTTPClient
 
 logger = logging.getLogger(__name__)
@@ -422,13 +421,17 @@ class HuggingFaceAdapter(PlatformAdapter):
                 )
 
     def _expand_paper(self, node: HuggingFacePaper, opts: ExpandOpts) -> Iterable[Edge]:
-        # related_to.IsIdenticalTo — arxiv URL via shared synthesizer
-        target = synthesize_target_url("arxiv", node.arxiv_id)
-        if target:
+        # related_to.IsIdenticalTo — emit the unversioned arxiv URL stored
+        # on the node (``_build_paper`` already stripped any ``v<n>`` suffix),
+        # so versioned seeds like ``papers/2307.09288v2`` and unversioned
+        # ``papers/2307.09288`` converge on the same canonical
+        # ``arxiv.org/abs/<id>`` URL — that convergence is what makes the
+        # paper a cross-platform pivot.
+        if node.arxiv_url:
             yield Edge(
                 src=node.url,
                 kind="related_to.IsIdenticalTo",
-                dst=target,
+                dst=node.arxiv_url,
             )
         # related_to.IsSupplementedBy — github repo URL (when populated)
         if node.github_repo:

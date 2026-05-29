@@ -422,6 +422,30 @@ def test_expand_paper_skips_github_when_field_empty(adapter):
     assert edges == []
 
 
+def test_expand_paper_versioned_arxiv_id_converges_to_unversioned_url(adapter):
+    """A versioned seed (papers/2307.09288v2) must emit the SAME arxiv edge
+    target as the unversioned seed (papers/2307.09288). _build_paper strips
+    the `v<n>` suffix when synthesizing arxiv_url; _expand_paper now emits
+    that stored field directly (rather than re-running synthesize_target_url
+    on the versioned arxiv_id) so the cross-platform convergence holds for
+    versioned papers. Regression: previously the edge target included the
+    version suffix while the stored arxiv_url didn't — breaking joins."""
+    adapter._client.get_paper.return_value = {"id": "2307.09288v2"}
+    paper_v2 = HuggingFacePaper(
+        url="https://huggingface.co/papers/2307.09288v2",
+        full_name="papers/2307.09288v2", platform="huggingface",
+        arxiv_id="2307.09288v2",
+        arxiv_url="https://arxiv.org/abs/2307.09288",  # unversioned (from _build_paper)
+    )
+    edges = [e for e in adapter.expand(paper_v2, ExpandOpts())
+             if e.kind == "related_to.IsIdenticalTo"]
+    assert edges == [Edge(
+        src=paper_v2.url,
+        kind="related_to.IsIdenticalTo",
+        dst="https://arxiv.org/abs/2307.09288",  # same as unversioned seed
+    )]
+
+
 # --- expand: HuggingFaceCollection ----------------------------------
 
 def test_expand_collection_emits_owned_by_and_contains(adapter):

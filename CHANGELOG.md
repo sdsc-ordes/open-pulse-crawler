@@ -161,7 +161,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `HuggingFaceRepo` (models/datasets/spaces unified via `repo_type:
   Literal["model","dataset","space"]`), `HuggingFacePaper`,
   `HuggingFaceCollection`.
-- Twelve new edge kinds: `owns`, `member_of`, `owned_by`, `uses_model`,
+- Ten new edge kinds (twelve source/edge combinations across the five
+  subkinds): `owns`, `member_of`, `owned_by`, `uses_model`,
   `related_to.IsIdenticalTo` (paper → arxiv), `related_to.IsSupplementedBy`
   (paper → github), `references_model`, `references_dataset`,
   `references_space`, `contains`.
