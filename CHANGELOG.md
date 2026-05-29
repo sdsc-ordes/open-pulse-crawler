@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed (v2 multi-platform path)
+- `/api/v2/crawl` GitHub seeds were silently dropped: the v2 path discarded
+  the GitHub client, so github.com routed through the pass-through
+  `GitHubAdapter.fetch` stub (raw PyGithub objects, no Pydantic model) and
+  the BFS engine dropped them as "unknown node type". The client is now
+  threaded through to the crawler so github.com uses the model-building
+  legacy path.
+- `/api/v2/crawl` Infoscience seeds crashed the job at seeding time:
+  `node_id.kind_of` only understood 1–2 segment GitHub paths and raised
+  `ValueError` on Infoscience's 3-segment `/handle/<prefix>/<id>`. The
+  seed-enqueue path now classifies adapter-routed URLs via the registry
+  (also fixes multi-segment DataCite DOIs).
+- `crawl --help` could fail to surface long option names in narrow CI
+  terminals (Rich ellipsis truncation); test now renders at a fixed width.
+
+### Changed (BREAKING — graph response edges)
+- `GET /api/v*/graph` and `GET /api/v2/nodes` now emit per-node edge-list
+  endpoints (`contributors`, `members`, `followers`, `starred_repositories`,
+  `dependencies`, …) as **canonical URLs** instead of bare shorthand,
+  host-aware (resolved against each node's own host). The graph is now fully
+  URL-joined on a single key. **Breaking** for consumers that parsed bare
+  logins / `owner/repo` out of those fields. Typed dict-lists (`authors`,
+  `creators`, …) and scalar lists (`tags`, `keywords`, …) are unchanged.
+
+### Fixed (documentation)
+- `docs/API.md`: corrected the `GET /api/v2/graph` shape (separated
+  `users`/`orgs`/`repos`/`teams` dicts, not a flat `nodes` dict) and the
+  `GET /api/v2/platforms` row shape (`{host, tokens, ok}`).
+- `docs/ZENODO.md`: documented that seeding a version record resolves to its
+  concept record (one node per concept DOI) — the seed is not lost.
+
 ## [3.0.0] - 2026-05-29
 
 Multi-platform crawler — major release. Single PR ships the full
