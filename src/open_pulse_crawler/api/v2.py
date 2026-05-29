@@ -397,32 +397,25 @@ def list_platforms() -> PlatformsResponse:
 def _build_registry_from_env() -> "object":
     """Build a :class:`PlatformRegistry` for every host in CRAWLER_PLATFORMS.
 
-    Hosts without resolved tokens are skipped (a GitLab/GitHub client with
-    zero tokens raises in its constructor). Imports the adapters lazily so
-    the module's import side effects stay cheap for ``/health`` traffic.
+    Delegates to :func:`cli._build_registry` so every adapter the CLI knows
+    about (GitHub, GitLab, Zenodo, Infoscience, DataCite, …) is reachable
+    from ``/api/v2/crawl``. Anonymous-friendly adapters (Zenodo, Infoscience,
+    DataCite) register without tokens; ``missing`` is logged but doesn't
+    skip them. GitHub still requires a token to be useful.
     """
-    from ..platforms import PlatformRegistry
-    from ..platforms.github import GitHubClient, resolve_cache_dir
-    from ..platforms.github.adapter import GitHubAdapter
-    from ..platforms.gitlab import GitLabClient
-    from ..platforms.gitlab.adapter import GitLabAdapter
+    from ..cli import _build_registry
+    from ..platforms.github import resolve_cache_dir
 
-    registry = PlatformRegistry()
     cache_dir = resolve_cache_dir(default=_api_cache_dir())
-
-    for host in enabled_instances():
-        tokens = resolve_tokens(host)
-        if not tokens:
-            logger.warning("Skipping %s: no tokens configured", host)
-            continue
-        if host == "github.com":
-            client = GitHubClient(tokens=tokens, cache_dir=cache_dir)
-            registry.register(GitHubAdapter(client, instance_host="github.com"))
-        else:
-            # Treat every non-github.com host as a GitLab-flavoured instance
-            # for now; Renku / other forge support lands in later tasks.
-            client = GitLabClient(host=host, tokens=tokens)
-            registry.register(GitLabAdapter(client, instance_host=host))
+    registry, _gh_client, missing = _build_registry(
+        list(enabled_instances()),
+        cache_dir=cache_dir,
+    )
+    if missing:
+        logger.warning(
+            "Hosts without tokens (anonymous adapters still register): %s",
+            ", ".join(missing),
+        )
     return registry
 
 

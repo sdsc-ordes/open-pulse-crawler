@@ -107,3 +107,42 @@ def test_v2_crawl_openapi_examples_include_datacite():
     assert "datacite_work_by_doi" in examples
     assert "datacite_org_by_ror_epfl" in examples
     assert "datacite_person_by_orcid" in examples
+
+
+def test_v2_build_registry_from_env_includes_datacite(monkeypatch):
+    """`/api/v2/crawl`'s registry-builder must register anonymous adapters
+    (Zenodo, Infoscience, DataCite) — previously the v2 path only knew
+    GitHub + GitLab and silently skipped every other platform.
+    """
+    from open_pulse_crawler.api.v2 import _build_registry_from_env
+    from open_pulse_crawler.platforms.datacite_adapter.adapter import DataCiteAdapter
+
+    monkeypatch.setenv("CRAWLER_PLATFORMS", "datacite.org")
+    monkeypatch.delenv("CRAWLER_TOKEN__API_DATACITE_ORG", raising=False)
+    monkeypatch.delenv("CRAWLER_TOKEN_POOL__API_DATACITE_ORG", raising=False)
+    registry = _build_registry_from_env()
+    a = registry.adapter_for("https://doi.org/10.6084/m9.figshare.99")
+    assert isinstance(a, DataCiteAdapter)
+
+
+def test_v2_build_registry_from_env_includes_zenodo_and_infoscience(monkeypatch):
+    """Same registry parity for Zenodo + Infoscience — both should register
+    anonymously through the v2 API path."""
+    from open_pulse_crawler.api.v2 import _build_registry_from_env
+    from open_pulse_crawler.platforms.zenodo.adapter import ZenodoAdapter
+    from open_pulse_crawler.platforms.infoscience.adapter import InfoscienceAdapter
+
+    monkeypatch.setenv("CRAWLER_PLATFORMS", "zenodo.org,infoscience.epfl.ch")
+    for var in ("CRAWLER_TOKEN__ZENODO_ORG", "CRAWLER_TOKEN_POOL__ZENODO_ORG",
+                "CRAWLER_TOKEN__INFOSCIENCE_EPFL_CH",
+                "CRAWLER_TOKEN_POOL__INFOSCIENCE_EPFL_CH"):
+        monkeypatch.delenv(var, raising=False)
+    registry = _build_registry_from_env()
+    assert isinstance(
+        registry.adapter_for("https://zenodo.org/records/42"),
+        ZenodoAdapter,
+    )
+    assert isinstance(
+        registry.adapter_for("https://infoscience.epfl.ch/handle/20.500.14299/1"),
+        InfoscienceAdapter,
+    )

@@ -75,6 +75,20 @@ def get_github_tokens() -> List[str]:
     return tokens
 
 
+def _token_host_for(host: str) -> str:
+    """Map a user-facing platform key to the host used for token env-var resolution.
+
+    Most platforms are 1:1 — the env-var key matches the platform key (e.g.
+    ``CRAWLER_TOKEN__GITHUB_COM`` for ``github.com``). DataCite is the
+    exception: the user-facing key is ``datacite.org`` while the actual API
+    host is ``api.datacite.org``, so the env-var is
+    ``CRAWLER_TOKEN__API_DATACITE_ORG``.
+    """
+    if host == "datacite.org":
+        return "api.datacite.org"
+    return host
+
+
 def _parse_platforms_csv(value: Optional[str]) -> List[str]:
     """Parse a comma-separated ``--platforms`` value into a host list.
 
@@ -107,15 +121,7 @@ def _build_registry(
     github_client: Optional[GitHubClient] = None
     missing: List[str] = []
     for host in platforms_list:
-        # DataCite uses the actual API host for token lookup, not the
-        # user-facing platform key ``datacite.org``.  Resolve via
-        # ``api.datacite.org`` so the env-var is
-        # ``CRAWLER_TOKEN__API_DATACITE_ORG`` (not ``CRAWLER_TOKEN__DATACITE_ORG``).
-        tokens = (
-            resolve_tokens("api.datacite.org")
-            if host == "datacite.org"
-            else resolve_tokens(host)
-        )
+        tokens = resolve_tokens(_token_host_for(host))
         if not tokens:
             missing.append(host)
             if host == "github.com":
@@ -756,7 +762,7 @@ def doctor(
     """
     rows = []
     for host in enabled_instances():
-        tokens = resolve_tokens(host)
+        tokens = resolve_tokens(_token_host_for(host))
         rows.append({"host": host, "tokens": len(tokens), "ok": bool(tokens)})
 
     if as_json:

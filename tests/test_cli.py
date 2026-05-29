@@ -295,3 +295,35 @@ def test_build_registry_datacite_with_token_marks_present(monkeypatch):
     a = registry.adapter_for("https://doi.org/10.6084/m9.figshare.99")
     from open_pulse_crawler.platforms.datacite_adapter.adapter import DataCiteAdapter
     assert isinstance(a, DataCiteAdapter)
+
+
+def test_doctor_resolves_datacite_token_via_api_host(monkeypatch):
+    """`crawler doctor` must look up DataCite's token under the API host
+    (``CRAWLER_TOKEN__API_DATACITE_ORG``), not the user-facing platform key.
+    Regression: previously reported `datacite.org: MISSING` even when the
+    token was correctly configured."""
+    _clear_token_env(monkeypatch)
+    monkeypatch.setenv("CRAWLER_PLATFORMS", "datacite.org")
+    monkeypatch.setenv("CRAWLER_TOKEN__API_DATACITE_ORG", "dc-pat-test")
+    r = runner.invoke(app, ["doctor", "--json"])
+    assert r.exit_code == 0, r.output
+    payload = json.loads(r.output)
+    datacite_row = next((p for p in payload if p["host"] == "datacite.org"), None)
+    assert datacite_row is not None
+    assert datacite_row["tokens"] == 1
+    assert datacite_row["ok"] is True
+
+
+def test_doctor_datacite_without_token_reports_missing(monkeypatch):
+    """Without `CRAWLER_TOKEN__API_DATACITE_ORG`, doctor reports MISSING."""
+    _clear_token_env(monkeypatch)
+    monkeypatch.setenv("CRAWLER_PLATFORMS", "datacite.org")
+    monkeypatch.delenv("CRAWLER_TOKEN__API_DATACITE_ORG", raising=False)
+    monkeypatch.delenv("CRAWLER_TOKEN_POOL__API_DATACITE_ORG", raising=False)
+    r = runner.invoke(app, ["doctor", "--json"])
+    assert r.exit_code == 0, r.output
+    payload = json.loads(r.output)
+    datacite_row = next((p for p in payload if p["host"] == "datacite.org"), None)
+    assert datacite_row is not None
+    assert datacite_row["tokens"] == 0
+    assert datacite_row["ok"] is False
