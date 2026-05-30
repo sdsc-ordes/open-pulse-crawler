@@ -411,6 +411,31 @@ host, routes it to the matching adapter (`GitHubAdapter` /
 
 `400` if any seed targets a host that is not enabled in `CRAWLER_PLATFORMS`.
 
+### `GET /api/v2/crawl/{job_id}` — job status & progress
+
+Mirrors `GET /api/v1/crawl/{job_id}` (v2 crawls share the same in-memory job
+store). Returns status, summary counts, and — for `running` jobs — live BFS
+progress: current round, nodes processed, queue size, and a best-effort ETA.
+Poll this while a crawl runs; switch to `GET /api/v2/graph/{job_id}` once the
+status is `completed`. `404` if no job exists with that `job_id`.
+
+```json
+{
+  "job_id": "d290f1ee-…",
+  "status": "running",
+  "detail": null,
+  "users": 12,
+  "orgs": 3,
+  "repos": 87,
+  "current_round": 2,
+  "nodes_processed": 156,
+  "nodes_in_queue": 234,
+  "estimated_completion_at": "2026-05-30T10:32:11Z",
+  "started_at": "2026-05-30T10:30:00Z",
+  "completed_at": null
+}
+```
+
 ### `GET /api/v2/graph/{job_id}` — fetch the graph
 
 Same shape as `/api/v1/graph/{job_id}` plus every node carrying a

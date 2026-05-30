@@ -41,6 +41,7 @@ from ..config import enabled_instances, resolve_tokens
 from .deps import (
     CrawlJobResponse,
     CrawlRequest,
+    CrawlResultResponse,
     GraphResponse,
     HealthResponse,
     JobStatus,
@@ -50,6 +51,8 @@ from .deps import (
     _jobs,
     _persist_request,
     _read_snapshot,
+    _job_progress_snapshot,
+    _estimate_completion,
     normalize_graph_edge_urls,
     normalize_node_edge_urls,
     _seed_or_resume,
@@ -673,6 +676,58 @@ def start_crawl_v2(
 # ---------------------------------------------------------------------------
 # /graph/{job_id} — same DTO as v1 for now
 # ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/crawl/{job_id}",
+    response_model=CrawlResultResponse,
+    tags=["Crawl"],
+    summary="Get job status & progress (v2)",
+)
+def get_crawl_status_v2(
+    job_id: str = PathParam(
+        description="Job identifier returned by `POST /api/v2/crawl`.",
+        examples=["d290f1ee-6c54-4b01-90e6-d701748f0851"],
+    ),
+    _token: str = Depends(verify_token),
+) -> CrawlResultResponse:
+    """Status, summary counts, and — for running jobs — live BFS progress
+    (current round, nodes processed, queue size, best-effort ETA).
+
+    v2 crawls share the same in-memory job store as v1, so this mirrors
+    `GET /api/v1/crawl/{job_id}`. Poll this while a crawl runs; switch to
+    `GET /api/v2/graph/{job_id}` once the status is `completed`.
+    """
+    record = _jobs.get(job_id)
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Job not found"
+        )
+
+    resp = CrawlResultResponse(
+        job_id=job_id,
+        status=record.status,
+        detail=record.detail,
+        started_at=record.started_at,
+        completed_at=record.completed_at,
+    )
+    if record.graph:
+        resp.users = len(record.graph.users)
+        resp.orgs = len(record.graph.orgs)
+        resp.repos = len(record.graph.repos)
+
+    if record.status == JobStatus.RUNNING:
+        snap = _job_progress_snapshot(record)
+        resp.current_round = snap["current_round"]
+        resp.nodes_processed = snap["nodes_processed"]
+        resp.nodes_in_queue = snap["nodes_in_queue"]
+        resp.estimated_completion_at = _estimate_completion(
+            record.started_at,
+            snap["nodes_processed"],
+            snap["nodes_in_queue"],
+        )
+
+    return resp
 
 
 @router.get(

@@ -209,3 +209,33 @@ def test_v2_crawl_openapi_examples_include_url_keying_demos():
     assert hosts == {
         "huggingface.co", "zenodo.org", "ror.org", "github.com",
     }
+
+
+def test_v2_crawl_status_endpoint_exists(monkeypatch):
+    """Regression: GET /api/v2/crawl/{job_id} (status/progress) was missing —
+    v2 only exposed /api/v2/graph/{id}, so status polling 404'd. It now
+    mirrors GET /api/v1/crawl/{job_id}."""
+    from fastapi.testclient import TestClient
+    from open_pulse_crawler.api import app
+    from open_pulse_crawler.api.deps import _jobs, _JobRecord, JobStatus
+
+    client = TestClient(app)
+    monkeypatch.setenv("API_TOKEN", "test-token")
+    auth = {"Authorization": "Bearer test-token"}
+
+    # Unknown job → 404 (endpoint exists, not a routing 404).
+    r = client.get("/api/v2/crawl/does-not-exist", headers=auth)
+    assert r.status_code == 404
+    assert r.json()["detail"] == "Job not found"
+
+    # Seed a fake completed job record and read its status.
+    job_id = "v2-status-test-job"
+    _jobs[job_id] = _JobRecord(status=JobStatus.COMPLETED)
+    try:
+        r = client.get(f"/api/v2/crawl/{job_id}", headers=auth)
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["job_id"] == job_id
+        assert body["status"] == "completed"
+    finally:
+        _jobs.pop(job_id, None)

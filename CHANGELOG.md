@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `GET /api/v2/crawl/{job_id}` — job status & progress endpoint for v2
+  crawls (status, counts, live BFS round/queue/ETA). Previously v2 exposed
+  status only indirectly via `GET /api/v2/graph/{job_id}`; the dedicated
+  status route returned 404. Mirrors `GET /api/v1/crawl/{job_id}`. The two
+  progress helpers (`_job_progress_snapshot`, `_estimate_completion`) moved
+  from `api/v1.py` to `api/deps.py` so both routers share them.
+
 ### Fixed (v2 multi-platform path)
 - `/api/v2/crawl` GitHub seeds were silently dropped: the v2 path discarded
   the GitHub client, so github.com routed through the pass-through
