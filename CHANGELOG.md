@@ -7,13 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-- `GET /api/v2/crawl/{job_id}` — job status & progress endpoint for v2
-  crawls (status, counts, live BFS round/queue/ETA). Previously v2 exposed
-  status only indirectly via `GET /api/v2/graph/{job_id}`; the dedicated
-  status route returned 404. Mirrors `GET /api/v1/crawl/{job_id}`. The two
-  progress helpers (`_job_progress_snapshot`, `_estimate_completion`) moved
-  from `api/v1.py` to `api/deps.py` so both routers share them.
+### Added — v2 job-lifecycle parity with v1
+- Full v1↔v2 job-lifecycle parity. v2 previously exposed only `POST /crawl`,
+  `GET /graph/{id}` (which 409s while running) and `GET /nodes` — no
+  status/progress or lifecycle control, so monitoring a v2 crawl was
+  impossible without 404/409. Added, all mirroring their v1 counterparts and
+  sharing the same in-memory job store:
+  - `GET /api/v2/crawl/{job_id}` — status, summary counts, live BFS progress
+    (current round, nodes processed, queue size, best-effort ETA).
+  - `GET /api/v2/jobs` — list all jobs (newest-first, optional
+    `?status_filter=`).
+  - `POST /api/v2/crawl/{job_id}/pause` — pause between rounds.
+  - `POST /api/v2/crawl/{job_id}/resume` — lift a pause, or re-dispatch from
+    persisted BFS state via the multi-platform runner (`_run_crawl_v2`).
+  - `POST /api/v2/crawl/{job_id}/cancel` — stop at the next round boundary;
+    partial graph preserved.
+  - `DELETE /api/v2/crawl/{job_id}` — drop a terminal job (409 if active).
+- Shared progress helpers (`_job_progress_snapshot`, `_estimate_completion`)
+  moved from `api/v1.py` to `api/deps.py`; v2 reuses v1's lifecycle response
+  models + OpenAPI error dicts (v1 never imports v2, so no cycle).
 
 ### Fixed (v2 multi-platform path)
 - `/api/v2/crawl` GitHub seeds were silently dropped: the v2 path discarded

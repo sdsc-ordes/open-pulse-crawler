@@ -239,3 +239,95 @@ def test_v2_crawl_status_endpoint_exists(monkeypatch):
         assert body["status"] == "completed"
     finally:
         _jobs.pop(job_id, None)
+
+
+# --- v1↔v2 job-lifecycle parity (pause/resume/cancel/delete/list) ----------
+
+def _seed_job(job_id, status_value, crawler=None):
+    from open_pulse_crawler.api.deps import _jobs, _JobRecord
+    rec = _JobRecord(status=status_value)
+    if crawler is not None:
+        rec.crawler = crawler
+    _jobs[job_id] = rec
+    return rec
+
+
+def test_v2_jobs_list_endpoint(monkeypatch):
+    from fastapi.testclient import TestClient
+    from open_pulse_crawler.api import app
+    from open_pulse_crawler.api.deps import _jobs, JobStatus
+    client = TestClient(app)
+    monkeypatch.setenv("API_TOKEN", "test-token")
+    auth = {"Authorization": "Bearer test-token"}
+    _jobs.clear()
+    _seed_job("j-completed", JobStatus.COMPLETED)
+    _seed_job("j-running", JobStatus.RUNNING)
+    try:
+        r = client.get("/api/v2/jobs", headers=auth)
+        assert r.status_code == 200, r.text
+        ids = {j["job_id"] for j in r.json()["jobs"]}
+        assert {"j-completed", "j-running"} <= ids
+        # status filter
+        r2 = client.get("/api/v2/jobs?status_filter=completed", headers=auth)
+        ids2 = {j["job_id"] for j in r2.json()["jobs"]}
+        assert ids2 == {"j-completed"}
+    finally:
+        _jobs.clear()
+
+
+def test_v2_cancel_endpoint(monkeypatch):
+    from unittest.mock import MagicMock
+    from fastapi.testclient import TestClient
+    from open_pulse_crawler.api import app
+    from open_pulse_crawler.api.deps import _jobs, JobStatus
+    client = TestClient(app)
+    monkeypatch.setenv("API_TOKEN", "test-token")
+    auth = {"Authorization": "Bearer test-token"}
+    assert client.post("/api/v2/crawl/nope/cancel", headers=auth).status_code == 404
+    crawler = MagicMock(cancel_requested=False, pause_requested=False)
+    _seed_job("j-cancel", JobStatus.RUNNING, crawler=crawler)
+    try:
+        r = client.post("/api/v2/crawl/j-cancel/cancel", headers=auth)
+        assert r.status_code == 200, r.text
+        assert crawler.cancel_requested is True
+    finally:
+        _jobs.clear()
+
+
+def test_v2_pause_and_delete_endpoints(monkeypatch):
+    from unittest.mock import MagicMock
+    from fastapi.testclient import TestClient
+    from open_pulse_crawler.api import app
+    from open_pulse_crawler.api.deps import _jobs, JobStatus
+    client = TestClient(app)
+    monkeypatch.setenv("API_TOKEN", "test-token")
+    auth = {"Authorization": "Bearer test-token"}
+    # pause a running job
+    crawler = MagicMock(pause_requested=False)
+    _seed_job("j-pause", JobStatus.RUNNING, crawler=crawler)
+    r = client.post("/api/v2/crawl/j-pause/pause", headers=auth)
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "paused"
+    # delete refuses an active job (409), accepts a terminal one
+    _seed_job("j-active", JobStatus.RUNNING)
+    assert client.delete("/api/v2/crawl/j-active", headers=auth).status_code == 409
+    _seed_job("j-done", JobStatus.COMPLETED)
+    try:
+        r = client.delete("/api/v2/crawl/j-done", headers=auth)
+        assert r.status_code == 200, r.text
+        assert "j-done" not in _jobs
+    finally:
+        _jobs.clear()
+
+
+def test_v2_resume_unknown_job_404(monkeypatch):
+    from fastapi.testclient import TestClient
+    from open_pulse_crawler.api import app
+    from open_pulse_crawler.api.deps import _jobs
+    client = TestClient(app)
+    monkeypatch.setenv("API_TOKEN", "test-token")
+    auth = {"Authorization": "Bearer test-token"}
+    _jobs.clear()
+    # No record + no persisted state → 404.
+    r = client.post("/api/v2/crawl/ghost/resume", headers=auth)
+    assert r.status_code == 404
