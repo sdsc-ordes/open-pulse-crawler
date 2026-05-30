@@ -12,7 +12,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -126,6 +126,56 @@ def normalize_node_edge_urls(node: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(node, dict):
         _normalize_node_edges(node.get("url", ""), node)
     return node
+
+
+# ---------------------------------------------------------------------------
+# Job-progress helpers (shared by the v1 + v2 status endpoints)
+# ---------------------------------------------------------------------------
+
+
+def _job_progress_snapshot(record: "_JobRecord") -> Dict[str, Any]:
+    """Read live BFS progress from a running crawler, when available."""
+    snap: Dict[str, Any] = {
+        "current_round": None,
+        "nodes_processed": 0,
+        "nodes_in_queue": 0,
+    }
+    crawler = record.crawler
+    if crawler is None:
+        return snap
+    try:
+        snap["current_round"] = int(crawler.current_round)
+    except (AttributeError, TypeError):
+        pass
+    try:
+        snap["nodes_processed"] = len(crawler.visited)
+    except (AttributeError, TypeError):
+        pass
+    try:
+        snap["nodes_in_queue"] = len(crawler.queue)
+    except (AttributeError, TypeError):
+        pass
+    return snap
+
+
+def _estimate_completion(
+    started_at: Optional[datetime],
+    nodes_processed: int,
+    nodes_in_queue: int,
+) -> Optional[datetime]:
+    """Best-effort ETA based on the current node-processing rate.
+
+    Returns ``None`` until we have enough data to extrapolate (started_at is
+    set, at least one node processed, queue non-empty).
+    """
+    if started_at is None or nodes_processed <= 0 or nodes_in_queue <= 0:
+        return None
+    elapsed = (datetime.now(timezone.utc) - started_at).total_seconds()
+    if elapsed <= 0:
+        return None
+    rate = nodes_processed / elapsed  # nodes/sec
+    remaining_seconds = nodes_in_queue / rate
+    return datetime.now(timezone.utc) + timedelta(seconds=remaining_seconds)
 
 logger = logging.getLogger(__name__)
 

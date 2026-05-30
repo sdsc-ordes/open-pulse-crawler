@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from datetime import datetime, timezone
+from typing import List, Optional
 from urllib.parse import urlparse
 
 from fastapi import (
@@ -36,6 +36,8 @@ from .deps import (
     _load_persisted_request,
     _persist_request,
     _read_snapshot,
+    _job_progress_snapshot,
+    _estimate_completion,
     normalize_graph_edge_urls,
     _run_crawl,
     _run_crawl_graphql,
@@ -275,51 +277,6 @@ def start_crawl_graphql(
         body.batch_size,
     )
     return CrawlJobResponse(job_id=job_id, status=JobStatus.PENDING)
-
-
-def _job_progress_snapshot(record: _JobRecord) -> Dict[str, Any]:
-    """Read live BFS progress from a running crawler, when available."""
-    snap: Dict[str, Any] = {
-        "current_round": None,
-        "nodes_processed": 0,
-        "nodes_in_queue": 0,
-    }
-    crawler = record.crawler
-    if crawler is None:
-        return snap
-    try:
-        snap["current_round"] = int(crawler.current_round)
-    except (AttributeError, TypeError):
-        pass
-    try:
-        snap["nodes_processed"] = len(crawler.visited)
-    except (AttributeError, TypeError):
-        pass
-    try:
-        snap["nodes_in_queue"] = len(crawler.queue)
-    except (AttributeError, TypeError):
-        pass
-    return snap
-
-
-def _estimate_completion(
-    started_at: Optional[datetime],
-    nodes_processed: int,
-    nodes_in_queue: int,
-) -> Optional[datetime]:
-    """Best-effort ETA based on the current node-processing rate.
-
-    Returns ``None`` until we have enough data to extrapolate (started_at is
-    set, at least one node processed, queue non-empty).
-    """
-    if started_at is None or nodes_processed <= 0 or nodes_in_queue <= 0:
-        return None
-    elapsed = (datetime.now(timezone.utc) - started_at).total_seconds()
-    if elapsed <= 0:
-        return None
-    rate = nodes_processed / elapsed  # nodes/sec
-    remaining_seconds = nodes_in_queue / rate
-    return datetime.now(timezone.utc) + timedelta(seconds=remaining_seconds)
 
 
 @router.get(
