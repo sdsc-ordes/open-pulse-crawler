@@ -436,6 +436,27 @@ status is `completed`. `404` if no job exists with that `job_id`.
 }
 ```
 
+### `GET /api/v2/jobs` — list all jobs
+
+Mirrors `GET /api/v1/jobs`: every job in the registry, newest-first, with
+summary counts. Optional `?status_filter=` (e.g. `?status_filter=completed`).
+v1 and v2 share one job store, so either listing sees jobs from both routers.
+
+### Job lifecycle (v2)
+
+These mirror their v1 counterparts exactly (same semantics, same shared job
+store) — v2 now has full lifecycle parity with v1:
+
+| Method & path | Action |
+|---|---|
+| `POST /api/v2/crawl/{job_id}/pause` | Pause between rounds; status → `paused`. `409` if not `running`/`paused`. |
+| `POST /api/v2/crawl/{job_id}/resume` | Lift a pause, or re-dispatch from persisted BFS state (multi-platform runner). `404` if nothing to resume. |
+| `POST /api/v2/crawl/{job_id}/cancel` | Stop at the next round boundary; partial graph preserved. `409` if terminal. |
+| `DELETE /api/v2/crawl/{job_id}` | Drop a terminal job from the registry. `409` if still active (cancel first). |
+
+All return a `{job_id, status, detail}` action response and `404` for an
+unknown `job_id`.
+
 ### `GET /api/v2/graph/{job_id}` — fetch the graph
 
 Same shape as `/api/v1/graph/{job_id}` plus every node carrying a

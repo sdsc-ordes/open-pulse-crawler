@@ -42,6 +42,8 @@ from .deps import (
     CrawlJobResponse,
     CrawlRequest,
     CrawlResultResponse,
+    JobsListResponse,
+    JobSummary,
     GraphResponse,
     HealthResponse,
     JobStatus,
@@ -53,11 +55,23 @@ from .deps import (
     _read_snapshot,
     _job_progress_snapshot,
     _estimate_completion,
+    _load_persisted_request,
     normalize_graph_edge_urls,
     normalize_node_edge_urls,
     _seed_or_resume,
     _state_path,
     _write_snapshot,
+)
+
+# Lifecycle endpoints + their OpenAPI error dicts are shared with the v1
+# router. v1 never imports v2, so importing from it here is cycle-free.
+from .v1 import (
+    _RESP_AUTH,
+    _RESP_JOB_NOT_FOUND,
+    _RESP_JOB_CONFLICT,
+    JobActionResponse,
+    _job_or_404,
+    _TERMINAL_STATES,
 )
 
 logger = logging.getLogger(__name__)
@@ -728,6 +742,218 @@ def get_crawl_status_v2(
         )
 
     return resp
+
+
+@router.get(
+    "/jobs",
+    response_model=JobsListResponse,
+    tags=["Crawl"],
+    summary="List all jobs (v2)",
+    responses={**_RESP_AUTH},
+)
+def list_jobs_v2(
+    status_filter: Optional[JobStatus] = Query(
+        default=None,
+        description="Return only jobs in this status (e.g. `completed`).",
+        examples=["completed"],
+    ),
+    _token: str = Depends(verify_token),
+) -> JobsListResponse:
+    """List every job in the in-memory registry, newest first (mirrors
+    `GET /api/v1/jobs`; the job store is shared across v1 and v2)."""
+    summaries: List[JobSummary] = []
+    for jid, rec in _jobs.items():
+        if status_filter is not None and rec.status != status_filter:
+            continue
+        users = orgs = repos = 0
+        if rec.graph is not None:
+            users = len(rec.graph.users)
+            orgs = len(rec.graph.orgs)
+            repos = len(rec.graph.repos)
+        summaries.append(
+            JobSummary(
+                job_id=jid,
+                status=rec.status,
+                started_at=rec.started_at,
+                completed_at=rec.completed_at,
+                users=users,
+                orgs=orgs,
+                repos=repos,
+                detail=rec.detail,
+            )
+        )
+    summaries.sort(
+        key=lambda x: (
+            x.completed_at or x.started_at
+            or datetime.min.replace(tzinfo=timezone.utc),
+        ),
+        reverse=True,
+    )
+    return JobsListResponse(jobs=summaries, total=len(summaries))
+
+
+@router.post(
+    "/crawl/{job_id}/pause",
+    response_model=JobActionResponse,
+    tags=["Job lifecycle"],
+    summary="Pause a running job (v2)",
+    responses={**_RESP_AUTH, **_RESP_JOB_NOT_FOUND, **_RESP_JOB_CONFLICT},
+)
+def pause_crawl_v2(
+    job_id: str = PathParam(
+        description="Job identifier of a `running` job.",
+        examples=["d290f1ee-6c54-4b01-90e6-d701748f0851"],
+    ),
+    _token: str = Depends(verify_token),
+) -> JobActionResponse:
+    """Request the BFS loop to pause between rounds. Status flips to
+    `paused` immediately. (Mirrors `POST /api/v1/crawl/{job_id}/pause`.)"""
+    record = _job_or_404(job_id)
+    if record.status not in (JobStatus.RUNNING, JobStatus.PAUSED):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot pause a job in state {record.status.value!r}",
+        )
+    if record.crawler is not None:
+        record.crawler.pause_requested = True
+    record.status = JobStatus.PAUSED
+    record.detail = "paused"
+    return JobActionResponse(job_id=job_id, status=record.status, detail=record.detail)
+
+
+@router.post(
+    "/crawl/{job_id}/resume",
+    response_model=JobActionResponse,
+    tags=["Job lifecycle"],
+    summary="Resume a paused / cancelled / failed job (v2)",
+    responses={**_RESP_AUTH, **_RESP_JOB_NOT_FOUND, **_RESP_JOB_CONFLICT},
+)
+def resume_crawl_v2(
+    background_tasks: BackgroundTasks,
+    job_id: str = PathParam(
+        description="Job identifier of a `paused`, `cancelled`, or `failed` job.",
+        examples=["d290f1ee-6c54-4b01-90e6-d701748f0851"],
+    ),
+    _token: str = Depends(verify_token),
+) -> JobActionResponse:
+    """Resume a job. A live `paused` job just lifts the pause; a terminal or
+    restart-lost job is re-dispatched from persisted BFS state via the
+    multi-platform runner. (Mirrors `POST /api/v1/crawl/{job_id}/resume`,
+    but re-dispatches `_run_crawl_v2`.)"""
+    record = _jobs.get(job_id)
+
+    if record is not None and record.status == JobStatus.PAUSED:
+        if record.crawler is not None:
+            record.crawler.pause_requested = False
+        record.status = JobStatus.RUNNING
+        record.detail = None
+        return JobActionResponse(job_id=job_id, status=record.status)
+
+    if record is not None and record.status in (JobStatus.RUNNING, JobStatus.PENDING):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot resume a job in state {record.status.value!r}",
+        )
+
+    saved = _load_persisted_request(job_id)
+    if saved is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No persisted request for this job; cannot resume",
+        )
+    if not _state_path(job_id).exists():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="No saved crawler state for this job; nothing to resume",
+        )
+    try:
+        body = CrawlRequest(**saved["request"])
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Persisted request is invalid: {exc}",
+        )
+
+    _jobs[job_id] = _JobRecord()
+    background_tasks.add_task(
+        _run_crawl_v2,
+        job_id,
+        body.seeds,
+        body.max_rounds,
+        body.crawl_dependencies,
+        body.crawl_dependents,
+        body.min_stars,
+        body.max_dependents,
+        body.max_contributors,
+        body.crawl_issues,
+        body.crawl_prs,
+        body.issue_max,
+        body.pr_max,
+        body.batch_size,
+        True,  # resume=True
+    )
+    return JobActionResponse(
+        job_id=job_id,
+        status=JobStatus.PENDING,
+        detail="resuming crawl from saved state",
+    )
+
+
+@router.post(
+    "/crawl/{job_id}/cancel",
+    response_model=JobActionResponse,
+    tags=["Job lifecycle"],
+    summary="Cancel a job (v2)",
+    responses={**_RESP_AUTH, **_RESP_JOB_NOT_FOUND, **_RESP_JOB_CONFLICT},
+)
+def cancel_crawl_v2(
+    job_id: str = PathParam(
+        description="Job identifier of a `pending`, `running`, or `paused` job.",
+        examples=["d290f1ee-6c54-4b01-90e6-d701748f0851"],
+    ),
+    _token: str = Depends(verify_token),
+) -> JobActionResponse:
+    """Ask the BFS loop to stop at the next round boundary; the partial graph
+    is preserved. (Mirrors `POST /api/v1/crawl/{job_id}/cancel`.)"""
+    record = _job_or_404(job_id)
+    if record.status not in (JobStatus.RUNNING, JobStatus.PAUSED, JobStatus.PENDING):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Cannot cancel a job in state {record.status.value!r}",
+        )
+    if record.crawler is not None:
+        record.crawler.cancel_requested = True
+        record.crawler.pause_requested = False
+    record.detail = "cancellation requested"
+    return JobActionResponse(job_id=job_id, status=record.status, detail=record.detail)
+
+
+@router.delete(
+    "/crawl/{job_id}",
+    response_model=JobActionResponse,
+    tags=["Job lifecycle"],
+    summary="Delete a terminal job (v2)",
+    responses={**_RESP_AUTH, **_RESP_JOB_NOT_FOUND, **_RESP_JOB_CONFLICT},
+)
+def delete_crawl_v2(
+    job_id: str = PathParam(
+        description="Job identifier of a terminal job (completed / failed / "
+        "cancelled / pending).",
+        examples=["d290f1ee-6c54-4b01-90e6-d701748f0851"],
+    ),
+    _token: str = Depends(verify_token),
+) -> JobActionResponse:
+    """Drop a terminal job from the registry (refuses a still-active job —
+    cancel it first). (Mirrors `DELETE /api/v1/crawl/{job_id}`.)"""
+    record = _job_or_404(job_id)
+    if record.status not in _TERMINAL_STATES:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Job is still active ({record.status.value}); cancel it first.",
+        )
+    final_status = record.status
+    del _jobs[job_id]
+    return JobActionResponse(job_id=job_id, status=final_status, detail="deleted")
 
 
 @router.get(
