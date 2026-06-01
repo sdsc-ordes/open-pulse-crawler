@@ -437,3 +437,109 @@ def test_doctor_huggingface_without_token_reports_anonymous(monkeypatch):
     assert row["tokens"] == 0
     assert row["auth_required"] is False
     assert row["ok"] is True
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# enrich-crossref subcommand (Spec 6 — Crossref enrichment)
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def _write_snapshot(path, graph) -> None:
+    """Persist a ``GraphData`` to ``path`` exactly as ``export_to_json`` does."""
+    from open_pulse_crawler.io_utils import export_to_json
+
+    export_to_json(graph, path)
+
+
+def _load_snapshot(path):
+    """Re-load a snapshot JSON back into a ``GraphData``."""
+    from open_pulse_crawler.models import GraphData
+
+    data = json.loads(path.read_text())
+    return GraphData(**data)
+
+
+def test_enrich_crossref_help_lists_options():
+    r, text = _help_text(app, ["enrich-crossref", "--help"])
+    assert r.exit_code == 0, r.output
+    assert "--input" in text
+    assert "--output" in text
+    assert "--expand" in text
+    assert "--max-expand-depth" in text
+    assert "--max-references-per-work" in text
+    assert "--mailto" in text
+
+
+def test_enrich_crossref_noop_on_graph_without_dangling_dois(tmp_path):
+    """A graph with no dangling https://doi.org/... references enriches nothing,
+    but still round-trips cleanly and writes a re-loadable snapshot."""
+    from open_pulse_crawler.models import GraphData
+
+    graph = GraphData()  # empty graph: no nodes, no dangling DOIs
+    snap_in = tmp_path / "graph.json"
+    snap_out = tmp_path / "graph.enriched.json"
+    _write_snapshot(snap_in, graph)
+
+    r = runner.invoke(
+        app,
+        ["enrich-crossref", "--input", str(snap_in), "--output", str(snap_out)],
+    )
+    assert r.exit_code == 0, r.output
+    assert snap_out.exists()
+    reloaded = _load_snapshot(snap_out)
+    assert isinstance(reloaded, GraphData)
+    # Summary must report nothing enriched.
+    assert "enriched" in r.output
+    assert "0" in r.output
+
+
+def test_enrich_crossref_materializes_dangling_doi(tmp_path, monkeypatch):
+    """A dangling https://doi.org/... reference inside a node gets materialized
+    via a monkeypatched (no-network) Crossref client."""
+    from open_pulse_crawler.models import DataCiteWork, CrossrefWork, GraphData
+    import open_pulse_crawler.platforms.crossref as crossref_mod
+
+    # A DataCiteWork carrying a dangling Crossref-owned DOI in its relations.
+    host = DataCiteWork(
+        url="https://doi.org/10.6084/m9.figshare.1",
+        doi="10.6084/m9.figshare.1",
+        relations=[{"id": "https://doi.org/10.1038/x"}],
+    )
+    graph = GraphData()
+    graph.add_repo(host)
+    snap_in = tmp_path / "graph.json"
+    snap_out = tmp_path / "graph.enriched.json"
+    _write_snapshot(snap_in, graph)
+
+    prebuilt = CrossrefWork(
+        url="https://doi.org/10.1038/x",
+        doi="10.1038/x",
+        title="T",
+    )
+
+    def _fake_fetch_work(self, doi):
+        if doi == "10.1038/x":
+            return prebuilt
+        return None
+
+    monkeypatch.setattr(
+        crossref_mod.CrossrefClient, "fetch_work", _fake_fetch_work
+    )
+
+    r = runner.invoke(
+        app,
+        ["enrich-crossref", "--input", str(snap_in), "--output", str(snap_out)],
+    )
+    assert r.exit_code == 0, r.output
+    reloaded = _load_snapshot(snap_out)
+    assert "https://doi.org/10.1038/x" in reloaded.repos
+    # Summary should report at least one enriched node.
+    assert "enriched" in r.output
+
+
+def test_enrich_crossref_invalid_input_exits_nonzero(tmp_path):
+    """A nonexistent --input path produces a non-zero exit and a clear message."""
+    missing = tmp_path / "does-not-exist.json"
+    r = runner.invoke(app, ["enrich-crossref", "--input", str(missing)])
+    assert r.exit_code != 0
+    assert "does-not-exist.json" in r.output or "not" in r.output.lower()

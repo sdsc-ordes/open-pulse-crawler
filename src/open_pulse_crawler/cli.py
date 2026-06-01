@@ -22,6 +22,8 @@ from .platforms.github.adapter import GitHubAdapter
 from .platforms.gitlab.adapter import GitLabAdapter
 from .platforms.gitlab.client import GitLabClient
 from .crawler import GitHubCrawler
+from .crossref_enricher import CrossrefEnricher
+from .platforms.crossref import CrossrefClient
 from .io_utils import parse_seed_file, export_to_json, export_to_csv, export_nodes_csv
 from .token_env import POOL_ENV, TOKEN_ENV, resolve_github_tokens, tokens_not_set_message
 from .visualization import visualize_graph, visualize_clusters as viz_clusters, VISUALIZATION_AVAILABLE
@@ -829,6 +831,78 @@ def doctor(
             f"  {r['host']}: {r['tokens']} token{suffix} "
             f"[{colour}][{status}][/{colour}]"
         )
+
+
+@app.command()
+def enrich_crossref(
+    input: Path = typer.Option(
+        ...,
+        "--input", "-i",
+        help="Path to a crawled graph snapshot JSON (as written by export_to_json).",
+    ),
+    output: Optional[Path] = typer.Option(
+        None,
+        "--output", "-o",
+        help="Where to write the enriched snapshot. Defaults to --input (in place).",
+    ),
+    expand: bool = typer.Option(
+        True,
+        "--expand/--no-expand",
+        help="Phase 2: also materialize the works referenced by enriched works.",
+    ),
+    max_expand_depth: int = typer.Option(
+        1,
+        help="Max reference-expansion depth (only used with --expand).",
+    ),
+    max_references_per_work: Optional[int] = typer.Option(
+        None,
+        help="Cap references expanded per work (None = no cap).",
+    ),
+    mailto: Optional[str] = typer.Option(
+        None,
+        help="Crossref polite-pool email. Overrides CRAWLER_CROSSREF_MAILTO.",
+    ),
+):
+    """Enrich a crawled graph with Crossref metadata for journal/article DOIs
+    that DataCite could not resolve (bare https://doi.org/... nodes)."""
+    # Load the snapshot.
+    try:
+        data = json.loads(Path(input).read_text())
+        graph = GraphData(**data)
+    except FileNotFoundError:
+        console.print(f"[red]Error: input snapshot not found: {input}[/red]")
+        raise typer.Exit(code=1)
+    except (json.JSONDecodeError, ValueError, TypeError) as e:
+        console.print(f"[red]Error: could not parse snapshot {input}: {e}[/red]")
+        raise typer.Exit(code=1)
+
+    # Run the enrichment pass with a polite-pool client.
+    with CrossrefClient(mailto=mailto) as client:
+        enricher = CrossrefEnricher(
+            client,
+            expand=expand,
+            max_expand_depth=max_expand_depth,
+            max_references_per_work=max_references_per_work,
+        )
+        summary = enricher.enrich(graph)
+
+    # Write the enriched graph (in place unless --output given).
+    out_path = output or input
+    export_to_json(graph, out_path)
+
+    # Report a concise summary.
+    table = Table(title="Crossref enrichment")
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value", style="magenta")
+    table.add_row("enriched", str(summary.enriched))
+    table.add_row("skipped_404", str(summary.skipped_404))
+    table.add_row("skipped_owned", str(summary.skipped_owned))
+    table.add_row("skipped_already_present", str(summary.skipped_already_present))
+    table.add_row("references_expanded", str(summary.references_expanded))
+    table.add_row("references_truncated", str(summary.references_truncated))
+    table.add_row("max_depth_reached", str(summary.max_depth_reached))
+    console.print(table)
+    console.print(f"[green]✓[/green] Wrote enriched snapshot: {out_path}")
 
 
 @app.command()
