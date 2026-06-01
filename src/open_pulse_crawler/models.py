@@ -520,6 +520,29 @@ class DataCiteWork(RepoModel):
     registered_url: Optional[str] = None
 
 
+class CrossrefWork(RepoModel):
+    """A DOI registered with Crossref (journal article / preprint) materialized
+    by the Crossref enrichment pass. Distinct from DataCiteWork: Crossref owns
+    article/preprint DOIs, DataCite owns dataset/software DOIs.
+    """
+    subkind: Literal["CrossrefWork"] = "CrossrefWork"
+    doi: str
+    title: str = ""
+    publication_year: Optional[int] = None
+    publisher: str = ""
+    container_title: str = ""
+    work_type: str = ""
+    abstract: str = ""
+    creators: List[Dict[str, Any]] = Field(default_factory=list)
+    subjects: List[str] = Field(default_factory=list)
+    funders: List[Dict[str, Any]] = Field(default_factory=list)
+    relations: List[Dict[str, Any]] = Field(default_factory=list)
+    is_referenced_by_count: Optional[int] = None
+    # Phase-2 expand edge: canonical https://doi.org/... URLs this work cites.
+    references: List[str] = Field(default_factory=list)
+    reference_dois: List[str] = Field(default_factory=list)
+
+
 # --- HuggingFace subclasses -------------------------------------------------
 #
 # HuggingFace is an ML-platform hub for models, datasets, spaces, papers,
@@ -660,7 +683,7 @@ OrgNode = Annotated[
 ]
 RepoNode = Annotated[
     Union[RepoModel, GitLabProjectModel, ZenodoRecordModel, InfoscienceItem,
-          DataCiteWork,
+          DataCiteWork, CrossrefWork,
           HuggingFaceRepo, HuggingFacePaper],
     Field(discriminator="subkind"),
 ]

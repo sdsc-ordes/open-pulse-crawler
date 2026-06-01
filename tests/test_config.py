@@ -100,3 +100,34 @@ def test_resolve_tokens_whitespace_value_treated_as_unset(monkeypatch):
     monkeypatch.setenv("CRAWLER_GITHUB_TOKEN_POOL", "real,tokens")
     with pytest.warns(DeprecationWarning):
         assert cfg.resolve_tokens("github.com") == ["real", "tokens"]
+
+
+# --- Crossref mailto config (Spec 6 foundations) ----------------------------
+
+def test_crossref_mailto_env_constant():
+    from open_pulse_crawler.config import CROSSREF_MAILTO_ENV
+    assert CROSSREF_MAILTO_ENV == "CRAWLER_CROSSREF_MAILTO"
+
+
+def test_resolve_crossref_mailto_returns_value_when_set(monkeypatch):
+    from open_pulse_crawler.config import resolve_crossref_mailto
+    monkeypatch.setenv("CRAWLER_CROSSREF_MAILTO", "researcher@example.org")
+    assert resolve_crossref_mailto() == "researcher@example.org"
+
+
+def test_resolve_crossref_mailto_returns_none_when_unset(monkeypatch):
+    from open_pulse_crawler.config import resolve_crossref_mailto
+    monkeypatch.delenv("CRAWLER_CROSSREF_MAILTO", raising=False)
+    assert resolve_crossref_mailto() is None
+
+
+def test_resolve_crossref_mailto_strips_whitespace(monkeypatch):
+    from open_pulse_crawler.config import resolve_crossref_mailto
+    monkeypatch.setenv("CRAWLER_CROSSREF_MAILTO", "  user@uni.edu  ")
+    assert resolve_crossref_mailto() == "user@uni.edu"
+
+
+def test_resolve_crossref_mailto_returns_none_for_blank(monkeypatch):
+    from open_pulse_crawler.config import resolve_crossref_mailto
+    monkeypatch.setenv("CRAWLER_CROSSREF_MAILTO", "   ")
+    assert resolve_crossref_mailto() is None

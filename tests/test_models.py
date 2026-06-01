@@ -835,5 +835,83 @@ def test_graphdata_accepts_huggingface_subclasses_in_existing_dicts():
     assert isinstance(restored.repos["https://huggingface.co/papers/2307.09288"], HuggingFacePaper)
 
 
+# --- CrossrefWork subkind (Spec 6 foundations) --------------------------------
+
+def test_crossref_work_subkind_and_minimal_fields():
+    from open_pulse_crawler.models import CrossrefWork
+    work = CrossrefWork(
+        url="https://doi.org/10.1038/s41586-023-06837-4",
+        full_name="10.1038/s41586-023-06837-4",
+        platform="crossref",
+        doi="10.1038/s41586-023-06837-4",
+    )
+    assert work.subkind == "CrossrefWork"
+    assert work.doi == "10.1038/s41586-023-06837-4"
+    # default values
+    assert work.title == ""
+    assert work.publication_year is None
+    assert work.publisher == ""
+    assert work.container_title == ""
+    assert work.work_type == ""
+    assert work.abstract == ""
+    assert work.creators == []
+    assert work.subjects == []
+    assert work.funders == []
+    assert work.relations == []
+    assert work.is_referenced_by_count is None
+    assert work.references == []
+    assert work.reference_dois == []
+
+
+def test_crossref_work_all_fields():
+    from open_pulse_crawler.models import CrossrefWork
+    work = CrossrefWork(
+        url="https://doi.org/10.1038/s41586-023-06837-4",
+        full_name="10.1038/s41586-023-06837-4",
+        platform="crossref",
+        doi="10.1038/s41586-023-06837-4",
+        title="A landmark Nature paper",
+        publication_year=2023,
+        publisher="Nature Publishing Group",
+        container_title="Nature",
+        work_type="journal-article",
+        abstract="We describe a new method…",
+        creators=[{"given": "Jane", "family": "Doe", "orcid": "0000-0001-2345-6789"}],
+        subjects=["biology", "open science"],
+        funders=[{"name": "Wellcome Trust", "doi": "10.13039/100004440"}],
+        relations=[{"relation_type": "IsSupplementedBy",
+                    "target": "https://github.com/org/repo"}],
+        is_referenced_by_count=42,
+        references=["https://doi.org/10.1000/xyz123"],
+        reference_dois=["10.1000/xyz123"],
+    )
+    assert work.subkind == "CrossrefWork"
+    assert work.title == "A landmark Nature paper"
+    assert work.publication_year == 2023
+    assert work.is_referenced_by_count == 42
+    assert work.is_fork is False  # inherited from RepoModel; no Crossref fork concept
+
+
+def test_crossref_work_graphdata_round_trip():
+    """CrossrefWork survives GraphData model_dump → re-parse (union registration check)."""
+    from open_pulse_crawler.models import CrossrefWork, GraphData
+    doi_url = "https://doi.org/10.1038/s41586-023-06837-4"
+    g = GraphData()
+    g.add_repo(CrossrefWork(
+        url=doi_url,
+        full_name="10.1038/s41586-023-06837-4",
+        platform="crossref",
+        doi="10.1038/s41586-023-06837-4",
+        title="Round-trip test paper",
+        publication_year=2023,
+        publisher="Nature Publishing Group",
+    ))
+    restored = GraphData.model_validate_json(g.model_dump_json())
+    assert doi_url in restored.repos
+    assert isinstance(restored.repos[doi_url], CrossrefWork)
+    assert restored.repos[doi_url].subkind == "CrossrefWork"
+    assert restored.repos[doi_url].title == "Round-trip test paper"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

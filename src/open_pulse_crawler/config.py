@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import os
 import warnings
-from typing import List
+from typing import List, Optional
 
 # Canonical, host-keyed env-var prefixes.
 TOKEN_POOL_PREFIX = "CRAWLER_TOKEN_POOL__"
@@ -38,6 +38,7 @@ LEGACY_GITHUB_TOKEN_ENV = "CRAWLER_GITHUB_TOKEN"
 LEGACY_GITHUB_BARE_ENV = "GITHUB_TOKEN"
 
 PLATFORMS_ENV = "CRAWLER_PLATFORMS"
+CROSSREF_MAILTO_ENV = "CRAWLER_CROSSREF_MAILTO"
 
 _DEFAULT_PLATFORMS = ("github.com",)
 
@@ -70,6 +71,18 @@ def enabled_instances() -> List[str]:
     if not raw.strip():
         return list(_DEFAULT_PLATFORMS)
     return _split(raw)
+
+
+def resolve_crossref_mailto() -> Optional[str]:
+    """Return the Crossref polite-pool contact email, or ``None`` if unset/blank.
+
+    Reads :data:`CROSSREF_MAILTO_ENV` (``CRAWLER_CROSSREF_MAILTO``). The value
+    is stripped of leading/trailing whitespace; a blank or whitespace-only
+    string is treated as unset and returns ``None``.
+    """
+    raw = os.environ.get(CROSSREF_MAILTO_ENV, "")
+    stripped = raw.strip()
+    return stripped if stripped else None
 
 
 def _warn_legacy_github_once() -> None:
