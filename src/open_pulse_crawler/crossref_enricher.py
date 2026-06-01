@@ -41,7 +41,7 @@ class EnrichmentSummary:
     skipped_already_present: int = 0
     references_expanded: int = 0
     references_truncated: int = 0
-    max_depth_reached: int = 0
+    max_depth_reached: int = 0  # last expansion depth that actually ran (0 if no expansion happened)
 
 
 class CrossrefEnricher:
@@ -85,6 +85,8 @@ class CrossrefEnricher:
         # Phase 2: bounded expansion of each materialized work's references.
         if self.expand:
             for depth in range(1, self.max_expand_depth + 1):
+                if not frontier:
+                    break
                 next_frontier: List[CrossrefWork] = []
                 for work in frontier:
                     refs = work.references

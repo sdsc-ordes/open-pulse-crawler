@@ -268,3 +268,21 @@ def test_summary_is_dataclass():
     assert s.references_expanded == 0
     assert s.references_truncated == 0
     assert s.max_depth_reached == 0
+
+
+# ---------------------------------------------------------------------------
+# max_depth_reached stays 0 when Phase-1 frontier is empty
+# ---------------------------------------------------------------------------
+
+
+def test_max_depth_reached_zero_when_frontier_empty():
+    """Phase-1 produces an empty frontier (fetch_work → None); max_depth_reached must stay 0."""
+    target_url = "https://doi.org/10.1038/ghost"
+    graph = GraphData()
+    graph.add_repo(dangling_repo("https://doi.org/10.1000/host", target_url))
+
+    # client returns None for every doi → frontier after Phase 1 is empty
+    client = FakeCrossrefClient({})
+    summary = CrossrefEnricher(client, expand=True, max_expand_depth=3).enrich(graph)
+
+    assert summary.max_depth_reached == 0
