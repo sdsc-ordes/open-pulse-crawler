@@ -259,6 +259,40 @@ def test_idempotent_fresh_enricher_second_run():
     assert len(graph.repos) == repo_count
 
 
+def test_idempotent_mixed_case_doi_across_runs():
+    """A dangling MIXED-CASE DOI ref materializes a lowercased-suffix node;
+    a fresh enricher on the enriched graph must not re-fetch/re-materialize it.
+
+    Mirrors the real mapper which lowercases the DOI suffix when keying the
+    materialized node, so the target key must canonicalize to match.
+    """
+    mixed_url = "https://doi.org/10.1038/AbC"
+    lower_url = "https://doi.org/10.1038/abc"
+    graph = GraphData()
+    graph.add_repo(dangling_repo("https://doi.org/10.1000/host", mixed_url))
+
+    # Fake client keys by the lowercased bare doi, returning a lowercased node.
+    client = FakeCrossrefClient(
+        {
+            "10.1038/abc": CrossrefWork(
+                url=lower_url,
+                full_name=lower_url,
+                doi="10.1038/abc",
+                title="T",
+            )
+        }
+    )
+
+    s1 = CrossrefEnricher(client, expand=False).enrich(graph)
+    assert s1.enriched == 1
+    assert lower_url in graph.repos
+
+    repo_count = len(graph.repos)
+    s2 = CrossrefEnricher(client, expand=False).enrich(graph)
+    assert s2.enriched == 0
+    assert len(graph.repos) == repo_count
+
+
 def test_summary_is_dataclass():
     s = EnrichmentSummary()
     assert s.enriched == 0

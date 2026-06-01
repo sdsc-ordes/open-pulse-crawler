@@ -27,6 +27,19 @@ logger = logging.getLogger(__name__)
 _DOI_URL_PREFIX = "https://doi.org/"
 
 
+def _canonical_doi_url(url: str) -> str:
+    """Canonicalize a doi.org URL to a lowercased-suffix form.
+
+    DOIs are case-insensitive; the Crossref mapper lowercases the suffix when
+    keying the materialized node (``https://doi.org/<lowercased-doi>``), so we
+    normalize targets the same way for stable dedup / ``has_repo`` idempotency
+    across runs. Non-doi.org URLs are returned unchanged.
+    """
+    if url.startswith(_DOI_URL_PREFIX):
+        return _DOI_URL_PREFIX + url[len(_DOI_URL_PREFIX):].lower()
+    return url
+
+
 class _ClientLike(Protocol):
     def fetch_work(self, doi: str) -> Optional[CrossrefWork]: ...
 
@@ -76,9 +89,10 @@ class CrossrefEnricher:
         # Phase 1: materialize the dangling doi.org URLs already in the graph.
         frontier: List[CrossrefWork] = []
         for url in self._dangling_doi_urls(graph):
-            if not self._is_eligible(graph, url, summary):
+            canonical = _canonical_doi_url(url)
+            if not self._is_eligible(graph, canonical, summary):
                 continue
-            work = self._enrich_one(graph, url, summary)
+            work = self._enrich_one(graph, canonical, summary)
             if work is not None:
                 frontier.append(work)
 
@@ -106,9 +120,10 @@ class CrossrefEnricher:
                         summary.references_truncated += dropped
                         refs = refs[: self.max_references_per_work]
                     for ref_url in refs:
-                        if not self._is_eligible(graph, ref_url, summary):
+                        canonical = _canonical_doi_url(ref_url)
+                        if not self._is_eligible(graph, canonical, summary):
                             continue
-                        w = self._enrich_one(graph, ref_url, summary)
+                        w = self._enrich_one(graph, canonical, summary)
                         if w is not None:
                             summary.references_expanded += 1
                             next_frontier.append(w)
@@ -174,6 +189,10 @@ class CrossrefEnricher:
         """Fetch + add the work for ``url``; return it, or ``None`` on miss."""
         self.visited.add(url)
         bare_doi = url[len(_DOI_URL_PREFIX):]
+        if not bare_doi:
+            # A literal "https://doi.org/" with no suffix — don't fetch/
+            # materialize a junk node.
+            return None
         work = self._client.fetch_work(bare_doi)
         if work is None:
             summary.skipped_404 += 1
