@@ -533,8 +533,19 @@ def test_enrich_crossref_materializes_dangling_doi(tmp_path, monkeypatch):
     assert r.exit_code == 0, r.output
     reloaded = _load_snapshot(snap_out)
     assert "https://doi.org/10.1038/x" in reloaded.repos
-    # Summary should report at least one enriched node.
-    assert "enriched" in r.output
+    # Summary must report a non-zero enriched counter.
+    # The table row looks like "enriched  | <N>" — find the line that contains
+    # "enriched" and assert it holds a positive integer (would fail if N=0).
+    enriched_line = next(
+        (line for line in r.output.splitlines() if "enriched" in line),
+        None,
+    )
+    assert enriched_line is not None, "No 'enriched' summary line in output"
+    import re as _re_local
+    numbers = [int(m) for m in _re_local.findall(r"\d+", enriched_line)]
+    assert numbers and max(numbers) >= 1, (
+        f"Expected enriched >= 1 in summary line, got: {enriched_line!r}"
+    )
 
 
 def test_enrich_crossref_invalid_input_exits_nonzero(tmp_path):
@@ -543,3 +554,15 @@ def test_enrich_crossref_invalid_input_exits_nonzero(tmp_path):
     r = runner.invoke(app, ["enrich-crossref", "--input", str(missing)])
     assert r.exit_code != 0
     assert "does-not-exist.json" in r.output or "not" in r.output.lower()
+
+
+def test_enrich_crossref_malformed_json_exits_nonzero(tmp_path):
+    """A file containing malformed JSON produces a non-zero exit code.
+
+    The command already catches ``json.JSONDecodeError`` and raises
+    ``typer.Exit(1)`` — this test just covers that path.
+    """
+    bad_json = tmp_path / "bad.json"
+    bad_json.write_text("{bad")
+    r = runner.invoke(app, ["enrich-crossref", "--input", str(bad_json)])
+    assert r.exit_code != 0

@@ -852,10 +852,12 @@ def enrich_crossref(
     ),
     max_expand_depth: int = typer.Option(
         1,
+        "--max-expand-depth",
         help="Max reference-expansion depth (only used with --expand).",
     ),
     max_references_per_work: Optional[int] = typer.Option(
         None,
+        "--max-references-per-work",
         help="Cap references expanded per work (None = no cap).",
     ),
     mailto: Optional[str] = typer.Option(
