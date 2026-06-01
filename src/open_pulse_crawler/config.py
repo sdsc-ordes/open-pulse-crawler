@@ -14,6 +14,8 @@ Public surface:
   fallback. Emits a one-shot :class:`DeprecationWarning` (via
   :func:`warnings.warn`) the first time a legacy variable is read in the
   process.
+- :func:`resolve_crossref_mailto` — read ``CRAWLER_CROSSREF_MAILTO`` polite-pool
+  email. Returns ``None`` when unset or blank.
 
 The legacy fallback intentionally preserves v2's multi-token semantics:
 ``CRAWLER_GITHUB_TOKEN_POOL``, ``CRAWLER_GITHUB_TOKEN``, and ``GITHUB_TOKEN``
