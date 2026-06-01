@@ -251,7 +251,11 @@ class TestCrossrefClientFetchWork:
         assert result is None
 
     def test_doi_path_is_url_quoted(self):
-        """DOIs with slashes and special chars are safely included in the path."""
+        """DOI slash is preserved as a literal '/' in the request path (not %2F).
+
+        Crossref's REST router uses the slash as a structural path separator;
+        encoding it to %2F causes a 404 for every real DOI.
+        """
         client = CrossrefClient(mailto="test@example.com")
         captured = []
 
@@ -262,7 +266,13 @@ class TestCrossrefClientFetchWork:
         with patch.object(client._session, "get", side_effect=fake_get):
             client.fetch_work("10.1038/s41586-021-03819-2")
         assert len(captured) == 1
-        assert "10.1038" in captured[0]
+        captured_path = captured[0]
+        assert captured_path == "/works/10.1038/s41586-021-03819-2", (
+            f"Expected literal slash in path, got: {captured_path!r}"
+        )
+        assert "%2F" not in captured_path, (
+            f"Slash was percent-encoded (breaks Crossref routing): {captured_path!r}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -411,3 +421,72 @@ class TestCrossrefClient429Retry:
         with patch.object(client._session, "get", side_effect=responses):
             client.fetch_work("10.1038/s41586-021-03819-2")
         assert sleeps == [5.0]
+
+
+# ---------------------------------------------------------------------------
+# 5. Context-manager / resource management
+# ---------------------------------------------------------------------------
+
+class TestCrossrefClientClose:
+    def test_context_manager_closes_session(self):
+        """Using CrossrefClient as a context manager closes the underlying session."""
+        with CrossrefClient(mailto="test@example.com") as client:
+            # Session should be open while inside the context.
+            assert not client._session.is_closed
+        # After __exit__ the session must be closed.
+        assert client._session.is_closed
+
+    def test_close_is_idempotent(self):
+        """Calling close() twice must not raise."""
+        client = CrossrefClient(mailto="test@example.com")
+        client.close()
+        client.close()  # second call must be a no-op
+        assert client._session.is_closed
+
+
+# ---------------------------------------------------------------------------
+# 6. publication_year priority-chain coverage
+# ---------------------------------------------------------------------------
+
+class TestPublicationYearPriorityChain:
+    def test_published_print_used_when_published_absent(self):
+        """published-print is used when published is absent."""
+        msg = {k: v for k, v in ALPHAFOLD_MESSAGE.items() if k != "published"}
+        msg["published-print"] = {"date-parts": [[2019, 3]]}
+        work = crossref_message_to_work(msg)
+        assert work.publication_year == 2019
+
+    def test_published_online_used_when_print_and_published_absent(self):
+        """published-online is used when both published and published-print are absent."""
+        msg = {
+            k: v for k, v in ALPHAFOLD_MESSAGE.items()
+            if k not in ("published", "published-print")
+        }
+        msg["published-online"] = {"date-parts": [[2018, 11]]}
+        work = crossref_message_to_work(msg)
+        assert work.publication_year == 2018
+
+
+# ---------------------------------------------------------------------------
+# 7. crossref_message_to_work with empty dict
+# ---------------------------------------------------------------------------
+
+class TestCrossrefMessageToWorkEmpty:
+    def test_empty_dict_returns_zero_valued_work_without_raising(self):
+        """crossref_message_to_work({}) must not raise and must return safe defaults."""
+        work = crossref_message_to_work({})
+        assert work.doi == ""
+        assert work.url == "https://doi.org/"
+        assert work.title == ""
+        assert work.publication_year is None
+        assert work.publisher == ""
+        assert work.container_title == ""
+        assert work.work_type == ""
+        assert work.abstract == ""
+        assert work.creators == []
+        assert work.subjects == []
+        assert work.funders == []
+        assert work.is_referenced_by_count is None
+        assert work.references == []
+        assert work.reference_dois == []
+        assert work.relations == []

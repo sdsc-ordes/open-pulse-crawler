@@ -87,6 +87,18 @@ class CrossrefClient:
             },
         )
 
+    # ---- resource management ------------------------------------------------
+
+    def close(self) -> None:
+        """Close the underlying HTTP session (releases connections / file descriptors)."""
+        self._session.close()
+
+    def __enter__(self) -> "CrossrefClient":
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
     # ---- low-level GET with 429 retry ---------------------------------------
 
     def _do_get(
@@ -133,8 +145,10 @@ class CrossrefClient:
         - The response envelope's ``status`` field is not ``"ok"``.
         - The ``message`` key is absent from the envelope.
         """
-        # URL-quote the DOI path segment so slashes and special chars are safe.
-        encoded_doi = quote(doi, safe="")
+        # URL-quote the DOI path segment: preserve '/' (Crossref router uses it
+        # as a structural separator between prefix and suffix) while still
+        # encoding spaces, '#', '?', '&', etc. that would break the URL.
+        encoded_doi = quote(doi, safe="/")
         path = f"/works/{encoded_doi}"
 
         params: Optional[Dict[str, Any]] = None
