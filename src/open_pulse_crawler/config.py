@@ -16,6 +16,8 @@ Public surface:
   process.
 - :func:`resolve_crossref_mailto` — read ``CRAWLER_CROSSREF_MAILTO`` polite-pool
   email. Returns ``None`` when unset or blank.
+- :func:`resolve_openalex_mailto` — read ``CRAWLER_OPENALEX_MAILTO`` polite-pool
+  email. Returns ``None`` when unset or blank.
 
 The legacy fallback intentionally preserves v2's multi-token semantics:
 ``CRAWLER_GITHUB_TOKEN_POOL``, ``CRAWLER_GITHUB_TOKEN``, and ``GITHUB_TOKEN``
@@ -41,6 +43,7 @@ LEGACY_GITHUB_BARE_ENV = "GITHUB_TOKEN"
 
 PLATFORMS_ENV = "CRAWLER_PLATFORMS"
 CROSSREF_MAILTO_ENV = "CRAWLER_CROSSREF_MAILTO"
+OPENALEX_MAILTO_ENV = "CRAWLER_OPENALEX_MAILTO"
 
 _DEFAULT_PLATFORMS = ("github.com",)
 
@@ -83,6 +86,18 @@ def resolve_crossref_mailto() -> Optional[str]:
     string is treated as unset and returns ``None``.
     """
     raw = os.environ.get(CROSSREF_MAILTO_ENV, "")
+    stripped = raw.strip()
+    return stripped if stripped else None
+
+
+def resolve_openalex_mailto() -> Optional[str]:
+    """Return the OpenAlex polite-pool contact email, or ``None`` if unset/blank.
+
+    Reads :data:`OPENALEX_MAILTO_ENV` (``CRAWLER_OPENALEX_MAILTO``). The value
+    is stripped of leading/trailing whitespace; a blank or whitespace-only
+    string is treated as unset and returns ``None``.
+    """
+    raw = os.environ.get(OPENALEX_MAILTO_ENV, "")
     stripped = raw.strip()
     return stripped if stripped else None
 

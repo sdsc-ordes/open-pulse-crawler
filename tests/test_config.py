@@ -131,3 +131,23 @@ def test_resolve_crossref_mailto_returns_none_for_blank(monkeypatch):
     from open_pulse_crawler.config import resolve_crossref_mailto
     monkeypatch.setenv("CRAWLER_CROSSREF_MAILTO", "   ")
     assert resolve_crossref_mailto() is None
+
+
+# --- OpenAlex mailto config --------------------------------------------------
+
+from open_pulse_crawler.config import resolve_openalex_mailto, OPENALEX_MAILTO_ENV
+
+
+def test_openalex_mailto_set(monkeypatch):
+    monkeypatch.setenv(OPENALEX_MAILTO_ENV, " a@b.org ")
+    assert resolve_openalex_mailto() == "a@b.org"
+
+
+def test_openalex_mailto_unset(monkeypatch):
+    monkeypatch.delenv(OPENALEX_MAILTO_ENV, raising=False)
+    assert resolve_openalex_mailto() is None
+
+
+def test_openalex_mailto_blank(monkeypatch):
+    monkeypatch.setenv(OPENALEX_MAILTO_ENV, "   ")
+    assert resolve_openalex_mailto() is None
