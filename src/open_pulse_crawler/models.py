@@ -678,7 +678,7 @@ class OpenAlexWork(RepoModel):
     cited_by_count: Optional[int] = None
     is_oa: Optional[bool] = None
     references: List[str] = Field(default_factory=list)      # outbound (raw W-urls until expand resolves them)
-    cited_by: List[str] = Field(default_factory=list)        # inbound (forward)
+    cited_by: List[str] = Field(default_factory=list)        # inbound citations (works that cite this one)
     authored_by: List[str] = Field(default_factory=list)     # orcid/openalex-A urls
     funded_by: List[str] = Field(default_factory=list)       # funder urls
     published_in: str = ""                                   # source url
@@ -694,6 +694,7 @@ class OpenAlexAuthor(UserModel):
 
 
 class OpenAlexInstitution(OrgModel):
+    """An institution from OpenAlex, keyed by ROR URL when available."""
     subkind: Literal["OpenAlexInstitution"] = "OpenAlexInstitution"
     ror_id: str = ""
     openalex_id: str = ""
@@ -702,6 +703,7 @@ class OpenAlexInstitution(OrgModel):
 
 
 class OpenAlexSource(OrgModel):
+    """A publication venue (journal/repository) from OpenAlex, keyed by openalex S… (ISSN-L retained)."""
     subkind: Literal["OpenAlexSource"] = "OpenAlexSource"
     openalex_id: str = ""
     issn_l: str = ""
@@ -711,6 +713,7 @@ class OpenAlexSource(OrgModel):
 
 
 class OpenAlexFunder(OrgModel):
+    """A funding body from OpenAlex, keyed by its Crossref Funder Registry DOI (10.13039/…) when available."""
     subkind: Literal["OpenAlexFunder"] = "OpenAlexFunder"
     openalex_id: str = ""
     funder_doi: str = ""             # 10.13039/...
