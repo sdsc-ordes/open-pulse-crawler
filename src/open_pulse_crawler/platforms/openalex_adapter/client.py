@@ -54,6 +54,18 @@ _DOI_URL_PREFIXES = ("https://doi.org/", "http://doi.org/")
 # they require the ``doi:`` form or a full DOI URL.
 _BARE_DOI_RE = re.compile(r"^10\.\d{2,}/")
 
+# A bare ORCID is four groups of four digits (last digit may be ``X``), e.g.
+# ``0000-0002-3336-0163``. OpenAlex's ``/authors/{id}`` does not resolve a bare
+# ORCID — it requires the ``orcid:`` form or a full ORCID URL.
+_BARE_ORCID_RE = re.compile(r"^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$")
+
+# A bare ROR is the 9-char id from a ROR URL: a leading ``0`` then 8 lowercase
+# alphanumerics, e.g. ``02s376052``. OpenAlex's ``/institutions/{id}`` does not
+# resolve a bare ROR — it requires the ``ror:`` form or a full ROR URL. The
+# leading-``0`` anchor means it cannot collide with OpenAlex W/A/I/S/F ids
+# (which start with a capital letter).
+_BARE_ROR_RE = re.compile(r"^0[a-z0-9]{8}$")
+
 
 def _bare_work_id(work_id: str) -> str:
     """Strip any ``https://openalex.org/`` prefix, returning the bare ``W…`` id."""
@@ -63,20 +75,32 @@ def _bare_work_id(work_id: str) -> str:
 
 
 def _quote_entity_id(id: str) -> str:
-    """Quote an OpenAlex single-entity id, normalizing bare DOIs to ``doi:`` form.
+    """Quote an OpenAlex single-entity id, normalizing bare external ids by shape.
 
-    A bare DOI (matching :data:`_BARE_DOI_RE`) that is not already in ``doi:``
-    or full-URL form is prefixed with ``doi:`` — OpenAlex does not resolve a
-    bare DOI. ``W…``/``A…``/``doi:…``/full-URL forms pass through unchanged.
+    OpenAlex's single-entity endpoints do not resolve a *bare* external id —
+    they need the namespaced prefix (or a full URL). Based on the id's shape,
+    a bare id is prefixed before quoting:
+
+    * bare DOI (:data:`_BARE_DOI_RE`)   → ``doi:``
+    * bare ORCID (:data:`_BARE_ORCID_RE`) → ``orcid:``
+    * bare ROR (:data:`_BARE_ROR_RE`)   → ``ror:``
+
+    Already-prefixed (``doi:``/``orcid:``/``ror:``), full-URL (``http``), and
+    OpenAlex ids (``W…``/``A…``/``I…``/``S…``/``F…``) pass through unchanged —
+    none of them match the bare patterns (the OpenAlex ids start with a capital
+    letter, so the leading-``0`` ROR pattern cannot collide). The patterns are
+    mutually exclusive, so the helper is safe across all getters.
+
     The ``:`` and ``/`` are kept unescaped (``safe=':/'``) so the resulting path
-    is, e.g., ``doi:10.1002/glia.24258``.
+    is, e.g., ``doi:10.1002/glia.24258`` or ``orcid:0000-0002-3336-0163``.
     """
-    if (
-        _BARE_DOI_RE.match(id)
-        and not id.startswith("doi:")
-        and not id.startswith("http")
-    ):
-        id = f"doi:{id}"
+    if not id.startswith("http"):
+        if _BARE_DOI_RE.match(id) and not id.startswith("doi:"):
+            id = f"doi:{id}"
+        elif _BARE_ORCID_RE.match(id) and not id.startswith("orcid:"):
+            id = f"orcid:{id}"
+        elif _BARE_ROR_RE.match(id) and not id.startswith("ror:"):
+            id = f"ror:{id}"
     return quote(id, safe=":/")
 
 
@@ -196,12 +220,20 @@ class OpenAlexHTTPClient:
         return self._get_entity(f"/works/{_quote_entity_id(id)}")
 
     def get_author(self, id: str) -> Optional[Dict[str, Any]]:
-        """``GET /authors/{id}`` (``A…``, ``orcid:…``, or ORCID URL)."""
-        return self._get_entity(f"/authors/{quote(id, safe=':/')}")
+        """``GET /authors/{id}`` (``A…``, ``orcid:…``, or ORCID URL).
+
+        A bare ORCID (``0000-…``) is normalized to ``orcid:`` form — OpenAlex
+        does not resolve a bare ORCID.
+        """
+        return self._get_entity(f"/authors/{_quote_entity_id(id)}")
 
     def get_institution(self, id: str) -> Optional[Dict[str, Any]]:
-        """``GET /institutions/{id}`` (``I…``, ``ror:…``, or ROR URL)."""
-        return self._get_entity(f"/institutions/{quote(id, safe=':/')}")
+        """``GET /institutions/{id}`` (``I…``, ``ror:…``, or ROR URL).
+
+        A bare ROR (e.g. ``02s376052``) is normalized to ``ror:`` form —
+        OpenAlex does not resolve a bare ROR.
+        """
+        return self._get_entity(f"/institutions/{_quote_entity_id(id)}")
 
     def get_source(self, id: str) -> Optional[Dict[str, Any]]:
         """``GET /sources/{id}`` (``S…``)."""

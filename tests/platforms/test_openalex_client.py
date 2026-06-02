@@ -558,6 +558,97 @@ class TestOtherGetters:
             client.get_author("orcid:0000-0001-6169-6851")
         assert captured == ["/authors/orcid:0000-0001-6169-6851"]
 
+    def test_get_author_bare_orcid_normalized_to_orcid_form(self):
+        """A bare ORCID is prefixed with ``orcid:`` before quoting.
+
+        OpenAlex's ``/authors/{id}`` endpoint does not resolve a bare ORCID; it
+        requires the ``orcid:`` form (or a full URL). The client owns this
+        id-form contract.
+        """
+        client = OpenAlexHTTPClient(mailto="test@example.com")
+        captured = []
+
+        def fake_get(p, **kwargs):
+            captured.append(p)
+            return _make_response(200, AUTHOR_FIXTURE)
+
+        with patch.object(client._session, "get", side_effect=fake_get):
+            client.get_author("0000-0002-3336-0163")
+        assert captured == ["/authors/orcid:0000-0002-3336-0163"]
+        assert "%2F" not in captured[0]
+        assert "%3A" not in captured[0]
+
+    def test_get_institution_bare_ror_normalized_to_ror_form(self):
+        """A bare ROR is prefixed with ``ror:`` before quoting.
+
+        OpenAlex's ``/institutions/{id}`` endpoint does not resolve a bare ROR;
+        it requires the ``ror:`` form (or a full URL).
+        """
+        client = OpenAlexHTTPClient(mailto="test@example.com")
+        captured = []
+
+        def fake_get(p, **kwargs):
+            captured.append(p)
+            return _make_response(200, INSTITUTION_FIXTURE)
+
+        with patch.object(client._session, "get", side_effect=fake_get):
+            client.get_institution("02s376052")
+        assert captured == ["/institutions/ror:02s376052"]
+        assert "%2F" not in captured[0]
+        assert "%3A" not in captured[0]
+
+    def test_get_author_orcid_form_not_double_prefixed(self):
+        """An id already in ``orcid:`` form must not get a second prefix."""
+        client = OpenAlexHTTPClient(mailto="test@example.com")
+        captured = []
+
+        def fake_get(p, **kwargs):
+            captured.append(p)
+            return _make_response(200, AUTHOR_FIXTURE)
+
+        with patch.object(client._session, "get", side_effect=fake_get):
+            client.get_author("orcid:0000-0002-3336-0163")
+        assert captured == ["/authors/orcid:0000-0002-3336-0163"]
+
+    def test_get_institution_ror_form_not_double_prefixed(self):
+        """An id already in ``ror:`` form must not get a second prefix."""
+        client = OpenAlexHTTPClient(mailto="test@example.com")
+        captured = []
+
+        def fake_get(p, **kwargs):
+            captured.append(p)
+            return _make_response(200, INSTITUTION_FIXTURE)
+
+        with patch.object(client._session, "get", side_effect=fake_get):
+            client.get_institution("ror:02s376052")
+        assert captured == ["/institutions/ror:02s376052"]
+
+    def test_get_author_openalex_id_unchanged(self):
+        """A bare ``A…`` id must pass through untouched."""
+        client = OpenAlexHTTPClient(mailto="test@example.com")
+        captured = []
+
+        def fake_get(p, **kwargs):
+            captured.append(p)
+            return _make_response(200, AUTHOR_FIXTURE)
+
+        with patch.object(client._session, "get", side_effect=fake_get):
+            client.get_author("A123")
+        assert captured == ["/authors/A123"]
+
+    def test_get_institution_openalex_id_unchanged(self):
+        """A bare ``I…`` id must pass through untouched."""
+        client = OpenAlexHTTPClient(mailto="test@example.com")
+        captured = []
+
+        def fake_get(p, **kwargs):
+            captured.append(p)
+            return _make_response(200, INSTITUTION_FIXTURE)
+
+        with patch.object(client._session, "get", side_effect=fake_get):
+            client.get_institution("I123")
+        assert captured == ["/institutions/I123"]
+
 
 # ---------------------------------------------------------------------------
 # 8. resource management
