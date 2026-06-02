@@ -371,6 +371,28 @@ def test_fetch_funder_via_openalex_id():
     assert client.calls == [("get_funder", "F1")]
 
 
+# --- _external_ids: empty-value filtering ---------------------------
+
+
+def test_external_ids_drops_empty_string_values():
+    """An ids block with an empty-string value must not produce an ExternalIdentifier."""
+    raw = {
+        "id": "https://openalex.org/W1",
+        "ids": {
+            "openalex": "https://openalex.org/W1",
+            "doi": "",          # empty string — must be dropped
+            "mag": "2741809807",
+        },
+    }
+    client = FakeClient(works={"W1": raw})
+    adapter = OpenAlexAdapter(client=client)
+    node = adapter.fetch("https://openalex.org/W1")
+    schemes = {e.scheme for e in node.external_identifiers}
+    assert "doi" not in schemes, "empty-string doi must not produce an ExternalIdentifier"
+    assert "openalex" in schemes
+    assert "mag" in schemes
+
+
 # --- fetch: fallback delegation -------------------------------------
 
 
@@ -387,6 +409,7 @@ def test_fetch_author_miss_delegates_to_fallback():
     adapter = OpenAlexAdapter(client=FakeClient(), fallback_adapter=fb)
     result = adapter.fetch("https://orcid.org/0000-0002-1825-0097")
     assert result is FakeFallback.SENTINEL
+    assert fb.fetched == ["https://orcid.org/0000-0002-1825-0097"]
 
 
 def test_fetch_institution_miss_delegates_to_fallback():
@@ -394,6 +417,7 @@ def test_fetch_institution_miss_delegates_to_fallback():
     adapter = OpenAlexAdapter(client=FakeClient(), fallback_adapter=fb)
     result = adapter.fetch("https://ror.org/02s376052")
     assert result is FakeFallback.SENTINEL
+    assert fb.fetched == ["https://ror.org/02s376052"]
 
 
 def test_fetch_source_miss_returns_none_no_fallback():

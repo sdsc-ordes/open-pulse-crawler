@@ -265,7 +265,7 @@ class OpenAlexAdapter(PlatformAdapter):
         out: List[ExternalIdentifier] = []
         if isinstance(ids, dict):
             for k, v in ids.items():
-                if v is None:
+                if not v:
                     continue
                 out.append(ExternalIdentifier(scheme=str(k), value=str(v)))
         return out
