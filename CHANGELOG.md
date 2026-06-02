@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — OpenAlex adapter
+- **OpenAlex** platform adapter (`openalex.org`). OpenAlex is the only
+  source in the crawler that resolves a **bidirectional citation graph** —
+  both a work's outbound `references` and its inbound `cited_by` (capped) —
+  alongside ORCID-author and ROR-institution unification across platforms.
+  Anonymous reads only; no token required. Components:
+  - `config.resolve_openalex_mailto()` reads `CRAWLER_OPENALEX_MAILTO` — the
+    OpenAlex polite-pool contact email (higher, more consistent rate limits;
+    no token).
+  - `platforms/openalex_adapter/client.py` — `OpenAlexHTTPClient` (httpx
+    wrapper for `api.openalex.org` with polite-pool routing), including
+    `iter_citing_works`, `iter_works_by_entity`, and
+    `resolve_ids_to_canonical` helpers.
+  - `platforms/openalex_adapter/adapter.py` — `OpenAlexAdapter`
+    (`normalize_uri` / `classify` / `fetch` / `expand`) covering five
+    entities: Work, Author, Institution, Source, Funder. Works are active
+    (emit `references` / `cited_by` / `authored_by` / `affiliated_with` /
+    `published_in` / `funded_by` edges); Authors and Institutions fan out to
+    their works (capped); Sources and Funders are passive.
+  - Registry precedence wired in `cli._build_registry`: OpenAlex owns
+    `doi.org` / `orcid.org` / `ror.org` with **DataCite as fallback** (and
+    the Crossref enricher as the final metadata fallback). Citation
+    traversal capped by `max_citations_per_work` (default 50) and
+    `max_works_per_entity` (default 25). See
+    [`docs/OPENALEX.md`](docs/OPENALEX.md).
+
 ### Added — Crossref enrichment pass
 - Post-crawl **Crossref enrichment** that materializes journal/article DOIs
   DataCite cannot resolve. Crossref-issued DOIs (Nature, ACM, IEEE, Elsevier,

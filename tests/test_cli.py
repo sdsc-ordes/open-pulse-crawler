@@ -369,6 +369,26 @@ def test_doctor_datacite_without_token_reports_anonymous(monkeypatch):
     assert datacite_row["ok"] is True
 
 
+def test_doctor_openalex_without_token_reports_anonymous(monkeypatch):
+    """With `CRAWLER_PLATFORMS=openalex.org` and no tokens, doctor reports
+    ANONYMOUS (not MISSING, not erroring): OpenAlex's public reads work
+    without auth. `ok=True` because the adapter can crawl;
+    `auth_required=False` because no token is needed (the
+    `CRAWLER_OPENALEX_MAILTO` polite-pool email is not a token)."""
+    _clear_token_env(monkeypatch)
+    monkeypatch.setenv("CRAWLER_PLATFORMS", "openalex.org")
+    monkeypatch.delenv("CRAWLER_TOKEN__OPENALEX_ORG", raising=False)
+    monkeypatch.delenv("CRAWLER_TOKEN_POOL__OPENALEX_ORG", raising=False)
+    r = runner.invoke(app, ["doctor", "--json"])
+    assert r.exit_code == 0, r.output
+    payload = json.loads(r.output)
+    openalex_row = next((p for p in payload if p["host"] == "openalex.org"), None)
+    assert openalex_row is not None
+    assert openalex_row["tokens"] == 0
+    assert openalex_row["auth_required"] is False
+    assert openalex_row["ok"] is True
+
+
 def test_doctor_text_output_renders_three_states(monkeypatch):
     """Smoke-test the rich-text output picks OK/ANONYMOUS/MISSING correctly."""
     _clear_token_env(monkeypatch)
