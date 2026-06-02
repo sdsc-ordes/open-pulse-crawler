@@ -302,9 +302,39 @@ class TestIterCitingWorks:
             cur = kwargs.get("params", {}).get("cursor")
             return _make_response(200, page1 if cur == "*" else page2)
 
-        with patch.object(client._session, "get", side_effect=fake_get):
+        with patch.object(client._session, "get", side_effect=fake_get) as mock_get:
             out = list(client.iter_citing_works("W2741809807", cap=3))
         assert len(out) == 3
+        assert mock_get.call_count == 1
+
+    def test_stuck_cursor_terminates(self, caplog):
+        """If next_cursor echoes the same value, the iterator must break (not loop)."""
+        client = OpenAlexHTTPClient(mailto="test@example.com")
+        # Page whose meta.next_cursor is identical to the initial cursor ("*").
+        page1 = self._page(
+            [{"id": "https://openalex.org/W1", "doi": None}],
+            next_cursor="*",
+        )
+
+        call_count = []
+
+        def fake_get(path, **kwargs):
+            call_count.append(1)
+            return _make_response(200, page1)
+
+        with caplog.at_level(
+            logging.WARNING,
+            logger="open_pulse_crawler.platforms.openalex_adapter.client",
+        ):
+            with patch.object(client._session, "get", side_effect=fake_get):
+                out = list(client.iter_citing_works("W1", cap=None))
+
+        # Only the first page's results are returned — iterator did not loop.
+        assert [w["id"] for w in out] == ["https://openalex.org/W1"]
+        assert len(call_count) == 1
+        # A warning about the stuck cursor must have been emitted.
+        warns = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("stuck" in m or "did not advance" in m for m in warns)
 
 
 # ---------------------------------------------------------------------------
@@ -388,6 +418,23 @@ class TestResolveIdsToCanonical:
         # All inputs resolve (to own urls here since results empty).
         assert len(out) == 120
         assert out[urls[0]] == urls[0]
+
+    def test_http_doi_prefix_resolved(self):
+        """An http:// doi in the API response must yield a canonical https:// URL."""
+        client = OpenAlexHTTPClient(mailto="test@example.com")
+        w1_url = "https://openalex.org/W1"
+        body = {
+            "results": [
+                {"id": "https://openalex.org/W1",
+                 "doi": "http://doi.org/10.1/B"},
+            ],
+            "meta": {"next_cursor": None},
+        }
+        with patch.object(client._session, "get",
+                          return_value=_make_response(200, body)):
+            out = client.resolve_ids_to_canonical([w1_url])
+        # Must be https://, lower-cased, no doubled prefix.
+        assert out[w1_url] == "https://doi.org/10.1/b"
 
     def test_empty_input(self):
         client = OpenAlexHTTPClient(mailto="test@example.com")

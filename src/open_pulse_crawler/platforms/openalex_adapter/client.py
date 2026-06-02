@@ -46,6 +46,7 @@ _BASE_UA_NO_MAILTO = "OpenPulseCrawler (+https://openpulse.science)"
 
 _OPENALEX_URL_PREFIX = "https://openalex.org/"
 _DOI_URL_PREFIX = "https://doi.org/"
+_DOI_URL_PREFIXES = ("https://doi.org/", "http://doi.org/")
 
 
 def _bare_work_id(work_id: str) -> str:
@@ -223,7 +224,15 @@ class OpenAlexHTTPClient:
                 yielded += 1
                 if cap is not None and yielded >= cap:
                     return
-            cursor = (body.get("meta") or {}).get("next_cursor")
+            next_cursor = (body.get("meta") or {}).get("next_cursor")
+            if next_cursor and next_cursor == cursor:
+                logger.warning(
+                    "_iter_works: next_cursor did not advance (stuck at %r); "
+                    "stopping pagination to avoid infinite loop.",
+                    cursor,
+                )
+                break
+            cursor = next_cursor
 
     def iter_citing_works(
         self, work_openalex_id: str, cap: Optional[int],
@@ -297,8 +306,10 @@ class OpenAlexHTTPClient:
                 doi = work.get("doi")
                 if doi:
                     bare_doi = doi
-                    if bare_doi.startswith(_DOI_URL_PREFIX):
-                        bare_doi = bare_doi[len(_DOI_URL_PREFIX):]
+                    for prefix in _DOI_URL_PREFIXES:
+                        if bare_doi.startswith(prefix):
+                            bare_doi = bare_doi[len(prefix):]
+                            break
                     result[input_url] = f"{_DOI_URL_PREFIX}{bare_doi.lower()}"
                 else:
                     result[input_url] = work_url
