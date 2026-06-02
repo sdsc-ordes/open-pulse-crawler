@@ -298,6 +298,17 @@ class OpenAlexAdapter(PlatformAdapter):
             r for r in (raw.get("referenced_works", []) or []) if r
         ]
 
+        # funded_by — extract funder URLs from grants, deduped preserving order.
+        _seen_funders: set = set()
+        funded_by: List[str] = []
+        for g in raw.get("grants", []) or []:
+            if not isinstance(g, dict):
+                continue
+            funder_url = g.get("funder") or ""
+            if funder_url and funder_url not in _seen_funders:
+                _seen_funders.add(funder_url)
+                funded_by.append(funder_url)
+
         published_in = ""
         primary = raw.get("primary_location", {}) or {}
         if isinstance(primary, dict):
@@ -332,6 +343,7 @@ class OpenAlexAdapter(PlatformAdapter):
             references=references,
             published_in=published_in,
             creators=creators,
+            funded_by=funded_by,
             external_identifiers=self._external_ids(raw),
         )
 

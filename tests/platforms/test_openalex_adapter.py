@@ -226,7 +226,10 @@ def test_fetch_work_builds_openalex_work():
                 "display_name": "Glia",
             },
         },
-        "grants": [{"funder": "https://openalex.org/F1", "funder_display_name": "NSF"}],
+        "grants": [
+            {"funder": "https://openalex.org/F4320332161", "funder_display_name": "NSF"},
+            {"funder": "https://openalex.org/F4320306076", "funder_display_name": "NIH"},
+        ],
         "ids": {
             "openalex": "https://openalex.org/W2741809807",
             "doi": "https://doi.org/10.1002/glia.x",
@@ -269,7 +272,11 @@ def test_fetch_work_builds_openalex_work():
     # expand-filled fields stay empty.
     assert node.cited_by == []
     assert node.authored_by == []
-    assert node.funded_by == []
+    # funded_by is populated from grants in _build_work.
+    assert node.funded_by == [
+        "https://openalex.org/F4320332161",
+        "https://openalex.org/F4320306076",
+    ]
     # the bare doi was passed to the client getter.
     assert client.calls == [("get_work", "10.1002/glia.x")]
 
@@ -540,6 +547,30 @@ def test_expand_work_full():
     # funded_by
     assert ("https://doi.org/10.1/x", "funded_by",
             "https://openalex.org/F1") in edges
+
+
+def test_expand_work_funded_by_edges_from_grants_fixture():
+    """funded_by edges are emitted when the work was built from a grants-bearing API response."""
+    raw = {
+        "id": "https://openalex.org/W9999",
+        "doi": "https://doi.org/10.1/funded",
+        "grants": [
+            {"funder": "https://openalex.org/F4320332161", "funder_display_name": "NSF"},
+            {"funder": "https://openalex.org/F4320306076", "funder_display_name": "NIH"},
+        ],
+    }
+    client = FakeClient(works={"10.1/funded": raw}, resolved={})
+    adapter = OpenAlexAdapter(client=client)
+    node = adapter.fetch("https://doi.org/10.1/funded")
+    assert node.funded_by == [
+        "https://openalex.org/F4320332161",
+        "https://openalex.org/F4320306076",
+    ]
+    edges = _edge_tuples(adapter.expand(node, ExpandOpts()))
+    assert ("https://doi.org/10.1/funded", "funded_by",
+            "https://openalex.org/F4320332161") in edges
+    assert ("https://doi.org/10.1/funded", "funded_by",
+            "https://openalex.org/F4320306076") in edges
 
 
 def test_expand_work_cited_by_cap_honored():
