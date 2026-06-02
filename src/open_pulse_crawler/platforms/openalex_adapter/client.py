@@ -19,6 +19,7 @@ and retries once. A second 429 raises ``httpx.HTTPStatusError``.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from typing import Any, Dict, Iterable, List, Optional
 from urllib.parse import quote
@@ -48,12 +49,35 @@ _OPENALEX_URL_PREFIX = "https://openalex.org/"
 _DOI_URL_PREFIX = "https://doi.org/"
 _DOI_URL_PREFIXES = ("https://doi.org/", "http://doi.org/")
 
+# A bare DOI looks like ``10.<registrant>/<suffix>`` (e.g. ``10.1002/glia.24258``).
+# OpenAlex's ``/works/{id}`` and ``/funders/{id}`` endpoints 404 on a bare DOI —
+# they require the ``doi:`` form or a full DOI URL.
+_BARE_DOI_RE = re.compile(r"^10\.\d{2,}/")
+
 
 def _bare_work_id(work_id: str) -> str:
     """Strip any ``https://openalex.org/`` prefix, returning the bare ``W…`` id."""
     if work_id.startswith(_OPENALEX_URL_PREFIX):
         return work_id[len(_OPENALEX_URL_PREFIX):]
     return work_id
+
+
+def _quote_entity_id(id: str) -> str:
+    """Quote an OpenAlex single-entity id, normalizing bare DOIs to ``doi:`` form.
+
+    A bare DOI (matching :data:`_BARE_DOI_RE`) that is not already in ``doi:``
+    or full-URL form is prefixed with ``doi:`` — OpenAlex does not resolve a
+    bare DOI. ``W…``/``A…``/``doi:…``/full-URL forms pass through unchanged.
+    The ``:`` and ``/`` are kept unescaped (``safe=':/'``) so the resulting path
+    is, e.g., ``doi:10.1002/glia.24258``.
+    """
+    if (
+        _BARE_DOI_RE.match(id)
+        and not id.startswith("doi:")
+        and not id.startswith("http")
+    ):
+        id = f"doi:{id}"
+    return quote(id, safe=":/")
 
 
 class OpenAlexHTTPClient:
@@ -166,9 +190,10 @@ class OpenAlexHTTPClient:
     def get_work(self, id: str) -> Optional[Dict[str, Any]]:
         """``GET /works/{id}`` → entity dict, or ``None`` on 404.
 
-        ``id`` accepts a bare ``W…`` id, a ``doi:10…`` form, or a full DOI URL.
+        ``id`` accepts a bare ``W…`` id, a bare DOI (``10…/…``, normalized to
+        ``doi:`` form), a ``doi:10…`` form, or a full DOI URL.
         """
-        return self._get_entity(f"/works/{quote(id, safe=':/')}")
+        return self._get_entity(f"/works/{_quote_entity_id(id)}")
 
     def get_author(self, id: str) -> Optional[Dict[str, Any]]:
         """``GET /authors/{id}`` (``A…``, ``orcid:…``, or ORCID URL)."""
@@ -183,8 +208,12 @@ class OpenAlexHTTPClient:
         return self._get_entity(f"/sources/{quote(id, safe=':/')}")
 
     def get_funder(self, id: str) -> Optional[Dict[str, Any]]:
-        """``GET /funders/{id}`` (``F…``)."""
-        return self._get_entity(f"/funders/{quote(id, safe=':/')}")
+        """``GET /funders/{id}`` (``F…`` or a Funder-Registry DOI).
+
+        A bare DOI (``10.13039/…``) is normalized to ``doi:`` form — OpenAlex
+        does not resolve a bare DOI.
+        """
+        return self._get_entity(f"/funders/{_quote_entity_id(id)}")
 
     # ---- cursor-paginated list helpers --------------------------------------
 

@@ -124,6 +124,65 @@ class TestGetWork:
             client.get_work("https://doi.org/10.1038/abc")
         assert captured == ["/works/https://doi.org/10.1038/abc"]
 
+    def test_get_work_bare_doi_normalized_to_doi_form(self):
+        """A bare DOI (``10.xxxx/…``) is prefixed with ``doi:`` before quoting.
+
+        OpenAlex's ``/works/{id}`` endpoint 404s on a bare DOI; it requires the
+        ``doi:`` form (or a full URL). The client owns this id-form contract.
+        """
+        client = OpenAlexHTTPClient(mailto="test@example.com")
+        captured = []
+
+        def fake_get(path, **kwargs):
+            captured.append(path)
+            return _make_response(200, WORK_FIXTURE)
+
+        with patch.object(client._session, "get", side_effect=fake_get):
+            client.get_work("10.1002/glia.24258")
+        # doi: prefix added; the ':' and '/' survive quoting (safe=':/').
+        assert captured == ["/works/doi:10.1002/glia.24258"]
+        assert "%2F" not in captured[0]
+        assert "%3A" not in captured[0]
+
+    def test_get_work_doi_form_not_double_prefixed(self):
+        """An id already in ``doi:`` form must not get a second ``doi:`` prefix."""
+        client = OpenAlexHTTPClient(mailto="test@example.com")
+        captured = []
+
+        def fake_get(path, **kwargs):
+            captured.append(path)
+            return _make_response(200, WORK_FIXTURE)
+
+        with patch.object(client._session, "get", side_effect=fake_get):
+            client.get_work("doi:10.1/x")
+        assert captured == ["/works/doi:10.1/x"]
+
+    def test_get_work_openalex_id_unchanged(self):
+        """A bare ``W…`` id must pass through untouched."""
+        client = OpenAlexHTTPClient(mailto="test@example.com")
+        captured = []
+
+        def fake_get(path, **kwargs):
+            captured.append(path)
+            return _make_response(200, WORK_FIXTURE)
+
+        with patch.object(client._session, "get", side_effect=fake_get):
+            client.get_work("W123")
+        assert captured == ["/works/W123"]
+
+    def test_get_funder_bare_doi_normalized_to_doi_form(self):
+        """A bare funder DOI (Crossref Funder Registry) gets the ``doi:`` prefix."""
+        client = OpenAlexHTTPClient(mailto="test@example.com")
+        captured = []
+
+        def fake_get(path, **kwargs):
+            captured.append(path)
+            return _make_response(200, FUNDER_FIXTURE)
+
+        with patch.object(client._session, "get", side_effect=fake_get):
+            client.get_funder("10.13039/501100001691")
+        assert captured == ["/funders/doi:10.13039/501100001691"]
+
 
 # ---------------------------------------------------------------------------
 # 2. mailto / polite-pool behaviour
