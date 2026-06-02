@@ -1,4 +1,6 @@
 """Tests for the OpenAlex PlatformAdapter (normalize_uri / classify / fetch + builders)."""
+import logging
+
 import pytest
 
 from open_pulse_crawler.models import (
@@ -6,6 +8,7 @@ from open_pulse_crawler.models import (
     OpenAlexFunder,
 )
 from open_pulse_crawler.node_id import NodeKind
+from open_pulse_crawler.platforms.base import ExpandOpts
 from open_pulse_crawler.platforms.openalex_adapter.adapter import OpenAlexAdapter
 
 
@@ -16,12 +19,17 @@ class FakeClient:
     """A small stand-in for OpenAlexHTTPClient: prebuilt dicts keyed by id."""
 
     def __init__(self, works=None, authors=None, institutions=None,
-                 sources=None, funders=None):
+                 sources=None, funders=None, resolved=None,
+                 citing=None, entity_works=None):
         self.works = works or {}
         self.authors = authors or {}
         self.institutions = institutions or {}
         self.sources = sources or {}
         self.funders = funders or {}
+        # expand-fakes
+        self.resolved = resolved or {}
+        self.citing = citing or []
+        self.entity_works = entity_works or []
         self.calls = []
 
     def get_work(self, id):
@@ -43,6 +51,28 @@ class FakeClient:
     def get_funder(self, id):
         self.calls.append(("get_funder", id))
         return self.funders.get(id)
+
+    # ---- expand-side methods ----
+    def resolve_ids_to_canonical(self, urls):
+        self.calls.append(("resolve_ids_to_canonical", list(urls)))
+        # default any unresolved input to itself, then override from canned map.
+        out = {u: u for u in urls}
+        out.update({u: self.resolved[u] for u in urls if u in self.resolved})
+        return out
+
+    def iter_citing_works(self, work_openalex_id, cap):
+        self.calls.append(("iter_citing_works", work_openalex_id, cap))
+        items = self.citing
+        if cap is not None:
+            items = items[:cap]
+        return iter(items)
+
+    def iter_works_by_entity(self, filter_key, entity_id, cap):
+        self.calls.append(("iter_works_by_entity", filter_key, entity_id, cap))
+        items = self.entity_works
+        if cap is not None:
+            items = items[:cap]
+        return iter(items)
 
 
 class FakeFallback:
@@ -441,11 +471,167 @@ def test_fetch_miss_no_fallback_returns_none():
     assert adapter.fetch("https://ror.org/02s376052") is None
 
 
-# --- expand placeholder + rate limit --------------------------------
+# --- expand ----------------------------------------------------------
 
 
-def test_expand_is_empty_placeholder(adapter):
-    assert list(adapter.expand(object(), None)) == []
+def _edge_tuples(edges):
+    return [(e.src, e.kind, e.dst) for e in edges]
+
+
+def test_expand_unknown_node_emits_nothing(adapter):
+    assert list(adapter.expand(object(), ExpandOpts())) == []
+
+
+def test_expand_work_full():
+    node = OpenAlexWork(
+        url="https://doi.org/10.1/x",
+        full_name="10.1/x",
+        platform="openalex",
+        doi="10.1/x",
+        openalex_id="W1",
+        cited_by_count=3,
+        references=["https://openalex.org/W111", "https://openalex.org/W222"],
+        published_in="https://openalex.org/S99",
+        funded_by=["https://openalex.org/F1"],
+        creators=[
+            {
+                "name": "Jane Doe",
+                "orcid": "0000-0002-1825-0097",
+                "institutions": ["02s376052"],
+            },
+            {  # no orcid → authored_by + affiliated_with skipped
+                "name": "Anon",
+                "orcid": "",
+                "institutions": ["999999"],
+            },
+        ],
+    )
+    client = FakeClient(
+        resolved={
+            "https://openalex.org/W111": "https://doi.org/10.5/ref1",
+            # W222 has no resolved doi → falls back to its own url
+        },
+        citing=[
+            {"id": "https://openalex.org/W333", "doi": "https://doi.org/10.7/CITE"},
+            {"id": "https://openalex.org/W444", "doi": None},
+        ],
+    )
+    adapter = OpenAlexAdapter(client=client)
+    opts = ExpandOpts(max_citations_per_work=50)
+    edges = _edge_tuples(adapter.expand(node, opts))
+
+    # references (outbound), canonical dst from resolver
+    assert ("https://doi.org/10.1/x", "references", "https://doi.org/10.5/ref1") in edges
+    assert ("https://doi.org/10.1/x", "references", "https://openalex.org/W222") in edges
+    # cited_by: citing work with doi → doi.org lowercased; without doi → openalex url
+    assert ("https://doi.org/10.1/x", "cited_by", "https://doi.org/10.7/cite") in edges
+    assert ("https://doi.org/10.1/x", "cited_by", "https://openalex.org/W444") in edges
+    # authored_by (orcid url) only for creator with orcid
+    assert ("https://doi.org/10.1/x", "authored_by",
+            "https://orcid.org/0000-0002-1825-0097") in edges
+    # affiliated_with anchored on the author's orcid url
+    assert ("https://orcid.org/0000-0002-1825-0097", "affiliated_with",
+            "https://ror.org/02s376052") in edges
+    # creator without orcid → no authored_by, no affiliated_with
+    assert all(e[2] != "https://ror.org/999999" for e in edges)
+    # published_in
+    assert ("https://doi.org/10.1/x", "published_in",
+            "https://openalex.org/S99") in edges
+    # funded_by
+    assert ("https://doi.org/10.1/x", "funded_by",
+            "https://openalex.org/F1") in edges
+
+
+def test_expand_work_cited_by_cap_honored():
+    node = OpenAlexWork(
+        url="https://openalex.org/W1", full_name="W1", platform="openalex",
+        openalex_id="W1", cited_by_count=10,
+    )
+    client = FakeClient(citing=[
+        {"id": f"https://openalex.org/W{i}", "doi": None} for i in range(10)
+    ])
+    adapter = OpenAlexAdapter(client=client)
+    opts = ExpandOpts(max_citations_per_work=2)
+    edges = [e for e in adapter.expand(node, opts) if e.kind == "cited_by"]
+    assert len(edges) == 2
+    # cap was passed down to the client
+    assert ("iter_citing_works", "W1", 2) in client.calls
+
+
+def test_expand_work_cited_by_truncation_logged(caplog):
+    node = OpenAlexWork(
+        url="https://openalex.org/W1", full_name="W1", platform="openalex",
+        openalex_id="W1", cited_by_count=100,
+    )
+    client = FakeClient(citing=[
+        {"id": "https://openalex.org/W2", "doi": None},
+    ])
+    adapter = OpenAlexAdapter(client=client)
+    opts = ExpandOpts(max_citations_per_work=1)
+    with caplog.at_level(logging.INFO):
+        list(adapter.expand(node, opts))
+    assert any("cited_by truncated" in r.message for r in caplog.records)
+
+
+def test_expand_work_empty_openalex_id_skips_cited_by():
+    node = OpenAlexWork(
+        url="https://doi.org/10.1/x", full_name="10.1/x", platform="openalex",
+        doi="10.1/x", openalex_id="", references=["https://openalex.org/W111"],
+    )
+    client = FakeClient(
+        resolved={"https://openalex.org/W111": "https://doi.org/10.5/ref1"},
+        citing=[{"id": "https://openalex.org/W2", "doi": None}],
+    )
+    adapter = OpenAlexAdapter(client=client)
+    edges = _edge_tuples(adapter.expand(node, ExpandOpts()))
+    # references still resolved
+    assert ("https://doi.org/10.1/x", "references", "https://doi.org/10.5/ref1") in edges
+    # cited_by skipped (no openalex_id)
+    assert all(e[1] != "cited_by" for e in edges)
+    assert all(c[0] != "iter_citing_works" for c in client.calls)
+
+
+def test_expand_author_emits_authored():
+    node = OpenAlexAuthor(
+        url="https://orcid.org/0000-0002-1825-0097",
+        login="0000-0002-1825-0097", platform="openalex",
+        orcid="0000-0002-1825-0097", openalex_id="A55",
+    )
+    client = FakeClient(entity_works=[
+        {"id": "https://openalex.org/W1", "doi": "https://doi.org/10.1/A"},
+        {"id": "https://openalex.org/W2", "doi": None},
+    ])
+    adapter = OpenAlexAdapter(client=client)
+    opts = ExpandOpts(max_works_per_entity=25)
+    edges = _edge_tuples(adapter.expand(node, opts))
+    assert (node.url, "authored", "https://doi.org/10.1/a") in edges
+    assert (node.url, "authored", "https://openalex.org/W2") in edges
+    assert ("iter_works_by_entity", "author.id", "A55", 25) in client.calls
+
+
+def test_expand_institution_emits_affiliated_work():
+    node = OpenAlexInstitution(
+        url="https://ror.org/02s376052", login="02s376052",
+        platform="openalex", ror_id="02s376052", openalex_id="I77",
+    )
+    client = FakeClient(entity_works=[
+        {"id": "https://openalex.org/W1", "doi": None},
+    ])
+    adapter = OpenAlexAdapter(client=client)
+    edges = _edge_tuples(adapter.expand(node, ExpandOpts()))
+    assert (node.url, "affiliated_work", "https://openalex.org/W1") in edges
+    assert any(c[0] == "iter_works_by_entity" and c[1] == "institutions.id"
+               for c in client.calls)
+
+
+def test_expand_source_and_funder_emit_nothing():
+    src = OpenAlexSource(url="https://openalex.org/S99", login="S99",
+                         platform="openalex", openalex_id="S99")
+    fund = OpenAlexFunder(url="https://openalex.org/F1", login="F1",
+                          platform="openalex", openalex_id="F1")
+    adapter = OpenAlexAdapter(client=FakeClient())
+    assert list(adapter.expand(src, ExpandOpts())) == []
+    assert list(adapter.expand(fund, ExpandOpts())) == []
 
 
 def test_rate_limit_state(adapter):

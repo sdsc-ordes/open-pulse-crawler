@@ -415,10 +415,105 @@ class OpenAlexAdapter(PlatformAdapter):
             external_identifiers=self._external_ids(raw),
         )
 
-    # ---- expand (placeholder; real impl is a later task) -------------------
+    # ---- expand ------------------------------------------------------------
+
+    @staticmethod
+    def _canonical_doi_url(doi: str) -> str:
+        """Strip a doi.org URL prefix (http/https) then return a lowercased
+        ``https://doi.org/<bare doi>`` (mirrors the client's logic)."""
+        rest = doi
+        for prefix in ("https://doi.org/", "http://doi.org/"):
+            if rest.startswith(prefix):
+                rest = rest[len(prefix):]
+                break
+        return f"https://doi.org/{rest.lower()}"
 
     def expand(self, node, opts: ExpandOpts) -> Iterable[Edge]:
-        return iter(())
+        if isinstance(node, OpenAlexWork):
+            yield from self._expand_work(node, opts)
+        elif isinstance(node, OpenAlexAuthor):
+            yield from self._expand_entity(
+                node, opts, filter_key="author.id", kind="authored",
+            )
+        elif isinstance(node, OpenAlexInstitution):
+            yield from self._expand_entity(
+                node, opts, filter_key="institutions.id", kind="affiliated_work",
+            )
+        # OpenAlexSource / OpenAlexFunder are passive — no edges.
+        else:
+            yield from ()
+
+    def _expand_work(self, node: OpenAlexWork, opts: ExpandOpts) -> Iterable[Edge]:
+        # references (outbound) — resolve raw W-urls to canonical edge urls.
+        if node.references:
+            resolved = self._client.resolve_ids_to_canonical(node.references)
+            for w_url in node.references:
+                yield Edge(src=node.url, kind="references",
+                           dst=resolved.get(w_url, w_url))
+
+        # cited_by (inbound, capped) — needs a stable openalex_id anchor.
+        if node.openalex_id:
+            for c in self._client.iter_citing_works(
+                node.openalex_id, cap=opts.max_citations_per_work,
+            ):
+                doi = c.get("doi")
+                dst = self._canonical_doi_url(doi) if doi else c["id"]
+                yield Edge(src=node.url, kind="cited_by", dst=dst)
+            if (opts.max_citations_per_work is not None
+                    and node.cited_by_count is not None
+                    and node.cited_by_count > opts.max_citations_per_work):
+                logger.info(
+                    "OpenAlex cited_by truncated for %s: %d of %d",
+                    node.url, opts.max_citations_per_work, node.cited_by_count,
+                )
+
+        # authored_by + affiliated_with — only for creators with an ORCID
+        # (no stable author node to anchor otherwise).
+        for creator in node.creators or []:
+            if not isinstance(creator, dict):
+                continue
+            orcid = creator.get("orcid", "") or ""
+            if not orcid:
+                continue
+            author_url = f"https://orcid.org/{orcid}"
+            yield Edge(src=node.url, kind="authored_by", dst=author_url)
+            for ror in creator.get("institutions", []) or []:
+                if not ror:
+                    continue
+                yield Edge(src=author_url, kind="affiliated_with",
+                           dst=f"https://ror.org/{ror}")
+
+        # published_in — source venue url
+        if node.published_in:
+            yield Edge(src=node.url, kind="published_in", dst=node.published_in)
+
+        # funded_by — funder urls (may be empty)
+        for url in node.funded_by or []:
+            if url:
+                yield Edge(src=node.url, kind="funded_by", dst=url)
+
+    def _expand_entity(
+        self, node, opts: ExpandOpts, *, filter_key: str, kind: str,
+    ) -> Iterable[Edge]:
+        """Seed-expansion for Author / Institution: works by that entity (capped)."""
+        if not node.openalex_id:
+            return
+        cap = opts.max_works_per_entity
+        emitted = 0
+        for w in self._client.iter_works_by_entity(
+            filter_key, node.openalex_id, cap=cap,
+        ):
+            doi = w.get("doi")
+            dst = self._canonical_doi_url(doi) if doi else w["id"]
+            yield Edge(src=node.url, kind=kind, dst=dst)
+            emitted += 1
+        # Best-effort "possibly truncated" note: no total count available, so
+        # only log when the iterator returned exactly ``cap`` items.
+        if cap is not None and emitted == cap:
+            logger.info(
+                "OpenAlex %s possibly truncated for %s: emitted %d (cap)",
+                kind, node.url, cap,
+            )
 
     # ---- rate_limit --------------------------------------------------------
 
