@@ -53,10 +53,10 @@ URL between a Work (any other prefix) and a Funder.
 | `OpenAlexWork` | `references` | Work (doi.org else openalex W URL) |
 | `OpenAlexWork` | `cited_by` | Work (doi.org else openalex W URL), **capped** |
 | `OpenAlexWork` | `authored_by` | Author (orcid.org URL) |
+| `OpenAlexWork` (via authorship; edge `src` is the author's orcid.org URL) | `affiliated_with` | Institution (ror.org URL) |
 | `OpenAlexWork` | `published_in` | Source venue URL |
 | `OpenAlexWork` | `funded_by` | Funder URL |
-| `OpenAlexAuthor` (anchor) | `affiliated_with` | Institution (ror.org URL) |
-| `OpenAlexAuthor` | `authored` | Work (doi.org else openalex W URL), **capped** |
+| `OpenAlexAuthor` (seed expansion) | `authored` | Work (doi.org else openalex W URL), **capped** |
 | `OpenAlexInstitution` | `affiliated_work` | Work (doi.org else openalex W URL), **capped** |
 | `OpenAlexSource` | *(passive)* | — |
 | `OpenAlexFunder` | *(passive)* | — |
