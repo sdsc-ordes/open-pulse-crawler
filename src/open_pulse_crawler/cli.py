@@ -14,7 +14,7 @@ from rich.table import Table
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from dotenv import load_dotenv
 
-from .config import enabled_instances, resolve_tokens
+from .config import enabled_instances, resolve_tokens, resolve_openalex_mailto
 from .models import GraphData
 from .platforms import PlatformRegistry
 from .platforms.github import GitHubClient, resolve_cache_dir
@@ -136,7 +136,42 @@ def _build_registry(
     reg = PlatformRegistry()
     github_client: Optional[GitHubClient] = None
     missing: List[str] = []
+
+    # --- Precedence: OpenAlex owns the shared hosts (doi.org/orcid.org/ror.org)
+    # when enabled, with DataCite as its fetch fallback. -----------------------
+    #
+    # Order-independence mechanism: the per-host loop below can't guarantee
+    # DataCite is built before OpenAlex (the user may list them in any order),
+    # so we PRE-BUILD the DataCiteAdapter here, before the loop. This gives a
+    # deterministic ``datacite_adapter`` that OpenAlex can take as its fallback
+    # regardless of list ordering. We register DataCite's host set now (rule 1:
+    # api/commons always; shared hosts only when OpenAlex is NOT enabled) and
+    # then SKIP the ``datacite.org`` branch inside the loop.
+    openalex_enabled = "openalex.org" in platforms_list
+    datacite_enabled = "datacite.org" in platforms_list
+    datacite_adapter = None
+    if datacite_enabled:
+        from .platforms.datacite_adapter.client import DataCiteHTTPClient
+        from .platforms.datacite_adapter.adapter import DataCiteAdapter
+        dc_tokens = resolve_tokens(_token_host_for("datacite.org"))
+        if not dc_tokens:
+            # Anonymous DataCite: public /dois and /clients are readable without
+            # a token. Surface the gap via ``missing`` (matches the historical
+            # no-token path which appended datacite.org to ``missing``).
+            missing.append("datacite.org")
+        dcc = DataCiteHTTPClient(host="api.datacite.org", tokens=dc_tokens)
+        datacite_adapter = DataCiteAdapter(client=dcc, instance_host="api.datacite.org")
+        # api/commons always owned by DataCite; shared hosts only when OpenAlex
+        # is not in play (otherwise OpenAlex registers them below).
+        dc_hosts = ["api.datacite.org", "commons.datacite.org"]
+        if not openalex_enabled:
+            dc_hosts = ["doi.org", "ror.org", "orcid.org"] + dc_hosts
+        reg.register_hosts(dc_hosts, datacite_adapter)
+
     for host in platforms_list:
+        if host == "datacite.org":
+            # Already handled before the loop (see precedence block above).
+            continue
         tokens = resolve_tokens(_token_host_for(host))
         if not tokens:
             missing.append(host)
@@ -162,19 +197,24 @@ def _build_registry(
                 isc = InfoscienceClient(host=host, tokens=[])
                 reg.register(InfoscienceAdapter(isc, instance_host=host))
                 continue
-            if host == "datacite.org":
-                # Anonymous DataCite: public /dois and /clients are readable
-                # without a token. ``missing`` still surfaces the gap via
-                # doctor. The user-facing platform key is ``datacite.org`` but
-                # the adapter owns 5 URL hosts (doi.org, ror.org, orcid.org,
-                # api.datacite.org, commons.datacite.org).
-                from .platforms.datacite_adapter.client import DataCiteHTTPClient
-                from .platforms.datacite_adapter.adapter import DataCiteAdapter
-                dcc = DataCiteHTTPClient(host="api.datacite.org", tokens=[])
-                adapter = DataCiteAdapter(client=dcc, instance_host="api.datacite.org")
+            if host == "openalex.org":
+                # Anonymous OpenAlex: public works/authors/etc. are readable
+                # without a token (mailto only routes to the polite pool).
+                # ``missing`` still surfaces the gap via doctor. OpenAlex owns
+                # the shared hosts (doi.org/orcid.org/ror.org) with the
+                # pre-built DataCiteAdapter as its fetch fallback when DataCite
+                # is also enabled.
+                from .platforms.openalex_adapter.client import OpenAlexHTTPClient
+                from .platforms.openalex_adapter.adapter import OpenAlexAdapter
+                oac = OpenAlexHTTPClient(mailto=resolve_openalex_mailto())
+                adapter = OpenAlexAdapter(
+                    client=oac,
+                    instance_host="api.openalex.org",
+                    fallback_adapter=datacite_adapter if datacite_enabled else None,
+                )
                 reg.register_hosts(
-                    ["doi.org", "ror.org", "orcid.org",
-                     "api.datacite.org", "commons.datacite.org"],
+                    ["openalex.org", "api.openalex.org",
+                     "doi.org", "orcid.org", "ror.org"],
                     adapter,
                 )
                 continue
@@ -211,14 +251,21 @@ def _build_registry(
             from .platforms.infoscience.adapter import InfoscienceAdapter
             isc = InfoscienceClient(host=host, tokens=tokens)
             reg.register(InfoscienceAdapter(isc, instance_host=host))
-        elif host == "datacite.org":
-            from .platforms.datacite_adapter.client import DataCiteHTTPClient
-            from .platforms.datacite_adapter.adapter import DataCiteAdapter
-            dcc = DataCiteHTTPClient(host="api.datacite.org", tokens=tokens)
-            adapter = DataCiteAdapter(client=dcc, instance_host="api.datacite.org")
+        elif host == "openalex.org":
+            # OpenAlex is anonymous-capable (no token), so it normally lands in
+            # the no-token branch above. Handled here too for completeness in
+            # case a token is ever resolved for it.
+            from .platforms.openalex_adapter.client import OpenAlexHTTPClient
+            from .platforms.openalex_adapter.adapter import OpenAlexAdapter
+            oac = OpenAlexHTTPClient(mailto=resolve_openalex_mailto())
+            adapter = OpenAlexAdapter(
+                client=oac,
+                instance_host="api.openalex.org",
+                fallback_adapter=datacite_adapter if datacite_enabled else None,
+            )
             reg.register_hosts(
-                ["doi.org", "ror.org", "orcid.org",
-                 "api.datacite.org", "commons.datacite.org"],
+                ["openalex.org", "api.openalex.org",
+                 "doi.org", "orcid.org", "ror.org"],
                 adapter,
             )
         elif host == "huggingface.co":
