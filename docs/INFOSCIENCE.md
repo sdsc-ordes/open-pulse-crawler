@@ -61,49 +61,92 @@ to provision a DSpace API token if you need authenticated access.
 Infoscience, so the adapter doesn't auto-rewrite them. Resolve manually
 via doi.org redirect if needed.
 
-## Manual-test recipes
+## Recipes
 
-### Single publication
+Each recipe shows the **command**, **trimmed real output**, and **what to look
+for**. All runs are anonymous — no token required.
 
-```bash
-opc crawl --platforms infoscience.epfl.ch \
-    --default-host infoscience.epfl.ch --rounds 2 \
-    https://infoscience.epfl.ch/handle/20.500.14299/182247
-```
-
-### Researcher → all their publications
+### Crawl a single publication (Item seed)
 
 ```bash
-opc crawl --platforms infoscience.epfl.ch \
-    --default-host infoscience.epfl.ch --rounds 2 \
-    https://infoscience.epfl.ch/handle/20.500.14299/99923
+opc crawl --platforms infoscience.epfl.ch --rounds 1 \
+    https://infoscience.epfl.ch/handle/20.500.14299/182247 \
+    --output-dir ./out --no-cache --no-csv
 ```
 
-Round 0 fetches the Person; round 1 emits `authored` edges to every
-publication attributable to them via the CRIS author.authority field.
+```text
+✓ Registered adapters for: infoscience.epfl.ch
+✓ Added 1 seed nodes
+  - Round 0 completed: 1 nodes processed in 0.6s, 2 nodes
+    in queue (2 users, 0 orgs, 0 repos)
+  - Total nodes: 1
+  - Users: 0, Orgs: 0, Repos: 1
+```
 
-### OrgUnit hierarchy + publications
+**What to look for:** the seed resolves via the DSpace `pid/find` redirect and
+lands as 1 `InfoscienceItem`. The 2 queued users are the `authored_by` persons
+whose DSpace authority UUIDs were extracted from the item's author metadata. A
+second round (`--rounds 2`) would fetch those `InfosciencePerson` nodes.
+
+### Crawl a researcher and their lab affiliation (Person seed)
 
 ```bash
-opc crawl --platforms infoscience.epfl.ch \
-    --default-host infoscience.epfl.ch --rounds 2 \
-    https://infoscience.epfl.ch/handle/20.500.14299/77777
+opc crawl --platforms infoscience.epfl.ch --rounds 2 \
+    https://infoscience.epfl.ch/handle/20.500.14299/232 \
+    --output-dir ./out --no-cache --no-csv
 ```
 
-Round 1 emits `has_publication` edges to all items affiliated with the
-department + `parent_of` edges to child OrgUnits.
+```text
+✓ Registered adapters for: infoscience.epfl.ch
+✓ Added 1 seed nodes
+  - Round 0 completed: 1 nodes processed in 0.3s, 1 nodes
+    in queue (1 users, 0 orgs, 0 repos)
+  - Round 1 completed: 1 nodes processed in 0.4s, 0 nodes
+    in queue (0 users, 0 orgs, 0 repos)
+  - Crawl completed after 2 rounds
+  - Total nodes: 2
+  - Users: 1, Orgs: 1, Repos: 0
+```
 
-### Cross-platform (Infoscience + GitHub)
+**2 nodes**: 1 `InfosciencePerson` (Viganò, Paola — ORCID
+`0000-0002-5279-109X`) and 1 `InfoscienceOrgUnit` (Institut d'architecture et
+de la ville). Round 0 fetches the Person; round 1 follows the `member_of` edge
+to the OrgUnit identified by the person's `affiliation_uuid`.
+
+**What to look for:** the person node carries `orcid`, `sciper_id`, and
+`scopus_id` as embedded metadata fields. The `member_of` edge is the only
+outbound edge emitted by a Person seed — `authored` edges to publications are
+not currently yielded (the `author.authority` Solr field returns 0 results
+against anonymous DSpace; see Limitations).
+
+### Crawl a laboratory unit (OrgUnit seed)
 
 ```bash
-CRAWLER_PLATFORMS=infoscience.epfl.ch,github.com \
-CRAWLER_TOKEN__GITHUB_COM=ghp_… \
-opc crawl --rounds 2 \
-    https://infoscience.epfl.ch/handle/20.500.14299/182247
+opc crawl --platforms infoscience.epfl.ch --rounds 1 \
+    https://infoscience.epfl.ch/handle/20.500.14299/509 \
+    --output-dir ./out --no-cache --no-csv
 ```
 
-EPFL papers with `dc.relation.uri` / `dc.relation.isversionof` fields
-pointing at GitHub repos spawn cross-platform discovery.
+```text
+✓ Registered adapters for: infoscience.epfl.ch
+✓ Added 1 seed nodes
+  - Round 0 completed: 1 nodes processed in 0.7s, 0 nodes
+    in queue (0 users, 0 orgs, 0 repos)
+  - Crawl completed after 1 rounds
+  - Total nodes: 1
+  - Users: 0, Orgs: 1, Repos: 0
+```
+
+**1 node**: the `InfoscienceOrgUnit` for MACE (Microbiome Adaptation to the
+Changing Environment, handle `20.500.14299/509`, level-4 unit under ENAC).
+
+**What to look for:** the queue is empty after round 0. The `has_publication`
+and `parent_of` expand queries use the `author.parent-organization.authority`
+and `organization.parentOrganization.authority` Solr fields respectively;
+these fields are not indexed in Infoscience's DSpace 7 Solr schema, so both
+return 0 results. To retrieve publications for a unit, use the person seed
+approach (recipe 2) and collect the `member_of` → `authored` chain, or query
+the Infoscience web interface directly. See Limitations for details.
 
 ## Limitations
 - **Community + Collection layers skipped.** The DSpace community/collection
