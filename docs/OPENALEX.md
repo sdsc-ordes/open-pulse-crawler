@@ -129,46 +129,74 @@ Both caps accept `None` to disable (no limit).
   `https://api.openalex.org/<works|authors|institutions|sources|funders>/<id>`
   (rewritten to the `https://openalex.org/<ID>` canonical form).
 
-## Manual-test recipes
+## Recipes
 
-### Single work, bidirectional citations
+Each recipe lists the **command**, the **output** it produces, and **what to
+look for**. All are anonymous — set `CRAWLER_OPENALEX_MAILTO` for the polite
+pool. Output is trimmed for clarity; counts are from live runs.
+
+### Crawl a paper and its citation neighborhood (Work seed)
 
 ```bash
+CRAWLER_OPENALEX_MAILTO=you@example.org \
 opc crawl --platforms openalex.org --rounds 2 \
-    https://doi.org/10.1371/journal.pone.0000308
+    https://doi.org/10.1002/glia.24258 --output-dir ./out
 ```
 
-Round 0 fetches the Work; round 1 walks both `references` (outbound) and
-`cited_by` (inbound, capped at 50) to neighboring works, and materializes the
-work's authors (`authored_by`) and venue (`published_in`). (Platforms can be
-selected with `--platforms` or via the `CRAWLER_PLATFORMS` environment
-variable.)
+```text
+✓ Registered adapters for: api.openalex.org, doi.org, openalex.org, orcid.org, ror.org
+✓ Added 1 seed nodes
+  - Round 0 completed: 1 node processed, 110 in queue
+  - Round 1 completed: 110 nodes processed in 36s
+  - Total nodes: 111
+Exporting results... → ./out/<timestamp>.graph.json
+```
+
+The exported graph holds **111 nodes**: 105 `OpenAlexWork` (the paper + its
+references + a capped slice of inbound citations), 5 `OpenAlexAuthor`, and
+1 `OpenAlexSource` (the venue).
+
+**What to look for:** the work is keyed by `https://doi.org/10.1002/glia.24258`
+and its references/citations by their own DOIs; `cited_by` is capped at 50 by
+default (a truncation line is logged when a work exceeds it).
 
 > **Round depth for institutions.** From a *Work* seed, institutions are two
-> hops away (work → author → institution), so they only materialize at
-> `--rounds 3` or more. Seed an **author** (ORCID) or an **institution** (ROR)
-> directly to get institution nodes within two rounds (see the next recipe).
+> hops away (work → author → institution) and only materialize at `--rounds 3`+.
+> Seed an author or institution directly to reach them in two rounds (next).
 
-### All works by an ORCID author
+### Crawl an author's works and affiliations (ORCID seed)
 
 ```bash
 opc crawl --platforms openalex.org --rounds 2 \
-    https://orcid.org/0000-0002-1825-0097
+    https://orcid.org/0000-0002-3336-0163 --output-dir ./out
 ```
 
-Round 1 fans out up to `max_works_per_entity` (default 25) of the author's
-works via `authored` edges, and materializes the author's institutions via
-`affiliated_with` edges (an author seed reaches institutions in one hop).
+```text
+  - Crawl completed after 2 rounds (11s)
+  - Total nodes: 37
+```
 
-### Cross-platform with DataCite fallback
+**37 nodes**: 1 `OpenAlexAuthor`, 25 `OpenAlexWork` (up to
+`max_works_per_entity`), and **11 `OpenAlexInstitution`** — the author's
+affiliations, reached in one hop via `affiliated_with`.
+
+**What to look for:** institutions appear here (unlike the Work-seed crawl); the
+author is keyed by its ORCID URL and each institution by its `ror.org` URL.
+
+### Cross-platform crawl with DataCite fallback (ROR seed)
 
 ```bash
 opc crawl --platforms openalex.org,datacite.org --rounds 2 \
-    https://ror.org/02s376052
+    https://ror.org/02s376052 --output-dir ./out
 ```
 
-OpenAlex resolves the institution and its works first; any DOI / ORCID /
-ROR node that misses in OpenAlex falls back to the DataCite adapter.
+OpenAlex owns `doi.org` / `orcid.org` / `ror.org` here and resolves the
+institution and its works first; any node OpenAlex doesn't index falls back to
+the DataCite adapter.
+
+**What to look for:** the *Registered adapters* line shows OpenAlex owning the
+shared hosts, while `api.datacite.org` / `commons.datacite.org` stay with
+DataCite (the fallback resolver).
 
 ## Out of scope
 
