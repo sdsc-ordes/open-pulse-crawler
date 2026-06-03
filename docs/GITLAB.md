@@ -146,8 +146,7 @@ opc crawl --rounds 2 \
   (`https://host/a/b/c`): the adapter probes the projects endpoint first
   (most common), then groups.
 
-## Limitations (v3.0)
-
+## Limitations
 * No SBOM / dependents view. GitLab has no public equivalent of GitHub's
   "Used by". `--crawl-dependencies` / `--crawl-dependents` are silently
   ignored for GitLab projects.

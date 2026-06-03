@@ -141,8 +141,7 @@ R3BRootGroup, cds-astro, ctlearn-project), 1 `GitHubUser`.
 | `pangeo` | 68 | 1/15 | Geoscience |
 | `cernopenlab` | 355 | 0/150 → 1 elsewhere | Mostly reports |
 
-## Limitations (v3.1)
-
+## Limitations
 - **Community members are not crawled.** The `/api/communities/<slug>/members`
   endpoint is auth-gated on production Zenodo. No `member_of` edges.
 - **Versions are not separate nodes.** Each concept DOI is one node;

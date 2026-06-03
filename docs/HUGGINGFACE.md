@@ -128,8 +128,7 @@ opc crawl --platforms huggingface.co --rounds 2 \
 
 Walks every model / dataset / space / paper in the collection's `items[]`.
 
-## Limitations (v3.4)
-
+## Limitations
 - **No `has_member` (Org → User) edges.** The
   `/api/organizations/<name>/members` endpoint is auth-gated. Same
   situation as Infoscience's removed `has_member` flow.

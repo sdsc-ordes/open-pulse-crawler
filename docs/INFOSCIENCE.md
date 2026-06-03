@@ -105,8 +105,7 @@ opc crawl --rounds 2 \
 EPFL papers with `dc.relation.uri` / `dc.relation.isversionof` fields
 pointing at GitHub repos spawn cross-platform discovery.
 
-## Limitations (v3.2)
-
+## Limitations
 - **Community + Collection layers skipped.** The DSpace community/collection
   structure is redundant with OrgUnit on Infoscience (every item is in
   exactly one collection, every collection in one community, and the

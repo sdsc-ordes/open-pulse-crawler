@@ -65,6 +65,12 @@ flowchart LR
 - [HuggingFace support](HUGGINGFACE.md) — models / datasets / spaces /
   papers / collections, with the strongest cross-platform paper bridge
   (arxiv + github + linked HF repos).
+- [OpenAlex support](OPENALEX.md) — works / authors / institutions /
+  sources / funders, with the only **bidirectional** citation layer
+  (`references` + inbound `cited_by`); takes precedence on
+  `doi.org` / `orcid.org` / `ror.org` with DataCite as fallback.
+- [Crossref enrichment](CROSSREF.md) — the `enrich-crossref` post-crawl pass
+  that fills journal/article DOIs neither OpenAlex nor DataCite resolved.
 - [Deployment](DEPLOYMENT.md) — Docker Compose stack (API + GUI + Nginx), env vars,
   single-container builds, and the gimie-enrichment knobs.
 - [Concurrency & rate limiting](CONCURRENCY.md) — multi-token rotation, semaphores,

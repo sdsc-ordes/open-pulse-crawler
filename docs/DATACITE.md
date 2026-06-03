@@ -140,8 +140,7 @@ DataCite emits `has_publication` edges to every affiliated DOI; the
 DOI-prefix routing rewrites Zenodo-prefix DOIs to `zenodo.org/records/<id>`
 so the Zenodo adapter picks them up in round 2.
 
-## Limitations (v3.3)
-
+## Limitations
 - **Crossref-issued DOIs (Nature, ACM, IEEE, Elsevier, …) are not in
   DataCite's index.** They 404 against `/dois/<doi>`. A future Crossref
   adapter could cover them.
