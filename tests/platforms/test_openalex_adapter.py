@@ -740,6 +740,41 @@ def test_expand_author_emits_authored():
     assert ("iter_works_by_entity", "author.id", "A55", 25) in client.calls
 
 
+def test_expand_author_emits_affiliated_with():
+    """Author expansion must emit affiliated_with edges anchored on the author's
+    url (src == node.url) so the crawler enqueues the institution and
+    OpenAlexInstitution nodes finally materialize. These edges are NOT capped."""
+    node = OpenAlexAuthor(
+        url="https://orcid.org/0000-0002-1825-0097",
+        login="0000-0002-1825-0097", platform="openalex",
+        orcid="0000-0002-1825-0097", openalex_id="A55",
+        affiliations=[
+            "https://ror.org/02s376052",
+            "https://ror.org/021nxhr62",
+            "https://ror.org/02s376052",  # duplicate — must be deduped
+        ],
+    )
+    client = FakeClient(entity_works=[
+        {"id": "https://openalex.org/W1", "doi": "https://doi.org/10.1/A"},
+        {"id": "https://openalex.org/W2", "doi": None},
+    ])
+    adapter = OpenAlexAdapter(client=client)
+    opts = ExpandOpts(max_works_per_entity=2)
+    edges = _edge_tuples(adapter.expand(node, opts))
+    # authored edges still present (capped)
+    assert (node.url, "authored", "https://doi.org/10.1/a") in edges
+    assert (node.url, "authored", "https://openalex.org/W2") in edges
+    # affiliated_with edges anchored on the author url (src == node.url)
+    assert (node.url, "affiliated_with", "https://ror.org/02s376052") in edges
+    assert (node.url, "affiliated_with", "https://ror.org/021nxhr62") in edges
+    # dedupe preserves order, no duplicate edge
+    aff = [e for e in edges if e[1] == "affiliated_with"]
+    assert aff == [
+        (node.url, "affiliated_with", "https://ror.org/02s376052"),
+        (node.url, "affiliated_with", "https://ror.org/021nxhr62"),
+    ]
+
+
 def test_expand_institution_emits_affiliated_work():
     node = OpenAlexInstitution(
         url="https://ror.org/02s376052", login="02s376052",
@@ -751,6 +786,8 @@ def test_expand_institution_emits_affiliated_work():
     adapter = OpenAlexAdapter(client=client)
     edges = _edge_tuples(adapter.expand(node, ExpandOpts()))
     assert (node.url, "affiliated_work", "https://openalex.org/W1") in edges
+    # institutions have no affiliations field — must not emit affiliated_with
+    assert all(e[1] != "affiliated_with" for e in edges)
     assert any(c[0] == "iter_works_by_entity" and c[1] == "institutions.id"
                for c in client.calls)
 

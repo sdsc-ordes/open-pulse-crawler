@@ -472,6 +472,7 @@ class OpenAlexAdapter(PlatformAdapter):
         elif isinstance(node, OpenAlexAuthor):
             yield from self._expand_entity(
                 node, opts, filter_key="author.id", kind="authored",
+                emit_affiliations=True,
             )
         elif isinstance(node, OpenAlexInstitution):
             yield from self._expand_entity(
@@ -532,8 +533,26 @@ class OpenAlexAdapter(PlatformAdapter):
 
     def _expand_entity(
         self, node, opts: ExpandOpts, *, filter_key: str, kind: str,
+        emit_affiliations: bool = False,
     ) -> Iterable[Edge]:
-        """Seed-expansion for Author / Institution: works by that entity (capped)."""
+        """Seed-expansion for Author / Institution: works by that entity (capped).
+
+        When ``emit_affiliations`` is set (Author path), ALSO emit an
+        ``affiliated_with`` edge from the author to each of its affiliation ROR
+        urls. Because ``src == node.url`` the crawler enqueues the institution
+        as a frontier node, so OpenAlexInstitution nodes finally materialize.
+        These edges are NOT capped (an author has only a handful of
+        affiliations) and are deduped preserving order.
+        """
+        # affiliated_with (uncapped) — anchored on the author so it enqueues.
+        if emit_affiliations:
+            seen: set = set()
+            for ror_url in getattr(node, "affiliations", None) or []:
+                if not ror_url or ror_url in seen:
+                    continue
+                seen.add(ror_url)
+                yield Edge(src=node.url, kind="affiliated_with", dst=ror_url)
+
         if not node.openalex_id:
             return
         cap = opts.max_works_per_entity
