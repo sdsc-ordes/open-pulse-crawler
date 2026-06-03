@@ -1,6 +1,6 @@
 # Open Pulse Crawler
 
-A multi-platform crawler for the open-science graph. BFS-walks public APIs across GitHub, GitLab, Zenodo, Infoscience, DataCite, and HuggingFace and emits a unified graph keyed by canonical URLs.
+A multi-platform crawler for the open-science graph. BFS-walks public APIs across GitHub, GitLab, Zenodo, Infoscience, DataCite, HuggingFace, and OpenAlex and emits a unified graph keyed by canonical URLs.
 
 Powers <https://openpulse.science> — this crawler is the data plane behind the open-science observability platform there.
 
@@ -18,8 +18,11 @@ Seed a public URL (a GitHub repo, a Zenodo record, an EPFL Infoscience handle, a
 | **Infoscience** | `infoscience.epfl.ch` (DSpace 7 + CRIS) | Yes | [docs/INFOSCIENCE.md](docs/INFOSCIENCE.md) |
 | **DataCite Commons** | `doi.org`, `ror.org`, `orcid.org`, `api.datacite.org`, `commons.datacite.org` | Yes | [docs/DATACITE.md](docs/DATACITE.md) |
 | **HuggingFace** | `huggingface.co` | Yes | [docs/HUGGINGFACE.md](docs/HUGGINGFACE.md) |
+| **OpenAlex** | `openalex.org`, `api.openalex.org` — and **`doi.org` / `orcid.org` / `ror.org`** (takes precedence over DataCite when both are enabled, with DataCite as fallback) | Yes | [docs/OPENALEX.md](docs/OPENALEX.md) |
 
-Cross-platform edges work out of the box: a Zenodo record, an Infoscience publication, a DataCite work, and a HuggingFace paper that all reference the same arxiv paper produce edges to the *same* `https://arxiv.org/abs/<id>` URL — the convergence is automatic via the shared DataCite RelationType vocabulary.
+Cross-platform edges work out of the box: a Zenodo record, an Infoscience publication, a DataCite work, and a HuggingFace paper that all reference the same arxiv paper produce edges to the *same* `https://arxiv.org/abs/<id>` URL — the convergence is automatic via the shared DataCite RelationType vocabulary. OpenAlex adds the only **bidirectional** citation layer (a work's outbound `references` *and* its inbound `cited_by`), and because it keys works/authors/institutions by DOI/ORCID/ROR, its nodes merge with the DataCite/Zenodo/Infoscience nodes for the same entity.
+
+A complementary **Crossref enricher** (`open-pulse-crawler enrich-crossref`) runs as a post-crawl pass over a saved graph, filling in journal/article DOIs that neither OpenAlex nor DataCite resolved. See [docs/CROSSREF.md](docs/CROSSREF.md).
 
 ## Installation
 
@@ -81,6 +84,10 @@ Every node in the exported graph is keyed by its **canonical public URL** — al
 | DataCite repository | `https://commons.datacite.org/repositories/<id>` |
 | HuggingFace model / dataset / space | `https://huggingface.co/<owner>/<name>`, `…/datasets/<owner>/<name>`, `…/spaces/<owner>/<name>` |
 | HuggingFace paper / collection | `https://huggingface.co/papers/<arxiv-id>`, `…/collections/<owner>/<slug>` |
+| OpenAlex work | `https://doi.org/<doi>` when the record has a DOI, else `https://openalex.org/W<id>` |
+| OpenAlex author | `https://orcid.org/<id>` when the record has an ORCID, else `https://openalex.org/A<id>` |
+| OpenAlex institution | `https://ror.org/<id>` when the record has a ROR, else `https://openalex.org/I<id>` |
+| OpenAlex source / funder | `https://openalex.org/S<id>` (venue), `https://openalex.org/F<id>` (funder) |
 
 **Why full URLs?** Browser-resolvable, JSON-LD `@id`-compatible (downstream linked-data tooling expects IRIs), and they make the cross-platform pivot work automatically — a Zenodo record, an Infoscience publication, a DataCite work, and a HuggingFace paper that all reference the same arxiv paper produce edges to the *same* canonical `https://arxiv.org/abs/<id>` URL.
 

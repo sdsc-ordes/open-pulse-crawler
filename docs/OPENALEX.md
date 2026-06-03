@@ -114,6 +114,13 @@ Citation and works traversal is bounded to keep crawls finite:
 
 Both caps accept `None` to disable (no limit).
 
+> **Note:** these caps are `ExpandOpts` fields and currently apply at their
+> defaults (50 / 25) for CLI crawls — they are not yet exposed as `crawl`
+> command flags. To override them today, set them programmatically on the
+> crawler's `_expand_opts` (`ExpandOpts(max_citations_per_work=…,
+> max_works_per_entity=…)`). Wiring them to dedicated CLI flags is a planned
+> follow-up.
+
 ## Seed forms accepted
 
 - External identifiers: `https://doi.org/<DOI>`, `https://orcid.org/<id>`,
@@ -132,7 +139,15 @@ opc crawl --platforms openalex.org --rounds 2 \
 ```
 
 Round 0 fetches the Work; round 1 walks both `references` (outbound) and
-`cited_by` (inbound, capped at 50) to neighboring works.
+`cited_by` (inbound, capped at 50) to neighboring works, and materializes the
+work's authors (`authored_by`) and venue (`published_in`). (Platforms can be
+selected with `--platforms` or via the `CRAWLER_PLATFORMS` environment
+variable.)
+
+> **Round depth for institutions.** From a *Work* seed, institutions are two
+> hops away (work → author → institution), so they only materialize at
+> `--rounds 3` or more. Seed an **author** (ORCID) or an **institution** (ROR)
+> directly to get institution nodes within two rounds (see the next recipe).
 
 ### All works by an ORCID author
 
@@ -142,13 +157,13 @@ opc crawl --platforms openalex.org --rounds 2 \
 ```
 
 Round 1 fans out up to `max_works_per_entity` (default 25) of the author's
-works via `authored` edges.
+works via `authored` edges, and materializes the author's institutions via
+`affiliated_with` edges (an author seed reaches institutions in one hop).
 
 ### Cross-platform with DataCite fallback
 
 ```bash
-CRAWLER_PLATFORMS=openalex.org,datacite.org \
-    opc crawl --rounds 2 \
+opc crawl --platforms openalex.org,datacite.org --rounds 2 \
     https://ror.org/02s376052
 ```
 
