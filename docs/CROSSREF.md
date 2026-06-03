@@ -144,3 +144,9 @@ time.
 - **DataCite-owned DOIs.** Datasets/software registered with DataCite are
   handled by the DataCite adapter at crawl time and are explicitly
   skipped here (`skipped_owned`). See [`DATACITE.md`](DATACITE.md).
+
+## See also
+
+- [Node identifiers](NODE_IDS.md) — how canonical node keys are formed across platforms.
+- [REST API](API.md) — drive crawls programmatically.
+- [All platform guides](index.md) — the documentation hub.

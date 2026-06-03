@@ -219,3 +219,9 @@ and `github.com`. After round 1 the `related_to.*` edges on each
 - **ORCID resolution** stays embedded in `creators` / `external_identifiers`
   — no cross-platform identity linking. That layer is handled by a
   separate downstream tool.
+
+## See also
+
+- [Node identifiers](NODE_IDS.md) — how canonical node keys are formed across platforms.
+- [REST API](API.md) — drive crawls programmatically.
+- [All platform guides](index.md) — the documentation hub.

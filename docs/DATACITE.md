@@ -217,3 +217,9 @@ rewritten transparently before BFS dispatch.
   invalid token silently 401s on protected endpoints (none are used in
   v3.3 — all reads are public).
 - **No deposit/submit/draft flows.** Read-only.
+
+## See also
+
+- [Node identifiers](NODE_IDS.md) — how canonical node keys are formed across platforms.
+- [REST API](API.md) — drive crawls programmatically.
+- [All platform guides](index.md) — the documentation hub.

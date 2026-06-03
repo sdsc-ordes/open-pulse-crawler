@@ -207,3 +207,9 @@ DataCite (the fallback resolver).
 - **No authenticated tier.** All reads are anonymous; the
   `CRAWLER_OPENALEX_MAILTO` email is a polite-pool hint, not a token.
 - **No deposit / submit flows.** Read-only.
+
+## See also
+
+- [Node identifiers](NODE_IDS.md) — how canonical node keys are formed across platforms.
+- [REST API](API.md) — drive crawls programmatically.
+- [All platform guides](index.md) — the documentation hub.

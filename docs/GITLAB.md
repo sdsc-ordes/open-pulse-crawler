@@ -210,3 +210,9 @@ GitLab instance — Renku-specific metadata (datasets, lineage) is not modelled.
 * `renkulab.io` is treated as a vanilla GitLab instance — Renku
   datasets, project lineage, and Renku-specific concepts are not
   modelled in v3.0. Track in a future Renku-specific adapter.
+
+## See also
+
+- [Node identifiers](NODE_IDS.md) — how canonical node keys are formed across platforms.
+- [REST API](API.md) — drive crawls programmatically.
+- [All platform guides](index.md) — the documentation hub.

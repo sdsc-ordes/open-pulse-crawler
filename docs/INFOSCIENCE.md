@@ -171,3 +171,9 @@ the Infoscience web interface directly. See Limitations for details.
 - **No deposit/upload/draft flows.** This is a read-only adapter.
 - **ORCID / SciPer / Scopus IDs stay embedded** in metadata — no
   cross-platform identity linking. That layer is downstream of this tool.
+
+## See also
+
+- [Node identifiers](NODE_IDS.md) — how canonical node keys are formed across platforms.
+- [REST API](API.md) — drive crawls programmatically.
+- [All platform guides](index.md) — the documentation hub.

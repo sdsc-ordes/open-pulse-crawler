@@ -211,3 +211,9 @@ queued) — use `--rounds 2` to stay collection-scoped.
   future Crossref adapter.
 - **Legacy arxiv IDs not accepted** as paper seeds.
 - **No deposit/upload/draft flows.** Read-only adapter.
+
+## See also
+
+- [Node identifiers](NODE_IDS.md) — how canonical node keys are formed across platforms.
+- [REST API](API.md) — drive crawls programmatically.
+- [All platform guides](index.md) — the documentation hub.
