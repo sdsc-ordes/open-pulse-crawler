@@ -51,22 +51,47 @@ CRAWLER_TOKEN__GITHUB_COM=ghp_…
 # CRAWLER_TOKEN__HUGGINGFACE_CO=hf_…
 ```
 
-Run `opc doctor` to verify which platforms are wired up — it shows tri-state per host: **OK** (token configured), **ANONYMOUS** (no token, public reads work), **MISSING** (token required but absent).
+Run `opc doctor` to see which platforms are wired up:
+
+```text
+Enabled platforms:
+  openalex.org: 0 tokens [ANONYMOUS]
+  huggingface.co: 0 tokens [ANONYMOUS]
+  github.com: 0 tokens [MISSING]
+```
+
+Tri-state per host: **OK** (token configured) · **ANONYMOUS** (no token, public reads work) · **MISSING** (token required but absent — GitHub only).
 
 ### Crawl
 
+No token needed for the anonymous platforms. A two-round crawl of a HuggingFace paper:
+
 ```bash
-# Single seed, two BFS rounds
-opc crawl --rounds 2 https://huggingface.co/papers/2307.09288
+opc crawl --platforms huggingface.co --rounds 2 \
+    https://huggingface.co/papers/2307.09288 --output-dir ./out
+```
+
+```text
+✓ Added 1 seed nodes
+  - Crawl completed after 2 rounds
+  - Total nodes: 19
+Exporting results... → ./out/<timestamp>.graph.json
+```
+
+That writes a graph of **17 materialized nodes** — the paper plus the 16 models / datasets / spaces linked to it — each keyed by its canonical URL.
+
+```bash
+# Scholarly works + their bidirectional citations (anonymous, OpenAlex)
+opc crawl --platforms openalex.org --rounds 2 https://doi.org/10.1002/glia.24258
 
 # Multi-platform crawl from a seed file
-opc crawl --seed-file seeds.txt --rounds 3 --output-dir ./results
+opc crawl --platforms openalex.org,datacite.org --seed-file seeds.txt --rounds 3 -o ./results
 
 # Resume from saved state
 opc crawl --resume --state-file state.json
 ```
 
-Seeds accept short forms (`torvalds`, `owner/repo`) and full URLs across any supported platform. See `opc crawl --help` for the full option list (rate-limit knobs, dependency graphs, issue/PR activity, visualization).
+Platforms come from `--platforms` or the `CRAWLER_PLATFORMS` env var. Seeds accept short forms (`torvalds`, `owner/repo`) and full URLs across any supported platform. See `opc crawl --help` for the full option list (rate-limit knobs, dependency graphs, issue/PR activity, visualization).
 
 ## Node identifiers
 

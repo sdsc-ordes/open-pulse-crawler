@@ -48,21 +48,47 @@ is logged. No token is required either way.
 Resolution order for the mailto: `--mailto` flag → `CRAWLER_CROSSREF_MAILTO`
 → none (public pool).
 
-## CLI usage — `enrich-crossref`
+## Recipe — enrich a crawled snapshot
+
+`enrich-crossref` runs over a snapshot produced by `opc crawl` and fills in the
+**bare `https://doi.org/…` nodes** — journal/article DOIs that were referenced
+during the crawl but never resolved, because they belong to Crossref rather than
+DataCite or OpenAlex.
 
 ```bash
-opc enrich-crossref --input output/20250601.graph.json
+# 1. A crawl that references journal DOIs it doesn't resolve (e.g. a dataset
+#    that IsSupplementTo a journal article) leaves them as bare doi.org nodes:
+opc crawl --platforms datacite.org --rounds 2 <seed> -o ./out
+
+# 2. Enrich those bare journal DOIs from Crossref (Phase 1 fill + bounded Phase 2):
+CRAWLER_CROSSREF_MAILTO=you@example.org \
+opc enrich-crossref --input ./out/<timestamp>.graph.json \
+    --output ./out/enriched.json --expand --max-references-per-work 5
 ```
 
-By default this rewrites the snapshot **in place**. Use `--output` to
-write elsewhere:
-
-```bash
-opc enrich-crossref \
-    --input  output/20250601.graph.json \
-    --output output/20250601.enriched.json \
-    --mailto you@example.org
+```text
+        Crossref enrichment
+┏━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━┓
+┃ Metric                  ┃ Value ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━┩
+│ enriched                │ 6     │   ← bare journal DOIs now materialized
+│ skipped_404             │ 0     │
+│ skipped_owned           │ 0     │
+│ skipped_already_present │ 1     │
+│ references_expanded     │ 5     │   ← Phase 2 walked each work's references
+│ references_truncated    │ 62    │   ← capped by --max-references-per-work 5
+│ max_depth_reached       │ 1     │
+└─────────────────────────┴───────┘
+✓ Wrote enriched snapshot: ./out/enriched.json
 ```
+
+(Numbers above are from a small representative snapshot with one supplemented
+journal DOI.) Omit `--output` to rewrite the snapshot **in place**.
+
+**What to look for:** `enriched` > 0 means bare journal DOIs gained titles,
+authors, and references; `skipped_already_present` counts nodes the crawl had
+already resolved; `references_truncated` reflects the `--max-references-per-work`
+cap. The pass is idempotent — a second run enriches 0 (everything is present).
 
 ### Options
 
