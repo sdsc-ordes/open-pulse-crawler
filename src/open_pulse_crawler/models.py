@@ -713,7 +713,12 @@ class OpenAlexSource(OrgModel):
 
 
 class OpenAlexFunder(OrgModel):
-    """A funding body from OpenAlex, keyed by its Crossref Funder Registry DOI (10.13039/…) when available."""
+    """A funding body from OpenAlex, keyed by its OpenAlex funder URL (https://openalex.org/F…).
+
+    The Crossref Funder Registry DOI (10.13039/…) is retained in ``funder_doi``
+    as an alternate identifier but is not the node key — OpenAlex's funders
+    endpoint cannot resolve a registry DOI, so it is not a fetchable seed.
+    """
     subkind: Literal["OpenAlexFunder"] = "OpenAlexFunder"
     openalex_id: str = ""
     funder_doi: str = ""             # 10.13039/...

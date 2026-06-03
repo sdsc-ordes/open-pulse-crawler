@@ -388,7 +388,9 @@ def test_fetch_funder_via_doi_builds_openalex_funder():
     adapter = OpenAlexAdapter(client=client)
     node = adapter.fetch("https://doi.org/10.13039/501100000780")
     assert isinstance(node, OpenAlexFunder)
-    assert node.url == "https://doi.org/10.13039/501100000780"
+    # Funders always key on the OpenAlex F URL, even when reached via the
+    # registry DOI — the registry DOI stays as the funder_doi field only.
+    assert node.url == "https://openalex.org/F1"
     assert node.login == "10.13039/501100000780"
     assert node.name == "NSF"
     assert node.openalex_id == "F1"
@@ -406,6 +408,104 @@ def test_fetch_funder_via_openalex_id():
     assert isinstance(node, OpenAlexFunder)
     assert node.openalex_id == "F1"
     assert client.calls == [("get_funder", "F1")]
+
+
+# --- cross-id unification: node.url derived from record, not the URI ----
+
+
+def test_fetch_work_via_openalex_id_unifies_to_doi():
+    """A work reached by its OpenAlex W-id must key on the record's DOI
+    (lowercased), unifying with the same work reached by its doi.org URL."""
+    raw = {
+        "id": "https://openalex.org/W4295510681",
+        "doi": "https://doi.org/10.1002/GLIA.24258",
+        "title": "A study",
+        "ids": {
+            "openalex": "https://openalex.org/W4295510681",
+            "doi": "https://doi.org/10.1002/glia.24258",
+        },
+    }
+    client = FakeClient(works={"W4295510681": raw})
+    adapter = OpenAlexAdapter(client=client)
+    node = adapter.fetch("https://openalex.org/W4295510681")
+    assert isinstance(node, OpenAlexWork)
+    # canonical key is derived from the record's DOI, lowercased — NOT the uri.
+    assert node.url == "https://doi.org/10.1002/glia.24258"
+    assert node.doi == "10.1002/glia.24258"
+    assert node.openalex_id == "W4295510681"
+
+
+def test_fetch_work_via_openalex_id_no_doi_falls_back_to_openalex():
+    """A DOI-less work reached by its OpenAlex W-id keys on the openalex URL."""
+    raw = {
+        "id": "https://openalex.org/W4295510681",
+        "title": "No DOI here",
+        "ids": {"openalex": "https://openalex.org/W4295510681"},
+    }
+    client = FakeClient(works={"W4295510681": raw})
+    adapter = OpenAlexAdapter(client=client)
+    node = adapter.fetch("https://openalex.org/W4295510681")
+    assert node.url == "https://openalex.org/W4295510681"
+    assert node.doi == ""
+
+
+def test_fetch_author_via_openalex_id_unifies_to_orcid():
+    """An author reached by its OpenAlex A-id keys on the record's ORCID."""
+    raw = {
+        "id": "https://openalex.org/A55",
+        "orcid": "https://orcid.org/0000-0002-1825-0097",
+        "display_name": "Jane Doe",
+        "ids": {
+            "openalex": "https://openalex.org/A55",
+            "orcid": "https://orcid.org/0000-0002-1825-0097",
+        },
+    }
+    client = FakeClient(authors={"A55": raw})
+    adapter = OpenAlexAdapter(client=client)
+    node = adapter.fetch("https://openalex.org/A55")
+    assert node.url == "https://orcid.org/0000-0002-1825-0097"
+    assert node.orcid == "0000-0002-1825-0097"
+    assert node.openalex_id == "A55"
+
+
+def test_fetch_institution_via_openalex_id_unifies_to_ror():
+    """An institution reached by its OpenAlex I-id keys on the record's ROR."""
+    raw = {
+        "id": "https://openalex.org/I77",
+        "ror": "https://ror.org/02s376052",
+        "display_name": "Some Uni",
+        "ids": {
+            "openalex": "https://openalex.org/I77",
+            "ror": "https://ror.org/02s376052",
+        },
+    }
+    client = FakeClient(institutions={"I77": raw})
+    adapter = OpenAlexAdapter(client=client)
+    node = adapter.fetch("https://openalex.org/I77")
+    assert node.url == "https://ror.org/02s376052"
+    assert node.ror_id == "02s376052"
+    assert node.openalex_id == "I77"
+
+
+def test_fetch_funder_via_openalex_id_keys_on_openalex_and_keeps_doi():
+    """A funder always keys on its OpenAlex F-id (the registry DOI is not a
+    fetchable seed), but funder_doi is still populated from the record."""
+    raw = {
+        "id": "https://openalex.org/F1",
+        "display_name": "NSF",
+        "country_code": "US",
+        "ids": {
+            "openalex": "https://openalex.org/F1",
+            "doi": "https://doi.org/10.13039/501100000780",
+            "ror": "https://ror.org/021nxhr62",
+        },
+    }
+    client = FakeClient(funders={"F1": raw})
+    adapter = OpenAlexAdapter(client=client)
+    node = adapter.fetch("https://openalex.org/F1")
+    assert node.url == "https://openalex.org/F1"
+    assert node.funder_doi == "10.13039/501100000780"
+    assert node.openalex_id == "F1"
 
 
 # --- _external_ids: empty-value filtering ---------------------------

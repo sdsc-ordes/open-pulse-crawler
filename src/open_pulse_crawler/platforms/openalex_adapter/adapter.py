@@ -275,6 +275,14 @@ class OpenAlexAdapter(PlatformAdapter):
 
         openalex_id = _bare(raw.get("id", "") or "")
 
+        # Canonical key derives from the record's own identifiers (DOI when
+        # present, else the OpenAlex W URL) — never from how the entity was
+        # reached — so the same work unifies across id forms.
+        if bare_doi:
+            url = f"https://doi.org/{bare_doi}"
+        else:
+            url = f"{_OPENALEX_URL_PREFIX}{openalex_id}"
+
         creators: List[Dict[str, Any]] = []
         for authorship in raw.get("authorships", []) or []:
             if not isinstance(authorship, dict):
@@ -330,7 +338,7 @@ class OpenAlexAdapter(PlatformAdapter):
         full_name = bare_doi or openalex_id
 
         return OpenAlexWork(
-            url=uri,
+            url=url,
             full_name=full_name,
             platform="openalex",
             doi=bare_doi,
@@ -352,6 +360,13 @@ class OpenAlexAdapter(PlatformAdapter):
         openalex_id = _bare(raw.get("id", "") or "")
         login = orcid or openalex_id
 
+        # Canonical key from the record: ORCID URL when present, else the
+        # OpenAlex A URL — independent of how the author was reached.
+        if orcid:
+            url = f"https://orcid.org/{orcid}"
+        else:
+            url = f"{_OPENALEX_URL_PREFIX}{openalex_id}"
+
         affiliations: List[str] = []
         # OpenAlex exposes both ``last_known_institutions`` and ``affiliations``.
         for key in ("last_known_institutions", "affiliations"):
@@ -366,7 +381,7 @@ class OpenAlexAdapter(PlatformAdapter):
                     affiliations.append(ror)
 
         return OpenAlexAuthor(
-            url=uri,
+            url=url,
             login=login,
             platform="openalex",
             name=raw.get("display_name", "") or "",
@@ -380,8 +395,14 @@ class OpenAlexAdapter(PlatformAdapter):
         ror = _bare(raw.get("ror", "") or "")
         openalex_id = _bare(raw.get("id", "") or "")
         login = ror or openalex_id
+        # Canonical key from the record: ROR URL when present, else the
+        # OpenAlex I URL — independent of how the institution was reached.
+        if ror:
+            url = f"https://ror.org/{ror}"
+        else:
+            url = f"{_OPENALEX_URL_PREFIX}{openalex_id}"
         return OpenAlexInstitution(
-            url=uri,
+            url=url,
             login=login,
             platform="openalex",
             name=raw.get("display_name", "") or "",
@@ -416,8 +437,13 @@ class OpenAlexAdapter(PlatformAdapter):
         if isinstance(ids, dict):
             funder_doi = _bare(ids.get("doi", "") or "")
         login = funder_doi or openalex_id
+        # Funders ALWAYS key on the OpenAlex F URL: the Crossref Funder
+        # Registry DOI (10.13039/...) is not resolvable via OpenAlex's funders
+        # endpoint, so it cannot be a node key — it is kept only as the
+        # funder_doi field + external identifier.
+        url = f"{_OPENALEX_URL_PREFIX}{openalex_id}"
         return OpenAlexFunder(
-            url=uri,
+            url=url,
             login=login,
             platform="openalex",
             name=raw.get("display_name", "") or "",

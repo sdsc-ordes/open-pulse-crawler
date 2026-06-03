@@ -22,16 +22,21 @@ graph. That bidirectional traversal is the reason the adapter exists.
 
 Five entities, each with a canonical node key:
 
+The canonical key is **derived from the fetched record's own identifiers**,
+never from the URL used to reach the entity. So the same Work / Author /
+Institution unifies to a single node whether it was seeded by its
+DOI / ORCID / ROR or by its OpenAlex id.
+
 - **`OpenAlexWork`** — a scholarly work. Canonical key: `https://doi.org/<doi>`
-  (lowercased) when the work has a DOI, else the OpenAlex work URL
+  (lowercased) when the record carries a DOI, else the OpenAlex work URL
   `https://openalex.org/W<id>`. **Active** node — `expand` emits citation,
   authorship, venue, and funding edges.
 - **`OpenAlexAuthor`** — a researcher. Canonical key:
-  `https://orcid.org/<id>` when an ORCID is present, else
+  `https://orcid.org/<id>` when the record carries an ORCID, else
   `https://openalex.org/A<id>`. **Passive-ish** — `expand` fans out to the
   author's works (capped, see below).
 - **`OpenAlexInstitution`** — an organization. Canonical key:
-  `https://ror.org/<id>` when a ROR is present, else
+  `https://ror.org/<id>` when the record carries a ROR, else
   `https://openalex.org/I<id>`. `expand` fans out to the institution's
   works (capped).
 - **`OpenAlexSource`** — a venue (journal, repository, conference).
@@ -39,12 +44,17 @@ Five entities, each with a canonical node key:
   field on the node but is not used as the key). **Passive** — `expand`
   emits no edges.
 - **`OpenAlexFunder`** — a funding body. Canonical key:
-  `https://doi.org/10.13039/<id>` (the Crossref Funder Registry DOI prefix)
-  when present, else `https://openalex.org/F<id>`. **Passive** — `expand`
-  emits no edges.
+  **always** the OpenAlex funder URL `https://openalex.org/F<id>`. The
+  Crossref Funder-Registry DOI (`10.13039/<id>`) is retained as the
+  `funder_doi` field and an alternate external identifier, but it is **not**
+  the node key and **not** a fetchable seed — OpenAlex's funders endpoint
+  cannot resolve a registry DOI. Funders are reached via a Work's
+  `funded_by` edges (OpenAlex `F` URLs). **Passive** — `expand` emits no
+  edges.
 
-The `10.13039` Funder-Registry prefix is what disambiguates a `doi.org`
-URL between a Work (any other prefix) and a Funder.
+The `10.13039` Funder-Registry prefix is what disambiguates an incoming
+`doi.org` URL between a Work (any other prefix) and a Funder during
+classification; the resulting funder node is still keyed by its `F` id.
 
 ## Edge kinds
 
