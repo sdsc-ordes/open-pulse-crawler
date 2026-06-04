@@ -520,6 +520,29 @@ class DataCiteWork(RepoModel):
     registered_url: Optional[str] = None
 
 
+class CrossrefWork(RepoModel):
+    """A DOI registered with Crossref (journal article / preprint) materialized
+    by the Crossref enrichment pass. Distinct from DataCiteWork: Crossref owns
+    article/preprint DOIs, DataCite owns dataset/software DOIs.
+    """
+    subkind: Literal["CrossrefWork"] = "CrossrefWork"
+    doi: str
+    title: str = ""
+    publication_year: Optional[int] = None
+    publisher: str = ""
+    container_title: str = ""
+    work_type: str = ""
+    abstract: str = ""
+    creators: List[Dict[str, Any]] = Field(default_factory=list)
+    subjects: List[str] = Field(default_factory=list)
+    funders: List[Dict[str, Any]] = Field(default_factory=list)
+    relations: List[Dict[str, Any]] = Field(default_factory=list)
+    is_referenced_by_count: Optional[int] = None
+    # Phase-2 expand edge: canonical https://doi.org/... URLs this work cites.
+    references: List[str] = Field(default_factory=list)
+    reference_dois: List[str] = Field(default_factory=list)
+
+
 # --- HuggingFace subclasses -------------------------------------------------
 #
 # HuggingFace is an ML-platform hub for models, datasets, spaces, papers,
@@ -636,6 +659,72 @@ class HuggingFaceCollection(OrgModel):
     last_updated: str = ""
 
 
+# --- OpenAlex subclasses -------------------------------------------------------
+#
+# OpenAlex is an open catalogue of scholarly works, authors, institutions,
+# sources (journals/repositories), and funders. It integrates DOI, ORCID, ROR,
+# and ISSN identifiers, making it the primary cross-platform identity pivot for
+# the academic literature graph.
+
+
+class OpenAlexWork(RepoModel):
+    """A work (paper/preprint/dataset) from OpenAlex. Active crawl frontier."""
+    subkind: Literal["OpenAlexWork"] = "OpenAlexWork"
+    doi: str = ""
+    openalex_id: str = ""            # W…
+    title: str = ""
+    publication_year: Optional[int] = None
+    work_type: str = ""
+    cited_by_count: Optional[int] = None
+    is_oa: Optional[bool] = None
+    references: List[str] = Field(default_factory=list)      # outbound (raw W-urls until expand resolves them)
+    cited_by: List[str] = Field(default_factory=list)        # inbound citations (works that cite this one)
+    authored_by: List[str] = Field(default_factory=list)     # orcid/openalex-A urls
+    funded_by: List[str] = Field(default_factory=list)       # funder urls
+    published_in: str = ""                                   # source url
+    creators: List[Dict[str, Any]] = Field(default_factory=list)  # {name,orcid,institutions:[ror]}
+
+
+class OpenAlexAuthor(UserModel):
+    """An author anchor (keyed by ORCID, else openalex A…)."""
+    subkind: Literal["OpenAlexAuthor"] = "OpenAlexAuthor"
+    orcid: str = ""
+    openalex_id: str = ""
+    affiliations: List[str] = Field(default_factory=list)    # ror urls
+
+
+class OpenAlexInstitution(OrgModel):
+    """An institution from OpenAlex, keyed by ROR URL when available."""
+    subkind: Literal["OpenAlexInstitution"] = "OpenAlexInstitution"
+    ror_id: str = ""
+    openalex_id: str = ""
+    country_code: str = ""
+    institution_type: str = ""
+
+
+class OpenAlexSource(OrgModel):
+    """A publication venue (journal/repository) from OpenAlex, keyed by openalex S… (ISSN-L retained)."""
+    subkind: Literal["OpenAlexSource"] = "OpenAlexSource"
+    openalex_id: str = ""
+    issn_l: str = ""
+    issns: List[str] = Field(default_factory=list)
+    host_organization: str = ""
+    is_oa: Optional[bool] = None
+
+
+class OpenAlexFunder(OrgModel):
+    """A funding body from OpenAlex, keyed by its OpenAlex funder URL (https://openalex.org/F…).
+
+    The Crossref Funder Registry DOI (10.13039/…) is retained in ``funder_doi``
+    as an alternate identifier but is not the node key — OpenAlex's funders
+    endpoint cannot resolve a registry DOI, so it is not a fetchable seed.
+    """
+    subkind: Literal["OpenAlexFunder"] = "OpenAlexFunder"
+    openalex_id: str = ""
+    funder_doi: str = ""             # 10.13039/...
+    country_code: str = ""
+
+
 # Schema version bumped when the graph contract changed. v2 added URL-keyed
 # nodes; v3 adds the ``subkind`` discriminator + ``extras`` /
 # ``external_identifiers`` slots so GitLab subclasses can coexist with the
@@ -645,23 +734,26 @@ GRAPH_SCHEMA_VERSION = 3
 
 # Discriminated unions on ``subkind`` let the same dict hold either the
 # GitHub concrete class or its GitLab / Zenodo / Infoscience / DataCite /
-# HuggingFace counterpart. Pydantic v2 picks the right class on
+# HuggingFace / OpenAlex counterpart. Pydantic v2 picks the right class on
 # deserialization by reading the literal subkind tag.
 UserNode = Annotated[
     Union[UserModel, GitLabUserModel, ZenodoUserModel, InfosciencePerson,
-          DataCitePerson, HuggingFaceUser],
+          DataCitePerson, HuggingFaceUser,
+          OpenAlexAuthor],
     Field(discriminator="subkind"),
 ]
 OrgNode = Annotated[
     Union[OrgModel, GitLabGroupModel, ZenodoCommunityModel, InfoscienceOrgUnit,
           DataCiteOrganization, DataCiteClient,
-          HuggingFaceOrg, HuggingFaceCollection],
+          HuggingFaceOrg, HuggingFaceCollection,
+          OpenAlexInstitution, OpenAlexSource, OpenAlexFunder],
     Field(discriminator="subkind"),
 ]
 RepoNode = Annotated[
     Union[RepoModel, GitLabProjectModel, ZenodoRecordModel, InfoscienceItem,
-          DataCiteWork,
-          HuggingFaceRepo, HuggingFacePaper],
+          DataCiteWork, CrossrefWork,
+          HuggingFaceRepo, HuggingFacePaper,
+          OpenAlexWork],
     Field(discriminator="subkind"),
 ]
 

@@ -49,6 +49,22 @@ flowchart LR
     bfs --> png
 ```
 
+## Pick your platform
+
+Every platform is anonymous-friendly except GitHub. Copy a seed and run
+`opc crawl --platforms <host> --rounds 2 <seed>`.
+
+| Platform | Example seed | Guide |
+|---|---|---|
+| GitHub | `https://github.com/torvalds/linux` (token required) | — |
+| GitLab | `https://gitlab.com/gnuwget/wget2` | [GITLAB](GITLAB.md) |
+| Zenodo | `https://zenodo.org/communities/escape2020` | [ZENODO](ZENODO.md) |
+| Infoscience | `https://infoscience.epfl.ch/handle/20.500.14299/182247` | [INFOSCIENCE](INFOSCIENCE.md) |
+| DataCite | `https://ror.org/02s376052` | [DATACITE](DATACITE.md) |
+| HuggingFace | `https://huggingface.co/papers/2307.09288` | [HUGGINGFACE](HUGGINGFACE.md) |
+| OpenAlex | `https://doi.org/10.1002/glia.24258` | [OPENALEX](OPENALEX.md) |
+| Crossref (enrich) | post-crawl `opc enrich-crossref` pass | [CROSSREF](CROSSREF.md) |
+
 ## Where to start
 
 - [REST API reference](API.md) — every endpoint, request bodies, examples, and the job
@@ -65,6 +81,12 @@ flowchart LR
 - [HuggingFace support](HUGGINGFACE.md) — models / datasets / spaces /
   papers / collections, with the strongest cross-platform paper bridge
   (arxiv + github + linked HF repos).
+- [OpenAlex support](OPENALEX.md) — works / authors / institutions /
+  sources / funders, with the only **bidirectional** citation layer
+  (`references` + inbound `cited_by`); takes precedence on
+  `doi.org` / `orcid.org` / `ror.org` with DataCite as fallback.
+- [Crossref enrichment](CROSSREF.md) — the `enrich-crossref` post-crawl pass
+  that fills journal/article DOIs neither OpenAlex nor DataCite resolved.
 - [Deployment](DEPLOYMENT.md) — Docker Compose stack (API + GUI + Nginx), env vars,
   single-container builds, and the gimie-enrichment knobs.
 - [Concurrency & rate limiting](CONCURRENCY.md) — multi-token rotation, semaphores,

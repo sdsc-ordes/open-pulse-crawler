@@ -54,6 +54,8 @@ Homepage = "https://github.com/sdsc-ordes/open-pulse-crawler"
 
 [project.scripts]
 open-pulse-crawler = "open_pulse_crawler.cli:main"
+# Short alias — the docs use `opc` throughout.
+opc = "open_pulse_crawler.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/open_pulse_crawler"]

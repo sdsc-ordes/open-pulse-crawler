@@ -835,5 +835,375 @@ def test_graphdata_accepts_huggingface_subclasses_in_existing_dicts():
     assert isinstance(restored.repos["https://huggingface.co/papers/2307.09288"], HuggingFacePaper)
 
 
+# --- CrossrefWork subkind (Spec 6 foundations) --------------------------------
+
+def test_crossref_work_subkind_and_minimal_fields():
+    from open_pulse_crawler.models import CrossrefWork
+    work = CrossrefWork(
+        url="https://doi.org/10.1038/s41586-023-06837-4",
+        full_name="10.1038/s41586-023-06837-4",
+        platform="crossref",
+        doi="10.1038/s41586-023-06837-4",
+    )
+    assert work.subkind == "CrossrefWork"
+    assert work.doi == "10.1038/s41586-023-06837-4"
+    # default values
+    assert work.title == ""
+    assert work.publication_year is None
+    assert work.publisher == ""
+    assert work.container_title == ""
+    assert work.work_type == ""
+    assert work.abstract == ""
+    assert work.creators == []
+    assert work.subjects == []
+    assert work.funders == []
+    assert work.relations == []
+    assert work.is_referenced_by_count is None
+    assert work.references == []
+    assert work.reference_dois == []
+
+
+def test_crossref_work_all_fields():
+    from open_pulse_crawler.models import CrossrefWork
+    work = CrossrefWork(
+        url="https://doi.org/10.1038/s41586-023-06837-4",
+        full_name="10.1038/s41586-023-06837-4",
+        platform="crossref",
+        doi="10.1038/s41586-023-06837-4",
+        title="A landmark Nature paper",
+        publication_year=2023,
+        publisher="Nature Publishing Group",
+        container_title="Nature",
+        work_type="journal-article",
+        abstract="We describe a new method…",
+        creators=[{"given": "Jane", "family": "Doe", "orcid": "0000-0001-2345-6789"}],
+        subjects=["biology", "open science"],
+        funders=[{"name": "Wellcome Trust", "doi": "10.13039/100004440"}],
+        relations=[{"relation_type": "IsSupplementedBy",
+                    "target": "https://github.com/org/repo"}],
+        is_referenced_by_count=42,
+        references=["https://doi.org/10.1000/xyz123"],
+        reference_dois=["10.1000/xyz123"],
+    )
+    assert work.subkind == "CrossrefWork"
+    assert work.title == "A landmark Nature paper"
+    assert work.publication_year == 2023
+    assert work.is_referenced_by_count == 42
+    assert work.is_fork is False  # inherited from RepoModel; no Crossref fork concept
+
+
+def test_crossref_work_graphdata_round_trip():
+    """CrossrefWork survives GraphData model_dump → re-parse (union registration check)."""
+    from open_pulse_crawler.models import CrossrefWork, GraphData
+    doi_url = "https://doi.org/10.1038/s41586-023-06837-4"
+    g = GraphData()
+    g.add_repo(CrossrefWork(
+        url=doi_url,
+        full_name="10.1038/s41586-023-06837-4",
+        platform="crossref",
+        doi="10.1038/s41586-023-06837-4",
+        title="Round-trip test paper",
+        publication_year=2023,
+        publisher="Nature Publishing Group",
+    ))
+    restored = GraphData.model_validate_json(g.model_dump_json())
+    assert doi_url in restored.repos
+    assert isinstance(restored.repos[doi_url], CrossrefWork)
+    assert restored.repos[doi_url].subkind == "CrossrefWork"
+    assert restored.repos[doi_url].title == "Round-trip test paper"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+# --- OpenAlex subkinds (Spec 7) -----------------------------------------------
+
+from open_pulse_crawler.models import (
+    OpenAlexWork, OpenAlexAuthor, OpenAlexInstitution,
+    OpenAlexSource, OpenAlexFunder,
+    ExternalIdentifier,
+)
+
+
+def test_openalex_work_subkind_and_defaults():
+    work = OpenAlexWork(
+        url="https://openalex.org/W2741809807",
+        full_name="W2741809807",
+        platform="openalex",
+        doi="10.7717/peerj.4375",
+        openalex_id="W2741809807",
+        title="The state of OA",
+        publication_year=2018,
+        work_type="journal-article",
+        cited_by_count=150,
+        is_oa=True,
+    )
+    assert work.subkind == "OpenAlexWork"
+    assert work.doi == "10.7717/peerj.4375"
+    assert work.openalex_id == "W2741809807"
+    assert work.title == "The state of OA"
+    assert work.publication_year == 2018
+    assert work.work_type == "journal-article"
+    assert work.cited_by_count == 150
+    assert work.is_oa is True
+    # list defaults
+    assert work.references == []
+    assert work.cited_by == []
+    assert work.authored_by == []
+    assert work.funded_by == []
+    assert work.creators == []
+    assert work.published_in == ""
+    # inherited from RepoModel
+    assert work.is_fork is False
+    assert work.dependents == []
+
+
+def test_openalex_work_minimal_fields():
+    work = OpenAlexWork(
+        url="https://openalex.org/W9999",
+        full_name="W9999",
+        platform="openalex",
+    )
+    assert work.subkind == "OpenAlexWork"
+    assert work.doi == ""
+    assert work.openalex_id == ""
+    assert work.publication_year is None
+    assert work.cited_by_count is None
+    assert work.is_oa is None
+
+
+def test_openalex_author_subkind_and_fields():
+    author = OpenAlexAuthor(
+        url="https://orcid.org/0000-0002-3336-0163",
+        login="0000-0002-3336-0163",
+        platform="openalex",
+        orcid="0000-0002-3336-0163",
+        openalex_id="A5023888391",
+    )
+    assert author.subkind == "OpenAlexAuthor"
+    assert author.orcid == "0000-0002-3336-0163"
+    assert author.openalex_id == "A5023888391"
+    assert author.affiliations == []
+    # inherited from UserModel
+    assert author.followers == []
+
+
+def test_openalex_author_orcid_url_login():
+    """Author keyed by ORCID URL with login derived from URL."""
+    author = OpenAlexAuthor(
+        url="https://orcid.org/0000-0002-3336-0163",
+        login="0000-0002-3336-0163",
+        platform="openalex",
+    )
+    assert author.url == "https://orcid.org/0000-0002-3336-0163"
+    assert author.login == "0000-0002-3336-0163"
+
+
+def test_openalex_institution_subkind_and_fields():
+    inst = OpenAlexInstitution(
+        url="https://ror.org/02s376052",
+        login="02s376052",
+        platform="openalex",
+        ror_id="02s376052",
+        openalex_id="I209863525",
+        country_code="CH",
+        institution_type="education",
+    )
+    assert inst.subkind == "OpenAlexInstitution"
+    assert inst.ror_id == "02s376052"
+    assert inst.openalex_id == "I209863525"
+    assert inst.country_code == "CH"
+    assert inst.institution_type == "education"
+    # inherited from OrgModel
+    assert inst.members == []
+
+
+def test_openalex_institution_minimal():
+    inst = OpenAlexInstitution(
+        url="https://ror.org/00abc123",
+        login="00abc123",
+        platform="openalex",
+    )
+    assert inst.subkind == "OpenAlexInstitution"
+    assert inst.ror_id == ""
+    assert inst.openalex_id == ""
+    assert inst.country_code == ""
+    assert inst.institution_type == ""
+
+
+def test_openalex_source_subkind_and_fields():
+    src = OpenAlexSource(
+        url="https://openalex.org/S137773608",
+        login="S137773608",
+        platform="openalex",
+        openalex_id="S137773608",
+        issn_l="2167-8359",
+        issns=["2167-8359"],
+        host_organization="https://openalex.org/P4310320595",
+        is_oa=True,
+    )
+    assert src.subkind == "OpenAlexSource"
+    assert src.openalex_id == "S137773608"
+    assert src.issn_l == "2167-8359"
+    assert src.issns == ["2167-8359"]
+    assert src.host_organization == "https://openalex.org/P4310320595"
+    assert src.is_oa is True
+    # list defaults
+    assert src.members == []
+
+
+def test_openalex_source_minimal():
+    src = OpenAlexSource(
+        url="https://openalex.org/S999",
+        login="S999",
+        platform="openalex",
+    )
+    assert src.subkind == "OpenAlexSource"
+    assert src.issns == []
+    assert src.is_oa is None
+
+
+def test_openalex_funder_subkind_and_fields():
+    funder = OpenAlexFunder(
+        url="https://openalex.org/F4320306076",
+        login="F4320306076",
+        platform="openalex",
+        openalex_id="F4320306076",
+        funder_doi="10.13039/501100001659",
+        country_code="DE",
+    )
+    assert funder.subkind == "OpenAlexFunder"
+    assert funder.openalex_id == "F4320306076"
+    assert funder.funder_doi == "10.13039/501100001659"
+    assert funder.country_code == "DE"
+    # inherited from OrgModel
+    assert funder.members == []
+
+
+def test_openalex_funder_minimal():
+    funder = OpenAlexFunder(
+        url="https://openalex.org/F9999",
+        login="F9999",
+        platform="openalex",
+    )
+    assert funder.subkind == "OpenAlexFunder"
+    assert funder.funder_doi == ""
+    assert funder.country_code == ""
+
+
+def test_graphdata_openalex_full_roundtrip():
+    """All 5 OpenAlex subkinds survive GraphData JSON round-trip (union registration)."""
+    from open_pulse_crawler.models import GraphData
+
+    work_url = "https://openalex.org/W2741809807"
+    author_url = "https://orcid.org/0000-0002-3336-0163"
+    inst_url = "https://ror.org/02s376052"
+    src_url = "https://openalex.org/S137773608"
+    funder_url = "https://openalex.org/F4320306076"
+
+    g = GraphData()
+
+    g.add_repo(OpenAlexWork(
+        url=work_url,
+        full_name="W2741809807",
+        platform="openalex",
+        doi="10.7717/peerj.4375",
+        openalex_id="W2741809807",
+        title="The state of OA",
+        publication_year=2018,
+        work_type="journal-article",
+        cited_by_count=150,
+        is_oa=True,
+        references=["https://openalex.org/W1111"],
+        authored_by=[author_url],
+        funded_by=[funder_url],
+        published_in=src_url,
+        creators=[{"name": "Piwowar, H.", "orcid": "0000-0003-1613-5981",
+                   "institutions": ["https://ror.org/02s376052"]}],
+        external_identifiers=[ExternalIdentifier(scheme="pmid", value="42")],
+    ))
+
+    g.add_user(OpenAlexAuthor(
+        url=author_url,
+        login="0000-0002-3336-0163",
+        platform="openalex",
+        orcid="0000-0002-3336-0163",
+        openalex_id="A5023888391",
+        affiliations=[inst_url],
+    ))
+
+    g.add_org(OpenAlexInstitution(
+        url=inst_url,
+        login="02s376052",
+        platform="openalex",
+        ror_id="02s376052",
+        openalex_id="I209863525",
+        country_code="CH",
+        institution_type="education",
+    ))
+
+    g.add_org(OpenAlexSource(
+        url=src_url,
+        login="S137773608",
+        platform="openalex",
+        openalex_id="S137773608",
+        issn_l="2167-8359",
+        issns=["2167-8359"],
+        host_organization="https://openalex.org/P4310320595",
+        is_oa=True,
+    ))
+
+    g.add_org(OpenAlexFunder(
+        url=funder_url,
+        login="F4320306076",
+        platform="openalex",
+        openalex_id="F4320306076",
+        funder_doi="10.13039/501100001659",
+        country_code="DE",
+    ))
+
+    restored = GraphData.model_validate_json(g.model_dump_json())
+
+    assert isinstance(restored.repos[work_url], OpenAlexWork)
+    assert isinstance(restored.users[author_url], OpenAlexAuthor)
+    assert isinstance(restored.orgs[inst_url], OpenAlexInstitution)
+    assert isinstance(restored.orgs[src_url], OpenAlexSource)
+    assert isinstance(restored.orgs[funder_url], OpenAlexFunder)
+
+    # verify field values survive round-trip
+    restored_work = restored.repos[work_url]
+    assert restored_work.subkind == "OpenAlexWork"
+    assert restored_work.doi == "10.7717/peerj.4375"
+    assert restored_work.title == "The state of OA"
+    assert restored_work.cited_by_count == 150
+    assert restored_work.is_oa is True
+    assert restored_work.references == ["https://openalex.org/W1111"]
+    assert restored_work.authored_by == [author_url]
+    assert restored_work.funded_by == [funder_url]
+    assert restored_work.published_in == src_url
+    assert len(restored_work.creators) == 1
+    assert restored_work.creators[0]["name"] == "Piwowar, H."
+
+    # external_identifiers survive round-trip
+    assert len(restored_work.external_identifiers) == 1
+    assert restored_work.external_identifiers[0].scheme == "pmid"
+    assert restored_work.external_identifiers[0].value == "42"
+
+    restored_author = restored.users[author_url]
+    assert restored_author.subkind == "OpenAlexAuthor"
+    assert restored_author.orcid == "0000-0002-3336-0163"
+    assert restored_author.affiliations == [inst_url]
+
+    restored_inst = restored.orgs[inst_url]
+    assert restored_inst.subkind == "OpenAlexInstitution"
+    assert restored_inst.ror_id == "02s376052"
+    assert restored_inst.country_code == "CH"
+
+    restored_src = restored.orgs[src_url]
+    assert restored_src.subkind == "OpenAlexSource"
+    assert restored_src.issn_l == "2167-8359"
+
+    restored_funder = restored.orgs[funder_url]
+    assert restored_funder.subkind == "OpenAlexFunder"
+    assert restored_funder.funder_doi == "10.13039/501100001659"

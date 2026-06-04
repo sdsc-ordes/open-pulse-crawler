@@ -98,50 +98,108 @@ for organization members.
 Elsevier, …). They 404 against `/dois/<doi>`. A future Crossref adapter
 could cover them.
 
-## Manual-test recipes
+## Recipes
 
-### Single DataCite work (Figshare)
+Each recipe lists the **command**, the **output** it produces, and **what to
+look for**. All are anonymous — no token required. Output is trimmed for
+clarity; counts are from live runs.
 
-```bash
-opc crawl --platforms datacite.org \
-    --default-host api.datacite.org --rounds 2 \
-    https://doi.org/10.6084/m9.figshare.99
-```
-
-### All EPFL works in DataCite (via ROR)
+### Crawl a single DataCite dataset (DOI seed)
 
 ```bash
-opc crawl --platforms datacite.org \
-    --default-host api.datacite.org --rounds 2 \
-    https://ror.org/02s376052
+opc crawl --platforms datacite.org --rounds 1 \
+    https://doi.org/10.16904/envidat.1 --output-dir ./out
 ```
 
-Round 0 fetches the bare Organization anchor (no API call); round 1
-walks `has_publication` edges to every DOI in DataCite tagged with
-EPFL's ROR. Yields ~3,500 works at time of writing.
+```text
+✓ Registered adapters for: api.datacite.org, commons.datacite.org, doi.org, orcid.org, ror.org
+✓ Added 1 seed nodes
+  - Round 0 completed: 1 nodes processed in 0.2s, 25 nodes in queue (25 users, 0 orgs, 0 repos)
+  - Total nodes: 1
+Exporting results... → ./out/<timestamp>.graph.json
+```
 
-### All works by a single ORCID
+The exported graph holds **1 node**: 1 `DataCiteWork` keyed by
+`https://doi.org/10.16904/envidat.1`. The 25 neighbours (ORCID-identified
+creators and a `DataCiteClient`) sit in the queue — run `--rounds 2` to
+materialize them.
+
+**What to look for:** the work node is stored under `repos` with
+`subkind=DataCiteWork`; the `resource_type` field carries
+`resourceTypeGeneral` (e.g. `Dataset`).
+
+### Crawl all DataCite works for an institution (ROR seed)
 
 ```bash
-opc crawl --platforms datacite.org \
-    --default-host api.datacite.org --rounds 2 \
-    https://orcid.org/0000-0002-1825-0097
+opc crawl --platforms datacite.org --rounds 1 \
+    https://ror.org/02s376052 --output-dir ./out
 ```
 
-### Cross-platform crawl (DataCite → Zenodo)
+```text
+✓ Registered adapters for: api.datacite.org, commons.datacite.org, doi.org, orcid.org, ror.org
+✓ Added 1 seed nodes
+  - Round 0 completed: 1 nodes processed in 22.9s, 3636 nodes in queue (3636 users, 0 orgs, 0 repos)
+  - Total nodes: 1
+Exporting results... → ./out/<timestamp>.graph.json
+```
+
+The exported graph holds **1 node**: 1 `DataCiteOrganization` anchor for
+EPFL's ROR. Round 0 paginates through DataCite's affiliation index and
+enqueues **3,636 DOIs** — run `--rounds 2` to fetch and store them all.
+
+**What to look for:** the organization node is stored under `orgs` with
+`subkind=DataCiteOrganization`; the queue count reflects the total
+ROR-tagged works DataCite has indexed for this institution.
+
+### Crawl all DataCite works by a researcher (ORCID seed)
+
+```bash
+opc crawl --platforms datacite.org --rounds 2 \
+    https://orcid.org/0000-0002-1477-6999 --output-dir ./out
+```
+
+```text
+✓ Registered adapters for: api.datacite.org, commons.datacite.org, doi.org, orcid.org, ror.org
+✓ Added 1 seed nodes
+  - Round 0 completed: 1 nodes processed in 0.3s, 3 nodes in queue (3 users, 0 orgs, 0 repos)
+  - Round 1 completed: 3 nodes processed in 0.2s, 32 nodes in queue (32 users, 0 orgs, 0 repos)
+  - Total nodes: 4
+Exporting results... → ./out/<timestamp>.graph.json
+```
+
+The exported graph holds **4 nodes**: 1 `DataCitePerson` and 3
+`DataCiteWork` datasets. Round 1 fetches each queued DOI and expands
+co-author and affiliation edges into the next queue.
+
+**What to look for:** the person node is under `users` with
+`subkind=DataCitePerson`; each work is under `repos` with
+`subkind=DataCiteWork`; the person is keyed by its `orcid.org` URL.
+
+### Cross-platform crawl (DataCite + Zenodo, ROR seed)
 
 ```bash
 CRAWLER_PLATFORMS=datacite.org,zenodo.org \
-    opc crawl --rounds 3 \
-    https://ror.org/02s376052
+opc crawl --rounds 1 \
+    https://ror.org/02s376052 --output-dir ./out
 ```
 
-DataCite emits `has_publication` edges to every affiliated DOI; the
-DOI-prefix routing rewrites Zenodo-prefix DOIs to `zenodo.org/records/<id>`
-so the Zenodo adapter picks them up in round 2.
+```text
+✓ Registered adapters for: api.datacite.org, commons.datacite.org, doi.org, orcid.org, ror.org, zenodo.org
+✓ Added 1 seed nodes
+  - Round 0 completed: 1 nodes processed in 27.3s, 3636 nodes in queue (3636 users, 0 orgs, 0 repos)
+  - Total nodes: 1
+Exporting results... → ./out/<timestamp>.graph.json
+```
 
-## Limitations (v3.3)
+With both adapters enabled, DOI-prefix routing rewrites any
+`10.5281/zenodo.*` DOIs in the queue to `zenodo.org/records/<id>` so the
+Zenodo adapter picks them up in round 2.
 
+**What to look for:** the *Registered adapters* line now includes
+`zenodo.org`; Zenodo-prefix DOIs that would 404 against DataCite are
+rewritten transparently before BFS dispatch.
+
+## Limitations
 - **Crossref-issued DOIs (Nature, ACM, IEEE, Elsevier, …) are not in
   DataCite's index.** They 404 against `/dois/<doi>`. A future Crossref
   adapter could cover them.
@@ -159,3 +217,9 @@ so the Zenodo adapter picks them up in round 2.
   invalid token silently 401s on protected endpoints (none are used in
   v3.3 — all reads are public).
 - **No deposit/submit/draft flows.** Read-only.
+
+## See also
+
+- [Node identifiers](NODE_IDS.md) — how canonical node keys are formed across platforms.
+- [REST API](API.md) — drive crawls programmatically.
+- [All platform guides](index.md) — the documentation hub.

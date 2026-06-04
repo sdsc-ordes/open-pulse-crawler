@@ -27,6 +27,8 @@ class ExpandOpts(BaseModel):
     max_contributors: Optional[int] = None
     issue_max: int = 100
     pr_max: int = 100
+    max_citations_per_work: Optional[int] = 50
+    max_works_per_entity: Optional[int] = 25
 
 
 

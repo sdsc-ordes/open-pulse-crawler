@@ -76,7 +76,11 @@ Get a Personal Access Token at <https://zenodo.org/account/settings/applications
 > seed was a non-concept version; the original version id is preserved
 > under `versions`.
 
-## Manual-test recipes
+## Recipes
+
+Each recipe lists the **command**, the **output** it produces, and **what to
+look for**. All run anonymously — no token required for public records. Output
+is trimmed for clarity; counts are from live runs.
 
 ### Software-rich community (ESCAPE OSSR — the canonical demo)
 
@@ -86,48 +90,109 @@ repos on GitHub / GitLab — the gold-standard cross-platform demo.
 
 ```bash
 # Round 0 fetches the community; round 1 walks `contains` to its 56 records.
-opc crawl --platforms zenodo.org \
-    --default-host zenodo.org --rounds 2 \
-    https://zenodo.org/communities/escape2020
+opc crawl --platforms zenodo.org --rounds 2 \
+    https://zenodo.org/communities/escape2020 --output-dir ./out \
+    --no-cache --no-csv
 ```
+
+```text
+✓ Registered adapters for: zenodo.org
+✓ Added 1 seed nodes
+  - Round 0 completed: 1 nodes processed in 5.7s, 56 in queue
+  - Round 1 completed: 56 nodes processed in 6.2s, 75 in queue
+  - Total nodes: 57
+  - Duration: 11s
+✓ JSON: ./out/20260603084943.graph.json
+```
+
+The exported graph holds **1 `ZenodoCommunity`** (escape2020) and **42
+`ZenodoRecord`** nodes. Anonymous rate limits occasionally cause a handful
+of records to 429; the total-nodes figure (57) counts all attempts while the
+JSON holds only successful fetches. Round 2 would fan out to uploaders and
+sibling communities queued (75 items).
+
+**What to look for:** the community node is keyed by
+`https://zenodo.org/communities/escape2020`; each record is keyed by its
+*concept DOI URL* (version-agnostic). Any version seed collapses to the
+concept node — see the **Seed forms accepted** section above.
 
 ### Smaller demo community (EOSC Association)
 
-Lighter alternative used by the integration test (~72 records, fewer
-outgoing links — better when you just want to verify the `contains`
-fan-out):
+A lighter alternative (~73 records, fewer outgoing links) useful when you
+just want to verify the `contains` fan-out without hitting the ESCAPE
+rate-limit edge:
 
 ```bash
-opc crawl --platforms zenodo.org \
-    --default-host zenodo.org --rounds 2 \
-    https://zenodo.org/communities/eosc
+opc crawl --platforms zenodo.org --rounds 2 \
+    https://zenodo.org/communities/eosc --output-dir ./out \
+    --no-cache --no-csv
 ```
 
-### Single record via DOI URL
+```text
+✓ Registered adapters for: zenodo.org
+✓ Added 1 seed nodes
+  - Round 0 completed: 1 nodes processed in 3.9s, 73 in queue
+  - Round 1 completed: 73 nodes processed in 4.4s, 29 in queue
+  - Total nodes: 74
+  - Duration: 8s
+✓ JSON: ./out/20260603085107.graph.json
+```
+
+The exported graph holds **1 `ZenodoCommunity`** (eosc) and **41
+`ZenodoRecord`** nodes. 29 uploaders / sibling communities are queued for
+round 3 but not yet fetched.
+
+**What to look for:** the `ZenodoCommunity` node carries the full record list
+in its `contains` edges; each `ZenodoRecord` links back via `in_community`.
+
+### Single record — version seed resolves to concept record
+
+Seeding a specific-version Zenodo URL collapses to the version-agnostic
+concept record. The seed `records/20432079` (a version) redirects to
+`records/4701488` (the concept).
 
 ```bash
-opc crawl --platforms zenodo.org \
-    --default-host zenodo.org --rounds 2 \
-    https://doi.org/10.5281/zenodo.20432079
+opc crawl --platforms zenodo.org --rounds 1 \
+    https://zenodo.org/records/20432079 --output-dir ./out \
+    --no-cache --no-csv
 ```
+
+```text
+✓ Registered adapters for: zenodo.org
+✓ Added 1 seed nodes
+  - Round 0 completed: 1 nodes processed in 0.6s, 7 in queue
+  - Total nodes: 1
+  - Duration: 0s
+✓ JSON: ./out/20260603085032.graph.json
+```
+
+The exported graph holds **1 `ZenodoRecord`** node keyed by
+`https://zenodo.org/records/4701488` (Gammapy: Python toolbox for
+gamma-ray astronomy). 7 items are queued for the next round: the uploader
+account and any sibling communities the record belongs to.
+
+**What to look for:** the node URL (`records/4701488`) differs from the seed
+URL (`records/20432079`) because the seed was a non-concept version. The
+original version id is preserved under the node's `versions` field. Use
+`--rounds 2` to also fetch the queued uploaders and communities.
 
 ### Cross-platform crawl (Zenodo → GitHub via `related_to.*`)
 
 End-to-end: seed the ESCAPE community on Zenodo, follow the
-`related_to.isDerivedFrom` / `isDocumentedBy` edges into GitHub.
+`related_to.isDerivedFrom` / `isDocumentedBy` edges into GitHub. Requires
+a GitHub token; Zenodo reads remain anonymous.
 
 ```bash
 CRAWLER_PLATFORMS=zenodo.org,github.com \
 CRAWLER_TOKEN__GITHUB_COM=ghp_… \
 opc crawl --rounds 2 \
-    https://zenodo.org/communities/escape2020
+    https://zenodo.org/communities/escape2020 --output-dir ./out
 ```
 
-Verified result (anonymous Zenodo + authenticated GitHub, 2 rounds, 15 of
-the 56 ESCAPE records as seeds): **28 graph nodes** — 15 `ZenodoRecord`,
-8 `ZenodoCommunity` (escape2020 + 7 sibling communities discovered via
-`in_community` edges), 4 `GitHubOrganization` (gammapy, FairRootGroup,
-R3BRootGroup, cds-astro, ctlearn-project), 1 `GitHubUser`.
+**What to look for:** the *Registered adapters* line shows both `zenodo.org`
+and `github.com`. After round 1 the `related_to.*` edges on each
+`ZenodoRecord` are followed into GitHub, producing `GitHubRepository`,
+`GitHubOrganization`, and `GitHubUser` nodes alongside the Zenodo nodes.
 
 ### Communities surveyed for `related_identifiers` density
 
@@ -141,8 +206,7 @@ R3BRootGroup, cds-astro, ctlearn-project), 1 `GitHubUser`.
 | `pangeo` | 68 | 1/15 | Geoscience |
 | `cernopenlab` | 355 | 0/150 → 1 elsewhere | Mostly reports |
 
-## Limitations (v3.1)
-
+## Limitations
 - **Community members are not crawled.** The `/api/communities/<slug>/members`
   endpoint is auth-gated on production Zenodo. No `member_of` edges.
 - **Versions are not separate nodes.** Each concept DOI is one node;
@@ -155,3 +219,9 @@ R3BRootGroup, cds-astro, ctlearn-project), 1 `GitHubUser`.
 - **ORCID resolution** stays embedded in `creators` / `external_identifiers`
   — no cross-platform identity linking. That layer is handled by a
   separate downstream tool.
+
+## See also
+
+- [Node identifiers](NODE_IDS.md) — how canonical node keys are formed across platforms.
+- [REST API](API.md) — drive crawls programmatically.
+- [All platform guides](index.md) — the documentation hub.

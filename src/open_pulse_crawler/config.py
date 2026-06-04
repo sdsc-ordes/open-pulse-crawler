@@ -14,6 +14,10 @@ Public surface:
   fallback. Emits a one-shot :class:`DeprecationWarning` (via
   :func:`warnings.warn`) the first time a legacy variable is read in the
   process.
+- :func:`resolve_crossref_mailto` — read ``CRAWLER_CROSSREF_MAILTO`` polite-pool
+  email. Returns ``None`` when unset or blank.
+- :func:`resolve_openalex_mailto` — read ``CRAWLER_OPENALEX_MAILTO`` polite-pool
+  email. Returns ``None`` when unset or blank.
 
 The legacy fallback intentionally preserves v2's multi-token semantics:
 ``CRAWLER_GITHUB_TOKEN_POOL``, ``CRAWLER_GITHUB_TOKEN``, and ``GITHUB_TOKEN``
@@ -25,7 +29,7 @@ from __future__ import annotations
 
 import os
 import warnings
-from typing import List
+from typing import List, Optional
 
 # Canonical, host-keyed env-var prefixes.
 TOKEN_POOL_PREFIX = "CRAWLER_TOKEN_POOL__"
@@ -38,6 +42,8 @@ LEGACY_GITHUB_TOKEN_ENV = "CRAWLER_GITHUB_TOKEN"
 LEGACY_GITHUB_BARE_ENV = "GITHUB_TOKEN"
 
 PLATFORMS_ENV = "CRAWLER_PLATFORMS"
+CROSSREF_MAILTO_ENV = "CRAWLER_CROSSREF_MAILTO"
+OPENALEX_MAILTO_ENV = "CRAWLER_OPENALEX_MAILTO"
 
 _DEFAULT_PLATFORMS = ("github.com",)
 
@@ -70,6 +76,30 @@ def enabled_instances() -> List[str]:
     if not raw.strip():
         return list(_DEFAULT_PLATFORMS)
     return _split(raw)
+
+
+def resolve_crossref_mailto() -> Optional[str]:
+    """Return the Crossref polite-pool contact email, or ``None`` if unset/blank.
+
+    Reads :data:`CROSSREF_MAILTO_ENV` (``CRAWLER_CROSSREF_MAILTO``). The value
+    is stripped of leading/trailing whitespace; a blank or whitespace-only
+    string is treated as unset and returns ``None``.
+    """
+    raw = os.environ.get(CROSSREF_MAILTO_ENV, "")
+    stripped = raw.strip()
+    return stripped if stripped else None
+
+
+def resolve_openalex_mailto() -> Optional[str]:
+    """Return the OpenAlex polite-pool contact email, or ``None`` if unset/blank.
+
+    Reads :data:`OPENALEX_MAILTO_ENV` (``CRAWLER_OPENALEX_MAILTO``). The value
+    is stripped of leading/trailing whitespace; a blank or whitespace-only
+    string is treated as unset and returns ``None``.
+    """
+    raw = os.environ.get(OPENALEX_MAILTO_ENV, "")
+    stripped = raw.strip()
+    return stripped if stripped else None
 
 
 def _warn_legacy_github_once() -> None:

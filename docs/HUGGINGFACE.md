@@ -82,54 +82,120 @@ Read-only tokens suffice for the crawl-only workload.
   `/enterprise`, `/inference-endpoints`).
 - UI filter URLs (`/models?author=...`).
 
-## Manual-test recipes
+## Recipes
 
-### Cross-platform paper bridge
+Each recipe lists the **command**, the **output** it produces, and **what to
+look for**. All are anonymous — add `CRAWLER_TOKEN__HUGGINGFACE_CO` for higher
+rate limits. Output is trimmed for clarity; counts are from live runs.
 
-```bash
-opc crawl --platforms huggingface.co,github.com --rounds 2 \
-    https://huggingface.co/papers/2307.09288
-```
-
-Round 0 fetches the Llama 2 paper. Round 1 emits:
-- `related_to.IsIdenticalTo` → `https://arxiv.org/abs/2307.09288`
-- `related_to.IsSupplementedBy` → `https://github.com/facebookresearch/llama`
-- `references_model` → 8 Llama 2 models on HF
-- `references_dataset` / `references_space` → linked items
-
-Round 2 follows the GitHub edge into the source repository.
-
-### Single model with owner fan-out
+### Crawl a paper and its linked models, datasets, and spaces (Paper seed)
 
 ```bash
 opc crawl --platforms huggingface.co --rounds 2 \
-    https://huggingface.co/meta-llama/Llama-3.2-1B
+    https://huggingface.co/papers/2307.09288 \
+    --output-dir ./out --no-cache --no-csv
 ```
 
-Round 1 emits `owned_by` → `huggingface.co/meta-llama`. Round 2 fetches
-the meta-llama org and walks every model / dataset / space it owns.
+```text
+✓ Registered adapters for: huggingface.co
+✓ Added 1 seed nodes
+  - Round 0 completed: 1 nodes processed in 0.4s, 18 nodes in queue (18 users)
+  - Round 1 completed: 18 nodes processed in 0.6s, 4019 nodes in queue
+  - Total nodes: 19
+Exporting results... → ./out/<timestamp>.graph.json
+```
 
-### Author corpus
+The exported graph holds **17 visited nodes**: 1 `HuggingFacePaper`, 4
+`HuggingFaceRepo` (model), 4 `HuggingFaceRepo` (dataset), and 8
+`HuggingFaceRepo` (space). Two additional nodes (`arxiv.org` and `github.com`
+URLs) were discovered in round 1 but skipped — no adapter is registered for
+those platforms in this invocation.
+
+**What to look for:** the paper is keyed by
+`https://huggingface.co/papers/2307.09288`; round 1 logs a warning
+`Discovered github.com URI … but no github.com adapter is registered —
+skipping` — that edge is the cross-platform bridge the paper adapter emits.
+Pass `--platforms huggingface.co,github.com` (with a GitHub token) to follow
+it into the source repository.
+
+### Crawl a model and its owning organization (Model seed)
 
 ```bash
 opc crawl --platforms huggingface.co --rounds 2 \
-    https://huggingface.co/karpathy
+    https://huggingface.co/meta-llama/Llama-3.2-1B \
+    --output-dir ./out --no-cache --no-csv
 ```
 
-Walks every model / dataset / space by Andrej Karpathy, plus `member_of`
-edges to each of his orgs.
+```text
+✓ Registered adapters for: huggingface.co
+✓ Added 1 seed nodes
+  - Round 0 completed: 1 nodes processed in 0.2s, 1 node in queue
+  - Round 1 completed: 1 nodes processed in 0.6s, 80 nodes in queue
+  - Total nodes: 2
+Exporting results... → ./out/<timestamp>.graph.json
+```
 
-### Collection walk
+The exported graph holds **2 nodes**: 1 `HuggingFaceRepo` (model) and 1
+`HuggingFaceOrg` (`meta-llama`). 80 repos owned by the org are queued for
+round 3 — add `--rounds 3` to pull them in.
+
+**What to look for:** the `owned_by` edge connects the model to
+`https://huggingface.co/meta-llama`; the org expansion (round 1) fetches
+`/api/models?author=meta-llama`, `/api/datasets?…`, and `/api/spaces?…` and
+places all discovered repos in the queue.
+
+### Crawl a user's corpus and org memberships (User seed)
 
 ```bash
 opc crawl --platforms huggingface.co --rounds 2 \
-    https://huggingface.co/collections/meta-llama/metas-llama-32-language-models-and-evals-675bfd70e574a62dd0e40586
+    https://huggingface.co/karpathy \
+    --output-dir ./out --no-cache --no-csv
 ```
 
-Walks every model / dataset / space / paper in the collection's `items[]`.
+```text
+✓ Registered adapters for: huggingface.co
+✓ Added 1 seed nodes
+  - Round 0 completed: 1 nodes processed in 0.5s, 15 nodes in queue
+  - Round 1 completed: 15 nodes processed in 1.0s, 1 node in queue
+  - Total nodes: 16
+Exporting results... → ./out/<timestamp>.graph.json
+```
 
-## Limitations (v3.4)
+The exported graph holds **16 nodes**: 1 `HuggingFaceUser` (karpathy), 2
+`HuggingFaceOrg` (compvis-community, llmc), and 13 `HuggingFaceRepo`
+(7 models + 6 datasets).
 
+**What to look for:** `member_of` edges link the user to each org; each org
+node is fully expanded in round 1 (its own repos are queued). Spaces owned by
+karpathy (none at time of crawl) would appear as `HuggingFaceRepo` (space).
+
+### Crawl a collection and its items (Collection seed)
+
+```bash
+opc crawl --platforms huggingface.co --rounds 2 \
+    https://huggingface.co/collections/meta-llama/metas-llama-32-language-models-and-evals-675bfd70e574a62dd0e40586 \
+    --output-dir ./out --no-cache --no-csv
+```
+
+```text
+✓ Registered adapters for: huggingface.co
+✓ Added 1 seed nodes
+  - Round 0 completed: 1 nodes processed in 0.3s, 15 nodes in queue
+  - Round 1 completed: 15 nodes processed in 0.7s, 67 nodes in queue
+  - Total nodes: 16
+Exporting results... → ./out/<timestamp>.graph.json
+```
+
+The exported graph holds **16 nodes**: 1 `HuggingFaceCollection`, 1
+`HuggingFaceOrg` (meta-llama), and 14 `HuggingFaceRepo` (10 models + 4
+datasets).
+
+**What to look for:** `contains` edges connect the collection to each of its
+items; `owned_by` connects the collection to `huggingface.co/meta-llama`. The
+org expansion in round 1 enumerates the full org catalogue (67 more repos
+queued) — use `--rounds 2` to stay collection-scoped.
+
+## Limitations
 - **No `has_member` (Org → User) edges.** The
   `/api/organizations/<name>/members` endpoint is auth-gated. Same
   situation as Infoscience's removed `has_member` flow.
@@ -145,3 +211,9 @@ Walks every model / dataset / space / paper in the collection's `items[]`.
   future Crossref adapter.
 - **Legacy arxiv IDs not accepted** as paper seeds.
 - **No deposit/upload/draft flows.** Read-only adapter.
+
+## See also
+
+- [Node identifiers](NODE_IDS.md) — how canonical node keys are formed across platforms.
+- [REST API](API.md) — drive crawls programmatically.
+- [All platform guides](index.md) — the documentation hub.

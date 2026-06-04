@@ -57,82 +57,137 @@ opc doctor
 
 Add `--json` for machine-readable output.
 
-## Manual-test recipes
+## Recipes
 
-These can't run in CI (institutional tokens needed). Run locally.
+Each recipe lists the **command**, the **output** it produces, and **what to
+look for**. Anonymous reads work for all public instances; add a token for
+higher rate limits and to unlock member-list endpoints on self-hosted instances.
+Output is trimmed for clarity; counts are from live runs.
 
-### gitlab.com — one-round seed
+### Crawl a public project on gitlab.com (project seed)
 
 ```bash
-CRAWLER_TOKEN__GITLAB_COM=glpat-… \
 opc crawl --platforms gitlab.com --rounds 1 \
-  https://gitlab.com/gitlab-org/gitlab-foss
+  https://gitlab.com/gnuwget/wget2 \
+  --output-dir ./out --no-cache --no-csv
 ```
 
-### gitlab.epfl.ch — single user (Matthieu Bovel)
+```text
+⚠ No tokens configured for gitlab.com; skipping (run 'opc doctor' for details)
+✓ Registered adapters for: gitlab.com
+✓ Added 1 seed nodes
+
+  - Round 0 completed: 1 node processed in 11s, 139 nodes in queue (139u/0o/0r)
+  - Total nodes: 1
+  - Users: 0, Orgs: 0, Repos: 1
+```
+
+**What to look for:** the project is keyed by its full URL
+(`https://gitlab.com/gnuwget/wget2`) and stored as a `GitLabProject` node.
+Round 0 discovers fork owners and contributors; they are queued as
+`GitLabUser` nodes for the next round. The "skipping" warning is cosmetic —
+anonymous reads still work for public resources; add
+`CRAWLER_TOKEN__GITLAB_COM=glpat-…` to lift rate limits.
+
+### Crawl a group on gitlab.com (group seed)
 
 ```bash
-CRAWLER_TOKEN__GITLAB_EPFL_CH=glpat-… \
+opc crawl --platforms gitlab.com --rounds 1 \
+  https://gitlab.com/gnuwget \
+  --output-dir ./out --no-cache --no-csv
+```
+
+```text
+⚠ No tokens configured for gitlab.com; skipping (run 'opc doctor' for details)
+✓ Registered adapters for: gitlab.com
+✓ Added 1 seed nodes
+
+WARNING  groups/1530779/members/all on gitlab.com returned 401
+         (likely insufficient token scope); skipping that edge source.
+
+  - Round 0 completed: 1 node processed in 3s, 5 nodes in queue (5u/0o/0r)
+  - Total nodes: 1
+  - Users: 0, Orgs: 1, Repos: 0
+```
+
+**What to look for:** the group is stored as a `GitLabGroup` node. The `401`
+on `members/all` is expected in anonymous mode — the adapter degrades
+gracefully and still discovers members through the group's projects. Add a
+token with `read_api` scope to unlock the direct members endpoint.
+
+### Crawl a user on gitlab.ethz.ch (self-hosted, anonymous)
+
+```bash
+opc crawl --platforms gitlab.ethz.ch \
+  --default-host gitlab.ethz.ch --rounds 1 \
+  https://gitlab.ethz.ch/vermeul \
+  --output-dir ./out --no-cache --no-csv
+```
+
+```text
+⚠ No tokens configured for gitlab.ethz.ch; skipping (run 'opc doctor' for details)
+✓ Registered adapters for: gitlab.ethz.ch
+✓ Added 1 seed nodes
+
+  - Round 0 completed: 1 node processed in 1s, 12 nodes in queue (12u/0o/0r)
+  - Total nodes: 1
+  - Users: 1, Orgs: 0, Repos: 0
+```
+
+**What to look for:** the user is keyed as `https://gitlab.ethz.ch/vermeul`
+and stored as a `GitLabUser` node. Expansion discovers co-contributors on the
+user's public projects; 12 users are queued for round 1. The same command
+works with `CRAWLER_TOKEN__GITLAB_ETHZ_CH=glpat-…` prepended for
+authenticated access (more edges, higher rate limits).
+
+### Crawl a user on gitlab.epfl.ch (dashboard URL form, anonymous)
+
+```bash
 opc crawl --platforms gitlab.epfl.ch \
-  --default-host gitlab.epfl.ch --rounds 2 \
-  https://gitlab.epfl.ch/users/bovel
+  --default-host gitlab.epfl.ch --rounds 1 \
+  https://gitlab.epfl.ch/users/bovel \
+  --output-dir ./out --no-cache --no-csv
 ```
 
-The dashboard-form URL `https://gitlab.epfl.ch/users/bovel` is canonicalized
-to `https://gitlab.epfl.ch/bovel` by the adapter; both forms produce the
-same graph node.
+```text
+⚠ No tokens configured for gitlab.epfl.ch; skipping (run 'opc doctor' for details)
+✓ Registered adapters for: gitlab.epfl.ch
+✓ Added 1 seed nodes
 
-### gitlab.ethz.ch — single user (vermeul, anonymous OK)
-
-```bash
-# Authenticated (read_api scope recommended)
-CRAWLER_TOKEN__GITLAB_ETHZ_CH=glpat-… \
-opc crawl --platforms gitlab.ethz.ch \
-  --default-host gitlab.ethz.ch --rounds 2 \
-  https://gitlab.ethz.ch/vermeul
-
-# Anonymous (public profile reads only; expansion endpoints return 403,
-# the adapter degrades silently — fine for a quick visibility check).
-opc crawl --platforms gitlab.ethz.ch \
-  --default-host gitlab.ethz.ch --rounds 2 \
-  https://gitlab.ethz.ch/vermeul
+  - Round 0 completed: 1 node processed in 0s, 3 nodes in queue (3u/0o/0r)
+  - Total nodes: 1
+  - Users: 1, Orgs: 0, Repos: 0
 ```
 
-### gitlab.renkulab.io — Renku group + fork tree (anonymous)
+**What to look for:** the dashboard-form URL `…/users/bovel` is canonicalized
+to `https://gitlab.epfl.ch/bovel` by the adapter before any fetch; both
+forms produce the same `GitLabUser` node. Use
+`CRAWLER_TOKEN__GITLAB_EPFL_CH=glpat-…` (institutional SSO token,
+`read_api` scope) to unlock project-membership edges.
+
+### Crawl a fork-tree on gitlab.renkulab.io (Renku, anonymous)
 
 ```bash
-# Group seed — discovers owned projects (members are gated, gracefully skipped).
 opc crawl --platforms gitlab.renkulab.io \
-  --default-host gitlab.renkulab.io --rounds 2 \
-  https://gitlab.renkulab.io/HSLU-Predictive-Modeling
-
-# Project seed — follows the fork tree. The HSLU course repo has ~74
-# student forks, all discovered in round 1.
-opc crawl --platforms gitlab.renkulab.io \
-  --default-host gitlab.renkulab.io --rounds 2 \
-  https://gitlab.renkulab.io/HSLU-Predictive-Modeling/hslu-predictive-modeling
+  --default-host gitlab.renkulab.io --rounds 1 \
+  https://gitlab.renkulab.io/HSLU-Predictive-Modeling/hslu-predictive-modeling \
+  --output-dir ./out --no-cache --no-csv
 ```
 
-### gitlab.epfl.ch — group + project mix
+```text
+⚠ No tokens configured for gitlab.renkulab.io; skipping (run 'opc doctor' for details)
+✓ Registered adapters for: gitlab.renkulab.io
+✓ Added 1 seed nodes
 
-```bash
-CRAWLER_TOKEN__GITLAB_EPFL_CH=glpat-… \
-opc crawl --platforms gitlab.epfl.ch --rounds 2 \
-  https://gitlab.epfl.ch/<group>/<project> \
-  https://gitlab.epfl.ch/<other-group>
+  - Round 0 completed: 1 node processed in 4s, 74 nodes in queue (74u/0o/0r)
+  - Total nodes: 1
+  - Users: 0, Orgs: 0, Repos: 1
 ```
 
-### Multi-instance crawl
-
-```bash
-CRAWLER_PLATFORMS=github.com,gitlab.com,gitlab.epfl.ch \
-CRAWLER_TOKEN__GITHUB_COM=… \
-CRAWLER_TOKEN__GITLAB_COM=… \
-CRAWLER_TOKEN__GITLAB_EPFL_CH=… \
-opc crawl --rounds 2 \
-  https://github.com/sdsc-ordes/open-pulse-crawler \
-  https://gitlab.com/gitlab-org/gitlab-foss
-```
+**What to look for:** the project is stored as a `GitLabProject` node. Round 0
+walks the fork list and discovers 74 student forks, queuing their owners as
+`GitLabUser` nodes for the next round. `renkulab.io` is treated as a vanilla
+GitLab instance — Renku-specific metadata (datasets, lineage) is not modelled.
 
 ## Per-instance quirks
 
@@ -146,8 +201,7 @@ opc crawl --rounds 2 \
   (`https://host/a/b/c`): the adapter probes the projects endpoint first
   (most common), then groups.
 
-## Limitations (v3.0)
-
+## Limitations
 * No SBOM / dependents view. GitLab has no public equivalent of GitHub's
   "Used by". `--crawl-dependencies` / `--crawl-dependents` are silently
   ignored for GitLab projects.
@@ -156,3 +210,9 @@ opc crawl --rounds 2 \
 * `renkulab.io` is treated as a vanilla GitLab instance — Renku
   datasets, project lineage, and Renku-specific concepts are not
   modelled in v3.0. Track in a future Renku-specific adapter.
+
+## See also
+
+- [Node identifiers](NODE_IDS.md) — how canonical node keys are formed across platforms.
+- [REST API](API.md) — drive crawls programmatically.
+- [All platform guides](index.md) — the documentation hub.

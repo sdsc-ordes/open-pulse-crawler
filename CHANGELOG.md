@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — OpenAlex adapter
+- **OpenAlex** platform adapter (`openalex.org`). OpenAlex is the only
+  source in the crawler that resolves a **bidirectional citation graph** —
+  both a work's outbound `references` and its inbound `cited_by` (capped) —
+  alongside ORCID-author and ROR-institution unification across platforms.
+  Anonymous reads only; no token required. Components:
+  - `config.resolve_openalex_mailto()` reads `CRAWLER_OPENALEX_MAILTO` — the
+    OpenAlex polite-pool contact email (higher, more consistent rate limits;
+    no token).
+  - `platforms/openalex_adapter/client.py` — `OpenAlexHTTPClient` (httpx
+    wrapper for `api.openalex.org` with polite-pool routing), including
+    `iter_citing_works`, `iter_works_by_entity`, and
+    `resolve_ids_to_canonical` helpers.
+  - `platforms/openalex_adapter/adapter.py` — `OpenAlexAdapter`
+    (`normalize_uri` / `classify` / `fetch` / `expand`) covering five
+    entities: Work, Author, Institution, Source, Funder. Works are active
+    (emit `references` / `cited_by` / `authored_by` / `affiliated_with` /
+    `published_in` / `funded_by` edges); Authors and Institutions fan out to
+    their works (capped); Sources and Funders are passive.
+  - Registry precedence wired in `cli._build_registry`: OpenAlex owns
+    `doi.org` / `orcid.org` / `ror.org` with **DataCite as fallback** (and
+    the Crossref enricher as the final metadata fallback). Citation
+    traversal capped by `max_citations_per_work` (default 50) and
+    `max_works_per_entity` (default 25). See
+    [`docs/OPENALEX.md`](docs/OPENALEX.md).
+
+### Added — Crossref enrichment pass
+- Post-crawl **Crossref enrichment** that materializes journal/article DOIs
+  DataCite cannot resolve. Crossref-issued DOIs (Nature, ACM, IEEE, Elsevier,
+  …) are not in DataCite's index, so during a crawl they survive only as bare
+  dangling `https://doi.org/...` strings inside other nodes. This pass scans
+  the graph for them and turns the Crossref-owned ones into `CrossrefWork`
+  nodes. Components:
+  - `config.resolve_crossref_mailto()` reads `CRAWLER_CROSSREF_MAILTO` — the
+    Crossref polite-pool contact email (faster, dedicated rate-limit pool;
+    no token required).
+  - `platforms/crossref.py` — `CrossrefClient` (httpx wrapper for
+    `api.crossref.org/works/<doi>`, with polite-pool routing and one-shot 429
+    `Retry-After` retry) plus the `message → CrossrefWork` mapper.
+  - `crossref_enricher.py` — `CrossrefEnricher` engine: Phase 1 materializes
+    dangling DOIs; Phase 2 does a bounded breadth-first expansion of each
+    work's outbound references (`--max-expand-depth`,
+    `--max-references-per-work`). Idempotent: skips already-present nodes and
+    sibling-adapter-owned DOIs (Zenodo prefixes).
+  - `enrich-crossref` CLI command to run the pass over a saved graph snapshot
+    (`--input`/`--output`, in place by default), printing a summary of
+    enriched / skipped / expanded counters. Out of scope: inbound cited-by
+    edges (OpenAlex/OpenCitations) and the DOI↔GitHub software bridge
+    (Crossref Event Data). See [`docs/CROSSREF.md`](docs/CROSSREF.md).
+
 ### Added — v2 job-lifecycle parity with v1
 - Full v1↔v2 job-lifecycle parity. v2 previously exposed only `POST /crawl`,
   `GET /graph/{id}` (which 409s while running) and `GET /nodes` — no
